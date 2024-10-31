@@ -1,0 +1,51 @@
+Program       = { Item }
+
+Item          = Function | Statement
+
+Function      = "fn" Identifier "(" [ ParameterList ] ")" [ "->" Type ] "{" { Statement } "}"
+
+ParameterList = Parameter { "," Parameter }
+
+Parameter     = Identifier ":" Type
+
+Type          = "i32" | "f64" | "bool" | "str" | Identifier
+
+Statement     = LetStatement | ExpressionStatement | ReturnStatement
+
+LetStatement  = "let" Identifier [ ":" Type ] [ "=" Expression ] ";"
+
+ReturnStatement = "return" [ Expression ] ";"
+
+ExpressionStatement = Expression ";"
+
+Expression    = Literal
+                | Identifier
+                | FunctionCall
+                | BinaryExpression
+                | "(" Expression ")"
+
+FunctionCall  = Identifier "(" [ ArgumentList ] ")"
+
+ArgumentList  = Expression { "," Expression }
+
+BinaryExpression = Expression BinaryOperator Expression
+
+BinaryOperator = "+" | "-" | "*" | "/" | "==" | "!=" | "<" | ">" | "<=" | ">="
+
+Literal       = IntegerLiteral | FloatLiteral | BooleanLiteral | StringLiteral
+
+IntegerLiteral = Digit { Digit }
+
+FloatLiteral  = Digit { Digit } "." Digit { Digit }
+
+BooleanLiteral = "true" | "false"
+
+StringLiteral = "\"" { Character } "\""
+
+Identifier    = Letter { Letter | Digit | "_" }
+
+Digit         = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"
+
+Letter        = "a" | "b" | ... | "z" | "A" | "B" | ... | "Z"
+
+Character     = Any valid character except for the double quote (")
