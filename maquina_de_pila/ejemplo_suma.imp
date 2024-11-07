@@ -1,0 +1,25 @@
+var int a, b;
+
+fun int suma(int x)
+  var int accum;
+  accum = 0;
+  print(15);
+  while 0 < x do
+    var int zz;
+    accum = accum + x;
+    x = x - 1
+  endwhile;
+  print(16);
+  return (accum)
+endfun
+
+
+fun void main()
+  var int y;
+  a = 10;
+  b = 11;
+  print(14);
+  y = suma(4);
+  print(y);
+  return ()
+endfun

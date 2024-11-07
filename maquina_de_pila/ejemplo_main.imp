@@ -1,0 +1,10 @@
+var int a, b;
+
+fun void main()
+  var int y;
+  a = 3;
+  b = 4;
+  y = a + b;
+  print(y);
+  return ()
+endfun

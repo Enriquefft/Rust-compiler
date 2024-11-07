@@ -1,51 +1,124 @@
-Program       = { Item }
+Program = { ItemOrComment }
 
-Item          = Function | Statement
+ItemOrComment = Item | Comment
 
-Function      = "fn" Identifier "(" [ ParameterList ] ")" [ "->" Type ] "{" { Statement } "}"
+Item = Function
+     | StructDefinition
+     | StaticVariableDeclaration
+     | Statement
+
+Function = [ "unsafe" ] "fn" Identifier "(" [ ParameterList ] ")" [ "->" Type ] BlockExpression
+
+StructDefinition = "struct" Identifier "{" { StructField [ "," ] } "}"
+
+StructField = Identifier ":" Type
+
+StaticVariableDeclaration = "static" Identifier ":" Type "=" Expression ";"
 
 ParameterList = Parameter { "," Parameter }
 
-Parameter     = Identifier ":" Type
+Parameter = Identifier ":" Type
 
-Type          = "i32" | "f64" | "bool" | "str" | Identifier
+Type = [ "&" [ "mut" ] ] BaseType
 
-Statement     = LetStatement | ExpressionStatement | ReturnStatement
+BaseType = "i32" | "i64" | "f32" | "f64" | "bool" | "str" | Identifier
 
-LetStatement  = "let" Identifier [ ":" Type ] [ "=" Expression ] ";"
+Statement = LetStatement
+          | ExpressionStatement
+          | ReturnStatement
+          | BlockExpression
+          | UnsafeBlockExpression
+          | WhileStatement
+          | ForStatement
+          | IfExpression
+
+LetStatement = "let" [ "mut" ] Identifier [ ":" Type ] [ "=" Expression ] ";"
 
 ReturnStatement = "return" [ Expression ] ";"
 
 ExpressionStatement = Expression ";"
 
-Expression    = Literal
-                | Identifier
-                | FunctionCall
-                | BinaryExpression
-                | "(" Expression ")"
+BlockExpression = "{" { Statement } [ Expression ] "}"
 
-FunctionCall  = Identifier "(" [ ArgumentList ] ")"
+UnsafeBlockExpression = "unsafe" BlockExpression
 
-ArgumentList  = Expression { "," Expression }
+WhileStatement = "while" Expression BlockExpression
 
-BinaryExpression = Expression BinaryOperator Expression
+ForStatement = "for" Identifier "in" Expression BlockExpression
 
-BinaryOperator = "+" | "-" | "*" | "/" | "==" | "!=" | "<" | ">" | "<=" | ">="
+IfExpression = "if" Expression BlockExpression [ "else" ( BlockExpression | IfExpression ) ]
 
-Literal       = IntegerLiteral | FloatLiteral | BooleanLiteral | StringLiteral
+Expression = AssignmentExpression
+
+AssignmentExpression = LogicalOrExpression [ "=" AssignmentExpression ]
+
+LogicalOrExpression = LogicalAndExpression { "||" LogicalAndExpression }
+
+LogicalAndExpression = EqualityExpression { "&&" EqualityExpression }
+
+EqualityExpression = RelationalExpression { ( "==" | "!=" ) RelationalExpression }
+
+RelationalExpression = AdditiveExpression { ( "<" | ">" | "<=" | ">=" ) AdditiveExpression }
+
+AdditiveExpression = MultiplicativeExpression { ( "+" | "-" ) MultiplicativeExpression }
+
+MultiplicativeExpression = UnaryExpression { ( "*" | "/" ) UnaryExpression }
+
+UnaryExpression = [ "-" | "!" ] PostfixExpression
+
+PostfixExpression = PrimaryExpression { PostfixOperator }
+
+PostfixOperator = "." Identifier
+                | "(" [ ArgumentList ] ")"
+                | "!" "(" [ MacroArgumentList ] ")"
+
+PrimaryExpression = Literal
+                  | Identifier
+                  | "(" Expression ")"
+                  | BlockExpression
+                  | UnsafeBlockExpression
+                  | IfExpression
+
+ArgumentList = Expression { "," Expression }
+
+MacroArgumentList = [ MacroArgument { "," MacroArgument } ]
+
+MacroArgument = Expression | Statement
+
+Literal = IntegerLiteral
+        | FloatLiteral
+        | BooleanLiteral
+        | StringLiteral
+        | CharLiteral
 
 IntegerLiteral = Digit { Digit }
 
-FloatLiteral  = Digit { Digit } "." Digit { Digit }
+FloatLiteral = Digit { Digit } "." Digit { Digit }
 
 BooleanLiteral = "true" | "false"
 
-StringLiteral = "\"" { Character } "\""
+StringLiteral = "\"" { StringCharacter } "\""
 
-Identifier    = Letter { Letter | Digit | "_" }
+CharLiteral = "'" Character "'"
 
-Digit         = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"
+StringCharacter = Character | EscapeSequence
 
-Letter        = "a" | "b" | ... | "z" | "A" | "B" | ... | "Z"
+Character = Any valid character except for the double quote (") and backslash (\), or use of EscapeSequence
 
-Character     = Any valid character except for the double quote (")
+EscapeSequence = "\\" ( "\"" | "'" | "\\" | "n" | "t" | "r" )
+
+Identifier = Letter { Letter | Digit | "_" }
+
+Digit = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"
+
+Letter = "a" | "b" | ... | "z" | "A" | "B" | ... | "Z"
+
+Comment = SingleLineComment | MultiLineComment
+
+SingleLineComment = "//" { AnyCharacterExceptNewline } ( Newline | EOF )
+
+MultiLineComment = "/*" { AnyCharacterExceptEndComment } "*/"
+
+AnyCharacterExceptNewline = any character except newline
+
+AnyCharacterExceptEndComment = any character except "*/"

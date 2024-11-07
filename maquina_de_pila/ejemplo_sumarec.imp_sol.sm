@@ -1,0 +1,45 @@
+start: skip
+enter 2
+alloc 2
+mark
+pusha Lmain
+call
+halt
+Lsumarec: skip
+enter 4
+alloc 0
+loadr -3
+print
+loadr -3
+push  1
+lt
+jmpz L0
+push  0
+storer -4
+return 4
+goto L1
+L0: skip
+L1: skip
+loadr -3
+alloc 1
+loadr -3
+push  1
+sub
+mark
+pusha Lsumarec
+call
+add
+storer -4
+return 4
+Lmain: skip
+enter 3
+alloc 1
+alloc 1
+push  4
+mark
+pusha Lsumarec
+call
+storer 1
+loadr 1
+print
+return 3
