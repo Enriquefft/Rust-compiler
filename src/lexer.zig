@@ -1,9 +1,8 @@
 const std = @import("std");
 
 pub const log_level: std.log.Level = .info;
-
 /// Represents the different types of tokens that can be identified in a rust program
-const TokenType = enum {
+pub const TokenType = enum {
     /// Represents an integer number.
     Integer,
 
@@ -51,7 +50,7 @@ const TokenType = enum {
 
     /// ':' used to declare a variable type.
     DoubleColon,
-    /// '=' used to assign a value to a variable.
+    /// '=' used to assign a lexeme to a variable.
     Assign,
 
     /// Comma (,)
@@ -105,28 +104,37 @@ const TokenType = enum {
 
     /// ID
     Identifier,
+
+    /// Comments (they are ignored during lexing)
+    // SingleCommentSlash,
+    // MultiCommentStart,
+    // MultiCommentEnd,
+    DocString,
+
+    // Pending implementation
+    Struct
 };
 
-/// A token with its type and optional value. Used by the parser to interpret the expression.
+/// A token with its type and optional lexeme. Used by the parser to interpret the expression.
 pub const Token = struct {
-    kind: TokenType,
-    value: []const u8 = "",
+    token_type: TokenType,
+    lexeme: []const u8 = "",
 
-    fn print_value(self: Token, writer: anytype, name: []const u8) !void {
-        try writer.print("{s}: {s}\n", .{ name, self.value });
+    fn print_lexeme(self: Token, writer: anytype, name: []const u8) !void {
+        try writer.print("{s}: {s}\n", .{ name, self.lexeme });
     }
 
     /// Formats the token for display.
     pub fn format(self: Token, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
-        switch (self.kind) {
+        switch (self.token_type) {
             // Numeric tokens
-            TokenType.Integer => try print_value(self, writer, "Integer"),
+            TokenType.Integer => try print_lexeme(self, writer, "Integer"),
 
-            TokenType.Float => try print_value(self, writer, "Float"),
+            TokenType.Float => try print_lexeme(self, writer, "Float"),
             // Literal tokens
-            TokenType.Boolean => try print_value(self, writer, "Boolean"),
+            TokenType.Boolean => try print_lexeme(self, writer, "Boolean"),
 
-            TokenType.String => try print_value(self, writer, "String"),
+            TokenType.String => try print_lexeme(self, writer, "String"),
             // Function-related tokens
             TokenType.FN => try writer.print("fun", .{}),
             TokenType.FunReturn => try writer.print("return", .{}),
@@ -139,7 +147,7 @@ pub const Token = struct {
             TokenType.If => try writer.print("if", .{}),
             TokenType.Else => try writer.print("else", .{}),
 
-            // TODO: print the correct value ({})
+            // TODO: print the correct lexeme ({})
             TokenType.LeftBrace => try writer.print("LB", .{}),
             TokenType.RightBrace => try writer.print("RB", .{}),
             // Assignment tokens
@@ -171,9 +179,9 @@ pub const Token = struct {
             TokenType.Equal => try writer.print("==", .{}),
             TokenType.Different => try writer.print("!=", .{}),
             // Identifier and type tokens
-            TokenType.Identifier => try print_value(self, writer, "ID"),
+            TokenType.Identifier => try print_lexeme(self, writer, "ID"),
 
-            TokenType.Type => try print_value(self, writer, "Type"),
+            TokenType.Type => try print_lexeme(self, writer, "Type"),
             // End of file and invalid tokens
             TokenType.EndOfFile => try writer.print("EOF", .{}),
             TokenType.Invalid => try writer.print("Invalid token", .{}),
@@ -185,6 +193,81 @@ pub const Token = struct {
 pub const Lexer = struct {
     input: []const u8,
     current: usize = 0,
+
+    /// Retrieves a list of tokens from the input.
+    ///
+    /// # Returns
+    /// A list of `Token` representing the parts of the expression.
+    pub fn tokenize(self: *Lexer) ![]Token {
+        var tokens = std.ArrayList(Token).init(std.heap.page_allocator);
+        while (true) {
+            const token = self.next_token();
+            if (token.token_type == .EndOfFile) {
+                break;
+            }
+            try tokens.append(token);
+        }
+        return try tokens.toOwnedSlice();
+    }
+
+    /// Retrieves the next token from the input.
+    ///
+    /// # Returns
+    /// A `Token` representing the next part of the expression.
+    pub fn next_token(self: *Lexer) Token {
+        // Skip any whitespace
+
+        while (self.current < self.input.len and is_whitespace(self.input[self.current])) {
+            self.current += 1;
+        }
+
+        if (self.current >= self.input.len) {
+            return Token{ .token_type = .EndOfFile };
+        }
+
+        const c = self.input[self.current];
+        self.current += 1;
+
+        switch (c) {
+            // match single characters
+            '{' => return Token{ .token_type = .LeftBrace },
+            '}' => return Token{ .token_type = .RightBrace },
+            ':' => return Token{ .token_type = .DoubleColon },
+            ',' => return Token{ .token_type = .Comma },
+            ';' => return Token{ .token_type = .DotComma },
+            '(' => return Token{ .token_type = .LeftParen },
+            ')' => return Token{ .token_type = .RightParen },
+
+            '+' => return Token{ .token_type = .Plus },
+            '^' => return Token{ .token_type = .Power },
+            '%' => return Token{ .token_type = .Modulo },
+            '&' => return Token{ .token_type = .Ampersand },
+            '!' => return Token{ .token_type = .Exclamation },
+            '"' => return parse_string(self),
+            '*' => return Token{ .token_type = .Multiply }, // overlap with */, but is handled when parsing /*
+            // '/' => return Token{ .token_type = .Divide }, // overlap with /*, //, ///
+            // '=' => return Token{ .token_type = .Assign }, // overlap with ==
+            // '-' => return Token{ .token_type = .Minus }, // overlap with ->
+            // '!' => return Token{ .token_type = .Factorial }, // overlap with !=
+            // '<' => return Token{ .token_type = .LessThan }, // overlap with <=
+            // '>' => return Token{ .token_type = .GreaterThan }, // overlap with >=
+            else => {
+                if (is_small_char_begin(c)) {
+                    return parse_small_char(self, c);
+                }
+                if (is_digit(c)) {
+                    self.current -= 1;
+                    return parse_digit(self);
+                }
+                if (is_letter(c)) {
+                    self.current -= 1;
+                    return parse_keyword(self);
+                }
+
+                return Token{ .token_type = .Invalid };
+            },
+        }
+    }
 
     fn parse_keyword(self: *Lexer) Token {
         // read word with whitespace
@@ -198,80 +281,80 @@ pub const Lexer = struct {
         const word = self.input[start..self.current];
 
         if (std.mem.eql(u8, word, "fn")) {
-            return Token{ .kind = .FN };
+            return Token{ .token_type = .FN };
         }
         if (std.mem.eql(u8, word, "return")) {
-            return Token{ .kind = .FunReturn };
+            return Token{ .token_type = .FunReturn };
         }
         if (std.mem.eql(u8, word, "let")) {
-            return Token{ .kind = .Let };
+            return Token{ .token_type = .Let };
         }
         if (std.mem.eql(u8, word, "mut")) {
-            return Token{ .kind = .Mut };
+            return Token{ .token_type = .Mut };
         }
         if (std.mem.eql(u8, word, "static")) {
-            return Token{ .kind = .Static };
+            return Token{ .token_type = .Static };
         }
 
         if (std.mem.eql(u8, word, "unsafe")) {
-            return Token{ .kind = .Unsafe };
+            return Token{ .token_type = .Unsafe };
         }
 
         if (std.mem.eql(u8, word, "while")) {
-            return Token{ .kind = .While };
+            return Token{ .token_type = .While };
         }
         if (std.mem.eql(u8, word, "for")) {
-            return Token{ .kind = .For };
+            return Token{ .token_type = .For };
         }
         if (std.mem.eql(u8, word, "in")) {
-            return Token{ .kind = .In };
+            return Token{ .token_type = .In };
         }
         if (std.mem.eql(u8, word, "if")) {
-            return Token{ .kind = .If };
+            return Token{ .token_type = .If };
         }
         if (std.mem.eql(u8, word, "else")) {
-            return Token{ .kind = .Else };
+            return Token{ .token_type = .Else };
         }
 
         // types (i32, i64, f32, f64, bool, str)
         if (std.mem.eql(u8, word, "i32")) {
-            return Token{ .kind = .Type, .value = word };
+            return Token{ .token_type = .Type, .lexeme = word };
         }
         if (std.mem.eql(u8, word, "f32")) {
-            return Token{ .kind = .Type, .value = word };
+            return Token{ .token_type = .Type, .lexeme = word };
         }
         if (std.mem.eql(u8, word, "i64")) {
-            return Token{ .kind = .Type, .value = word };
+            return Token{ .token_type = .Type, .lexeme = word };
         }
         if (std.mem.eql(u8, word, "f64")) {
-            return Token{ .kind = .Type, .value = word };
+            return Token{ .token_type = .Type, .lexeme = word };
         }
         if (std.mem.eql(u8, word, "bool")) {
-            return Token{ .kind = .Type, .value = word };
+            return Token{ .token_type = .Type, .lexeme = word };
         }
         if (std.mem.eql(u8, word, "str")) {
-            return Token{ .kind = .Type, .value = word };
+            return Token{ .token_type = .Type, .lexeme = word };
         }
 
-        // boolean values
+        // boolean lexemes
         if (std.mem.eql(u8, word, "true")) {
-            return Token{ .kind = .Boolean, .value = word };
+            return Token{ .token_type = .Boolean, .lexeme = word };
         }
         if (std.mem.eql(u8, word, "false")) {
-            return Token{ .kind = .Boolean, .value = word };
+            return Token{ .token_type = .Boolean, .lexeme = word };
         }
 
-        return Token{ .kind = .Identifier, .value = word };
+        return Token{ .token_type = .Identifier, .lexeme = word };
     }
 
     /// parses a possible 1-3 char symbol
     fn parse_small_char(self: *Lexer, prev: u8) Token {
         // test for any of:
-        // =, ==, -, ->, !, !=, <, <=, >, >=
+        // =, ==, -, ->, !, !=, <, <=, >, >=, /, /*, //, ///
 
         // exceeded input
         if (self.current >= self.input.len) {
-            return Token{ .kind = .EndOfFile };
+            return Token{ .token_type = .EndOfFile };
         }
 
         const next = self.input[self.current];
@@ -279,39 +362,82 @@ pub const Lexer = struct {
         if (prev == '=') {
             if (next == '=') {
                 self.current += 1;
-                return Token{ .kind = .Equal };
+                return Token{ .token_type = .Equal };
             }
-            return Token{ .kind = .Assign };
+            return Token{ .token_type = .Assign };
         }
         if (prev == '-') {
             if (next == '>') {
                 self.current += 1;
-                return Token{ .kind = .Arrow };
+                return Token{ .token_type = .Arrow };
             }
-            return Token{ .kind = .Minus };
+            return Token{ .token_type = .Minus };
         }
         if (prev == '!') {
             if (next == '=') {
                 self.current += 1;
-                return Token{ .kind = .Different };
+                return Token{ .token_type = .Different };
             }
-            return Token{ .kind = .Factorial };
+            return Token{ .token_type = .Factorial };
         }
         if (prev == '<') {
             if (next == '=') {
                 self.current += 1;
-                return Token{ .kind = .LessThanOrEqual };
+                return Token{ .token_type = .LessThanOrEqual };
             }
-            return Token{ .kind = .LessThan };
+            return Token{ .token_type = .LessThan };
         }
         if (prev == '>') {
             if (next == '=') {
                 self.current += 1;
-                return Token{ .kind = .GreaterThanOrEqual };
+                return Token{ .token_type = .GreaterThanOrEqual };
             }
-            return Token{ .kind = .GreaterThan };
+            return Token{ .token_type = .GreaterThan };
         }
-        return Token{ .kind = .Invalid };
+        //comments
+
+        if (prev == '/') {
+            if (next == '/') {
+                self.current += 1;
+                if (self.current >= self.input.len) {
+                    return Token{ .token_type = .EndOfFile };
+                } else if (self.input[self.current] == '/') {
+                    self.current += 1;
+
+                    // skip whitespace
+                    while (self.current < self.input.len and is_whitespace(self.input[self.current])) {
+                        self.current += 1;
+                    }
+
+                    const doc_string_start: usize = self.current;
+                    while (self.current < self.input.len and self.input[self.current] != '\n') {
+                        self.current += 1;
+                    }
+
+                    return Token{ .token_type = .DocString, .lexeme = self.input[doc_string_start..self.current] };
+                }
+
+                // single line comment
+                while (self.current < self.input.len and self.input[self.current] != '\n') {
+                    self.current += 1;
+                }
+                return self.next_token();
+            }
+            if (next == '*') {
+                // multi line comment
+                while (self.current < self.input.len) {
+                    if (self.input[self.current] == '*' and self.input[self.current + 1] == '/') {
+                        self.current += 2;
+                        break;
+                    }
+                    self.current += 1;
+                }
+                return self.next_token();
+            }
+            return Token{ .token_type = .Divide };
+        }
+
+        return Token{ .token_type = .Invalid };
     }
 
     fn lookup_integer(self: *Lexer) void {
@@ -328,18 +454,18 @@ pub const Lexer = struct {
         const int_value = self.input[start..self.current];
 
         if (self.current >= self.input.len) {
-            return Token{ .kind = .Integer, .value = int_value };
+            return Token{ .token_type = .Integer, .lexeme = int_value };
         }
 
         if (!is_dot(self.input[self.current])) {
-            return Token{ .kind = .Integer, .value = int_value };
+            return Token{ .token_type = .Integer, .lexeme = int_value };
         }
         // dot found
         self.current += 1;
         lookup_integer(self);
 
         const float_value = self.input[start..self.current];
-        return Token{ .kind = .Float, .value = float_value };
+        return Token{ .token_type = .Float, .lexeme = float_value };
     }
 
     fn parse_string(self: *Lexer) Token {
@@ -348,71 +474,12 @@ pub const Lexer = struct {
             self.current += 1;
         }
         if (self.current >= self.input.len) {
-            return Token{ .kind = .Invalid };
+            return Token{ .token_type = .Invalid };
         }
         self.current += 1;
 
         const string_value = self.input[start .. self.current - 1];
-        return Token{ .kind = .String, .value = string_value };
-    }
-
-    /// Retrieves the next token from the input.
-    ///
-    /// # Returns
-    /// A `Token` representing the next part of the expression.
-    pub fn next_token(self: *Lexer) Token {
-        // Skip any whitespace
-
-        while (self.current < self.input.len and is_whitespace(self.input[self.current])) {
-            self.current += 1;
-        }
-
-        if (self.current >= self.input.len) {
-            return Token{ .kind = .EndOfFile };
-        }
-
-        const c = self.input[self.current];
-        self.current += 1;
-
-        switch (c) {
-            // match single characters
-            '{' => return Token{ .kind = .LeftBrace },
-            '}' => return Token{ .kind = .RightBrace },
-            ':' => return Token{ .kind = .DoubleColon },
-            ',' => return Token{ .kind = .Comma },
-            ';' => return Token{ .kind = .DotComma },
-            '(' => return Token{ .kind = .LeftParen },
-            ')' => return Token{ .kind = .RightParen },
-
-            '+' => return Token{ .kind = .Plus },
-            '*' => return Token{ .kind = .Multiply },
-            '/' => return Token{ .kind = .Divide },
-            '^' => return Token{ .kind = .Power },
-            '%' => return Token{ .kind = .Modulo },
-            '&' => return Token{ .kind = .Ampersand },
-            '!' => return Token{ .kind = .Exclamation },
-            '"' => return parse_string(self),
-            // '=' => return Token{ .kind = .Assign }, // overlap with ==
-            // '-' => return Token{ .kind = .Minus }, // overlap with ->
-            // '!' => return Token{ .kind = .Factorial }, // overlap with !=
-            // '<' => return Token{ .kind = .LessThan }, // overlap with <=
-            // '>' => return Token{ .kind = .GreaterThan }, // overlap with >=
-            else => {
-                if (is_small_char_begin(c)) {
-                    return parse_small_char(self, c);
-                }
-                if (is_digit(c)) {
-                    self.current -= 1;
-                    return parse_digit(self);
-                }
-                if (is_letter(c)) {
-                    self.current -= 1;
-                    return parse_keyword(self);
-                }
-
-                return Token{ .kind = .Invalid };
-            },
-        }
+        return Token{ .token_type = .String, .lexeme = string_value };
     }
 };
 
@@ -423,7 +490,7 @@ pub const Lexer = struct {
 /// # Returns
 /// `true` if the character could be a small char, `false` otherwise.
 fn is_small_char_begin(c: u8) bool {
-    return c == '<' or c == '>' or c == '=' or c == '!' or c == '-';
+    return c == '<' or c == '>' or c == '=' or c == '!' or c == '-' or c == '/' or c == '*';
 }
 
 /// Checks if a character is a digit.
@@ -485,9 +552,9 @@ fn is_whitespace(c: u8) bool {
 test "simple integer literal" {
     const input = "42;";
     const expected_tokens = [_]Token{
-        Token{ .kind = .Integer, .value = "42" },
-        Token{ .kind = .DotComma },
-        Token{ .kind = .EndOfFile },
+        Token{ .token_type = .Integer, .lexeme = "42" },
+        Token{ .token_type = .DotComma },
+        Token{ .token_type = .EndOfFile },
     };
 
     try test_lexer(input, &expected_tokens);
@@ -496,12 +563,12 @@ test "simple integer literal" {
 test "variable declaration with integer assignment" {
     const input = "let x = 10;";
     const expected_tokens = [_]Token{
-        Token{ .kind = .Let },
-        Token{ .kind = .Identifier, .value = "x" },
-        Token{ .kind = .Assign },
-        Token{ .kind = .Integer, .value = "10" },
-        Token{ .kind = .DotComma },
-        Token{ .kind = .EndOfFile },
+        Token{ .token_type = .Let },
+        Token{ .token_type = .Identifier, .lexeme = "x" },
+        Token{ .token_type = .Assign },
+        Token{ .token_type = .Integer, .lexeme = "10" },
+        Token{ .token_type = .DotComma },
+        Token{ .token_type = .EndOfFile },
     };
 
     try test_lexer(input, &expected_tokens);
@@ -510,14 +577,14 @@ test "variable declaration with integer assignment" {
 test "variable declaration with type and float assignment" {
     const input = "let y: f64 = 3.14;";
     const expected_tokens = [_]Token{
-        Token{ .kind = .Let },
-        Token{ .kind = .Identifier, .value = "y" },
-        Token{ .kind = .DoubleColon },
-        Token{ .kind = .Type, .value = "f64" },
-        Token{ .kind = .Assign },
-        Token{ .kind = .Float, .value = "3.14" },
-        Token{ .kind = .DotComma },
-        Token{ .kind = .EndOfFile },
+        Token{ .token_type = .Let },
+        Token{ .token_type = .Identifier, .lexeme = "y" },
+        Token{ .token_type = .DoubleColon },
+        Token{ .token_type = .Type, .lexeme = "f64" },
+        Token{ .token_type = .Assign },
+        Token{ .token_type = .Float, .lexeme = "3.14" },
+        Token{ .token_type = .DotComma },
+        Token{ .token_type = .EndOfFile },
     };
 
     try test_lexer(input, &expected_tokens);
@@ -526,13 +593,13 @@ test "variable declaration with type and float assignment" {
 test "empty function declaration" {
     const input = "fn main() {}";
     const expected_tokens = [_]Token{
-        Token{ .kind = .FN },
-        Token{ .kind = .Identifier, .value = "main" },
-        Token{ .kind = .LeftParen },
-        Token{ .kind = .RightParen },
-        Token{ .kind = .LeftBrace },
-        Token{ .kind = .RightBrace },
-        Token{ .kind = .EndOfFile },
+        Token{ .token_type = .FN },
+        Token{ .token_type = .Identifier, .lexeme = "main" },
+        Token{ .token_type = .LeftParen },
+        Token{ .token_type = .RightParen },
+        Token{ .token_type = .LeftBrace },
+        Token{ .token_type = .RightBrace },
+        Token{ .token_type = .EndOfFile },
     };
 
     try test_lexer(input, &expected_tokens);
@@ -541,27 +608,27 @@ test "empty function declaration" {
 test "function with parameters and return type" {
     const input = "fn add(a: i32, b: i32) -> i32 { return a + b; }";
     const expected_tokens = [_]Token{
-        Token{ .kind = .FN },
-        Token{ .kind = .Identifier, .value = "add" },
-        Token{ .kind = .LeftParen },
-        Token{ .kind = .Identifier, .value = "a" },
-        Token{ .kind = .DoubleColon },
-        Token{ .kind = .Type, .value = "i32" },
-        Token{ .kind = .Comma },
-        Token{ .kind = .Identifier, .value = "b" },
-        Token{ .kind = .DoubleColon },
-        Token{ .kind = .Type, .value = "i32" },
-        Token{ .kind = .RightParen },
-        Token{ .kind = .Arrow },
-        Token{ .kind = .Type, .value = "i32" },
-        Token{ .kind = .LeftBrace },
-        Token{ .kind = .FunReturn },
-        Token{ .kind = .Identifier, .value = "a" },
-        Token{ .kind = .Plus },
-        Token{ .kind = .Identifier, .value = "b" },
-        Token{ .kind = .DotComma },
-        Token{ .kind = .RightBrace },
-        Token{ .kind = .EndOfFile },
+        Token{ .token_type = .FN },
+        Token{ .token_type = .Identifier, .lexeme = "add" },
+        Token{ .token_type = .LeftParen },
+        Token{ .token_type = .Identifier, .lexeme = "a" },
+        Token{ .token_type = .DoubleColon },
+        Token{ .token_type = .Type, .lexeme = "i32" },
+        Token{ .token_type = .Comma },
+        Token{ .token_type = .Identifier, .lexeme = "b" },
+        Token{ .token_type = .DoubleColon },
+        Token{ .token_type = .Type, .lexeme = "i32" },
+        Token{ .token_type = .RightParen },
+        Token{ .token_type = .Arrow },
+        Token{ .token_type = .Type, .lexeme = "i32" },
+        Token{ .token_type = .LeftBrace },
+        Token{ .token_type = .FunReturn },
+        Token{ .token_type = .Identifier, .lexeme = "a" },
+        Token{ .token_type = .Plus },
+        Token{ .token_type = .Identifier, .lexeme = "b" },
+        Token{ .token_type = .DotComma },
+        Token{ .token_type = .RightBrace },
+        Token{ .token_type = .EndOfFile },
     };
 
     try test_lexer(input, &expected_tokens);
@@ -570,12 +637,12 @@ test "function with parameters and return type" {
 test "string literal assignment" {
     const input = "let s = \"Hello, world!\";";
     const expected_tokens = [_]Token{
-        Token{ .kind = .Let },
-        Token{ .kind = .Identifier, .value = "s" },
-        Token{ .kind = .Assign },
-        Token{ .kind = .String, .value = "Hello, world!" },
-        Token{ .kind = .DotComma },
-        Token{ .kind = .EndOfFile },
+        Token{ .token_type = .Let },
+        Token{ .token_type = .Identifier, .lexeme = "s" },
+        Token{ .token_type = .Assign },
+        Token{ .token_type = .String, .lexeme = "Hello, world!" },
+        Token{ .token_type = .DotComma },
+        Token{ .token_type = .EndOfFile },
     };
 
     try test_lexer(input, &expected_tokens);
@@ -584,12 +651,12 @@ test "string literal assignment" {
 test "boolean literal assignment" {
     const input = "let flag = true;";
     const expected_tokens = [_]Token{
-        Token{ .kind = .Let },
-        Token{ .kind = .Identifier, .value = "flag" },
-        Token{ .kind = .Assign },
-        Token{ .kind = .Boolean, .value = "true" },
-        Token{ .kind = .DotComma },
-        Token{ .kind = .EndOfFile },
+        Token{ .token_type = .Let },
+        Token{ .token_type = .Identifier, .lexeme = "flag" },
+        Token{ .token_type = .Assign },
+        Token{ .token_type = .Boolean, .lexeme = "true" },
+        Token{ .token_type = .DotComma },
+        Token{ .token_type = .EndOfFile },
     };
 
     try test_lexer(input, &expected_tokens);
@@ -598,15 +665,15 @@ test "boolean literal assignment" {
 test "function call in expression" {
     const input = "let result = factorial(5);";
     const expected_tokens = [_]Token{
-        Token{ .kind = .Let },
-        Token{ .kind = .Identifier, .value = "result" },
-        Token{ .kind = .Assign },
-        Token{ .kind = .Identifier, .value = "factorial" },
-        Token{ .kind = .LeftParen },
-        Token{ .kind = .Integer, .value = "5" },
-        Token{ .kind = .RightParen },
-        Token{ .kind = .DotComma },
-        Token{ .kind = .EndOfFile },
+        Token{ .token_type = .Let },
+        Token{ .token_type = .Identifier, .lexeme = "result" },
+        Token{ .token_type = .Assign },
+        Token{ .token_type = .Identifier, .lexeme = "factorial" },
+        Token{ .token_type = .LeftParen },
+        Token{ .token_type = .Integer, .lexeme = "5" },
+        Token{ .token_type = .RightParen },
+        Token{ .token_type = .DotComma },
+        Token{ .token_type = .EndOfFile },
     };
 
     try test_lexer(input, &expected_tokens);
@@ -615,21 +682,21 @@ test "function call in expression" {
 test "complex expression" {
     const input = "x = (a + b) * c / d - e;";
     const expected_tokens = [_]Token{
-        Token{ .kind = .Identifier, .value = "x" },
-        Token{ .kind = .Assign },
-        Token{ .kind = .LeftParen },
-        Token{ .kind = .Identifier, .value = "a" },
-        Token{ .kind = .Plus },
-        Token{ .kind = .Identifier, .value = "b" },
-        Token{ .kind = .RightParen },
-        Token{ .kind = .Multiply },
-        Token{ .kind = .Identifier, .value = "c" },
-        Token{ .kind = .Divide },
-        Token{ .kind = .Identifier, .value = "d" },
-        Token{ .kind = .Minus },
-        Token{ .kind = .Identifier, .value = "e" },
-        Token{ .kind = .DotComma },
-        Token{ .kind = .EndOfFile },
+        Token{ .token_type = .Identifier, .lexeme = "x" },
+        Token{ .token_type = .Assign },
+        Token{ .token_type = .LeftParen },
+        Token{ .token_type = .Identifier, .lexeme = "a" },
+        Token{ .token_type = .Plus },
+        Token{ .token_type = .Identifier, .lexeme = "b" },
+        Token{ .token_type = .RightParen },
+        Token{ .token_type = .Multiply },
+        Token{ .token_type = .Identifier, .lexeme = "c" },
+        Token{ .token_type = .Divide },
+        Token{ .token_type = .Identifier, .lexeme = "d" },
+        Token{ .token_type = .Minus },
+        Token{ .token_type = .Identifier, .lexeme = "e" },
+        Token{ .token_type = .DotComma },
+        Token{ .token_type = .EndOfFile },
     };
 
     try test_lexer(input, &expected_tokens);
@@ -637,32 +704,32 @@ test "complex expression" {
 test "function with local variable and return" {
     const input = "fn compute(x: i32, y: i32) -> i32 { let result = x * y; return result; }";
     const expected_tokens = [_]Token{
-        Token{ .kind = .FN },
-        Token{ .kind = .Identifier, .value = "compute" },
-        Token{ .kind = .LeftParen },
-        Token{ .kind = .Identifier, .value = "x" },
-        Token{ .kind = .DoubleColon },
-        Token{ .kind = .Type, .value = "i32" },
-        Token{ .kind = .Comma },
-        Token{ .kind = .Identifier, .value = "y" },
-        Token{ .kind = .DoubleColon },
-        Token{ .kind = .Type, .value = "i32" },
-        Token{ .kind = .RightParen },
-        Token{ .kind = .Arrow },
-        Token{ .kind = .Type, .value = "i32" },
-        Token{ .kind = .LeftBrace },
-        Token{ .kind = .Let },
-        Token{ .kind = .Identifier, .value = "result" },
-        Token{ .kind = .Assign },
-        Token{ .kind = .Identifier, .value = "x" },
-        Token{ .kind = .Multiply },
-        Token{ .kind = .Identifier, .value = "y" },
-        Token{ .kind = .DotComma },
-        Token{ .kind = .FunReturn },
-        Token{ .kind = .Identifier, .value = "result" },
-        Token{ .kind = .DotComma },
-        Token{ .kind = .RightBrace },
-        Token{ .kind = .EndOfFile },
+        Token{ .token_type = .FN },
+        Token{ .token_type = .Identifier, .lexeme = "compute" },
+        Token{ .token_type = .LeftParen },
+        Token{ .token_type = .Identifier, .lexeme = "x" },
+        Token{ .token_type = .DoubleColon },
+        Token{ .token_type = .Type, .lexeme = "i32" },
+        Token{ .token_type = .Comma },
+        Token{ .token_type = .Identifier, .lexeme = "y" },
+        Token{ .token_type = .DoubleColon },
+        Token{ .token_type = .Type, .lexeme = "i32" },
+        Token{ .token_type = .RightParen },
+        Token{ .token_type = .Arrow },
+        Token{ .token_type = .Type, .lexeme = "i32" },
+        Token{ .token_type = .LeftBrace },
+        Token{ .token_type = .Let },
+        Token{ .token_type = .Identifier, .lexeme = "result" },
+        Token{ .token_type = .Assign },
+        Token{ .token_type = .Identifier, .lexeme = "x" },
+        Token{ .token_type = .Multiply },
+        Token{ .token_type = .Identifier, .lexeme = "y" },
+        Token{ .token_type = .DotComma },
+        Token{ .token_type = .FunReturn },
+        Token{ .token_type = .Identifier, .lexeme = "result" },
+        Token{ .token_type = .DotComma },
+        Token{ .token_type = .RightBrace },
+        Token{ .token_type = .EndOfFile },
     };
 
     try test_lexer(input, &expected_tokens);
@@ -684,67 +751,67 @@ test "Test for code snippet 1" {
     ;
 
     const expected_tokens = [_]Token{
-        Token{ .kind = .FN },
-        Token{ .kind = .Identifier, .value = "foo" },
-        Token{ .kind = .LeftParen },
-        Token{ .kind = .Identifier, .value = "x" },
-        Token{ .kind = .DoubleColon },
-        Token{ .kind = .Type, .value = "i32" },
-        Token{ .kind = .RightParen },
-        Token{ .kind = .LeftBrace },
+        Token{ .token_type = .FN },
+        Token{ .token_type = .Identifier, .lexeme = "foo" },
+        Token{ .token_type = .LeftParen },
+        Token{ .token_type = .Identifier, .lexeme = "x" },
+        Token{ .token_type = .DoubleColon },
+        Token{ .token_type = .Type, .lexeme = "i32" },
+        Token{ .token_type = .RightParen },
+        Token{ .token_type = .LeftBrace },
 
-        Token{ .kind = .Identifier, .value = "println" },
-        Token{ .kind = .Exclamation },
-        Token{ .kind = .LeftParen },
-        Token{ .kind = .String, .value = "{}" },
-        Token{ .kind = .Comma },
-        Token{ .kind = .Identifier, .value = "x" },
-        Token{ .kind = .Plus },
-        Token{ .kind = .Integer, .value = "1" },
-        Token{ .kind = .RightParen },
-        Token{ .kind = .DotComma },
+        Token{ .token_type = .Identifier, .lexeme = "println" },
+        Token{ .token_type = .Exclamation },
+        Token{ .token_type = .LeftParen },
+        Token{ .token_type = .String, .lexeme = "{}" },
+        Token{ .token_type = .Comma },
+        Token{ .token_type = .Identifier, .lexeme = "x" },
+        Token{ .token_type = .Plus },
+        Token{ .token_type = .Integer, .lexeme = "1" },
+        Token{ .token_type = .RightParen },
+        Token{ .token_type = .DotComma },
 
-        Token{ .kind = .RightBrace },
+        Token{ .token_type = .RightBrace },
 
-        Token{ .kind = .FN },
-        Token{ .kind = .Identifier, .value = "main" },
-        Token{ .kind = .LeftParen },
-        Token{ .kind = .RightParen },
-        Token{ .kind = .LeftBrace },
+        Token{ .token_type = .FN },
+        Token{ .token_type = .Identifier, .lexeme = "main" },
+        Token{ .token_type = .LeftParen },
+        Token{ .token_type = .RightParen },
+        Token{ .token_type = .LeftBrace },
 
-        Token{ .kind = .Let },
-        Token{ .kind = .Identifier, .value = "x" },
-        Token{ .kind = .Assign },
-        Token{ .kind = .Integer, .value = "20" },
-        Token{ .kind = .DotComma },
+        Token{ .token_type = .Let },
+        Token{ .token_type = .Identifier, .lexeme = "x" },
+        Token{ .token_type = .Assign },
+        Token{ .token_type = .Integer, .lexeme = "20" },
+        Token{ .token_type = .DotComma },
 
-        Token{ .kind = .Identifier, .value = "println" },
-        Token{ .kind = .Exclamation },
-        Token{ .kind = .LeftParen },
-        Token{ .kind = .String, .value = "{}" },
-        Token{ .kind = .Comma },
-        Token{ .kind = .Identifier, .value = "x" },
-        Token{ .kind = .RightParen },
-        Token{ .kind = .DotComma },
+        Token{ .token_type = .Identifier, .lexeme = "println" },
+        Token{ .token_type = .Exclamation },
+        Token{ .token_type = .LeftParen },
+        Token{ .token_type = .String, .lexeme = "{}" },
+        Token{ .token_type = .Comma },
+        Token{ .token_type = .Identifier, .lexeme = "x" },
+        Token{ .token_type = .RightParen },
+        Token{ .token_type = .DotComma },
 
-        Token{ .kind = .Identifier, .value = "foo" },
-        Token{ .kind = .LeftParen },
-        Token{ .kind = .Identifier, .value = "x" },
-        Token{ .kind = .RightParen },
-        Token{ .kind = .DotComma },
+        Token{ .token_type = .Identifier, .lexeme = "foo" },
+        Token{ .token_type = .LeftParen },
+        Token{ .token_type = .Identifier, .lexeme = "x" },
+        Token{ .token_type = .RightParen },
+        Token{ .token_type = .DotComma },
 
-        Token{ .kind = .Identifier, .value = "println" },
-        Token{ .kind = .Exclamation },
-        Token{ .kind = .LeftParen },
-        Token{ .kind = .String, .value = "{}" },
-        Token{ .kind = .Comma },
-        Token{ .kind = .Identifier, .value = "x" },
-        Token{ .kind = .RightParen },
-        Token{ .kind = .DotComma },
+        Token{ .token_type = .Identifier, .lexeme = "println" },
+        Token{ .token_type = .Exclamation },
+        Token{ .token_type = .LeftParen },
+        Token{ .token_type = .String, .lexeme = "{}" },
+        Token{ .token_type = .Comma },
+        Token{ .token_type = .Identifier, .lexeme = "x" },
+        Token{ .token_type = .RightParen },
+        Token{ .token_type = .DotComma },
 
-        Token{ .kind = .RightBrace },
+        Token{ .token_type = .RightBrace },
 
-        Token{ .kind = .EndOfFile },
+        Token{ .token_type = .EndOfFile },
     };
 
     try test_lexer(input, &expected_tokens);
@@ -767,70 +834,70 @@ test "Test for code snippet 2" {
     ;
 
     const expected_tokens = [_]Token{
-        Token{ .kind = .Static },
-        Token{ .kind = .Mut },
-        Token{ .kind = .Identifier, .value = "A" },
-        Token{ .kind = .DoubleColon },
-        Token{ .kind = .Type, .value = "i32" },
-        Token{ .kind = .Assign },
-        Token{ .kind = .Integer, .value = "0" },
-        Token{ .kind = .DotComma },
+        Token{ .token_type = .Static },
+        Token{ .token_type = .Mut },
+        Token{ .token_type = .Identifier, .lexeme = "A" },
+        Token{ .token_type = .DoubleColon },
+        Token{ .token_type = .Type, .lexeme = "i32" },
+        Token{ .token_type = .Assign },
+        Token{ .token_type = .Integer, .lexeme = "0" },
+        Token{ .token_type = .DotComma },
 
-        Token{ .kind = .Static },
-        Token{ .kind = .Mut },
-        Token{ .kind = .Identifier, .value = "B" },
-        Token{ .kind = .DoubleColon },
-        Token{ .kind = .Type, .value = "i32" },
-        Token{ .kind = .Assign },
-        Token{ .kind = .Integer, .value = "0" },
-        Token{ .kind = .DotComma },
+        Token{ .token_type = .Static },
+        Token{ .token_type = .Mut },
+        Token{ .token_type = .Identifier, .lexeme = "B" },
+        Token{ .token_type = .DoubleColon },
+        Token{ .token_type = .Type, .lexeme = "i32" },
+        Token{ .token_type = .Assign },
+        Token{ .token_type = .Integer, .lexeme = "0" },
+        Token{ .token_type = .DotComma },
 
-        Token{ .kind = .FN },
-        Token{ .kind = .Identifier, .value = "main" },
-        Token{ .kind = .LeftParen },
-        Token{ .kind = .RightParen },
-        Token{ .kind = .LeftBrace },
+        Token{ .token_type = .FN },
+        Token{ .token_type = .Identifier, .lexeme = "main" },
+        Token{ .token_type = .LeftParen },
+        Token{ .token_type = .RightParen },
+        Token{ .token_type = .LeftBrace },
 
-        Token{ .kind = .Let },
-        Token{ .kind = .Identifier, .value = "y" },
-        Token{ .kind = .DoubleColon },
-        Token{ .kind = .Type, .value = "i32" },
-        Token{ .kind = .DotComma },
+        Token{ .token_type = .Let },
+        Token{ .token_type = .Identifier, .lexeme = "y" },
+        Token{ .token_type = .DoubleColon },
+        Token{ .token_type = .Type, .lexeme = "i32" },
+        Token{ .token_type = .DotComma },
 
-        Token{ .kind = .Unsafe },
-        Token{ .kind = .LeftBrace },
+        Token{ .token_type = .Unsafe },
+        Token{ .token_type = .LeftBrace },
 
-        Token{ .kind = .Identifier, .value = "A" },
-        Token{ .kind = .Assign },
-        Token{ .kind = .Integer, .value = "3" },
-        Token{ .kind = .DotComma },
+        Token{ .token_type = .Identifier, .lexeme = "A" },
+        Token{ .token_type = .Assign },
+        Token{ .token_type = .Integer, .lexeme = "3" },
+        Token{ .token_type = .DotComma },
 
-        Token{ .kind = .Identifier, .value = "B" },
-        Token{ .kind = .Assign },
-        Token{ .kind = .Integer, .value = "4" },
-        Token{ .kind = .DotComma },
+        Token{ .token_type = .Identifier, .lexeme = "B" },
+        Token{ .token_type = .Assign },
+        Token{ .token_type = .Integer, .lexeme = "4" },
+        Token{ .token_type = .DotComma },
 
-        Token{ .kind = .Identifier, .value = "y" },
-        Token{ .kind = .Assign },
-        Token{ .kind = .Identifier, .value = "A" },
-        Token{ .kind = .Plus },
-        Token{ .kind = .Identifier, .value = "B" },
-        Token{ .kind = .DotComma },
+        Token{ .token_type = .Identifier, .lexeme = "y" },
+        Token{ .token_type = .Assign },
+        Token{ .token_type = .Identifier, .lexeme = "A" },
+        Token{ .token_type = .Plus },
+        Token{ .token_type = .Identifier, .lexeme = "B" },
+        Token{ .token_type = .DotComma },
 
-        Token{ .kind = .RightBrace },
+        Token{ .token_type = .RightBrace },
 
-        Token{ .kind = .Identifier, .value = "println" },
-        Token{ .kind = .Exclamation },
-        Token{ .kind = .LeftParen },
-        Token{ .kind = .String, .value = "{}" },
-        Token{ .kind = .Comma },
-        Token{ .kind = .Identifier, .value = "y" },
-        Token{ .kind = .RightParen },
-        Token{ .kind = .DotComma },
+        Token{ .token_type = .Identifier, .lexeme = "println" },
+        Token{ .token_type = .Exclamation },
+        Token{ .token_type = .LeftParen },
+        Token{ .token_type = .String, .lexeme = "{}" },
+        Token{ .token_type = .Comma },
+        Token{ .token_type = .Identifier, .lexeme = "y" },
+        Token{ .token_type = .RightParen },
+        Token{ .token_type = .DotComma },
 
-        Token{ .kind = .RightBrace },
+        Token{ .token_type = .RightBrace },
 
-        Token{ .kind = .EndOfFile },
+        Token{ .token_type = .EndOfFile },
     };
 
     try test_lexer(input, &expected_tokens);
@@ -866,148 +933,148 @@ test "Test for code snippet 3" {
 
     const expected_tokens = [_]Token{
         // Global variables
-        Token{ .kind = .Static },
-        Token{ .kind = .Mut },
-        Token{ .kind = .Identifier, .value = "A" },
-        Token{ .kind = .DoubleColon },
-        Token{ .kind = .Type, .value = "i32" },
-        Token{ .kind = .Assign },
-        Token{ .kind = .Integer, .value = "0" },
-        Token{ .kind = .DotComma },
+        Token{ .token_type = .Static },
+        Token{ .token_type = .Mut },
+        Token{ .token_type = .Identifier, .lexeme = "A" },
+        Token{ .token_type = .DoubleColon },
+        Token{ .token_type = .Type, .lexeme = "i32" },
+        Token{ .token_type = .Assign },
+        Token{ .token_type = .Integer, .lexeme = "0" },
+        Token{ .token_type = .DotComma },
 
-        Token{ .kind = .Static },
-        Token{ .kind = .Mut },
-        Token{ .kind = .Identifier, .value = "B" },
-        Token{ .kind = .DoubleColon },
-        Token{ .kind = .Type, .value = "i32" },
-        Token{ .kind = .Assign },
-        Token{ .kind = .Integer, .value = "0" },
-        Token{ .kind = .DotComma },
+        Token{ .token_type = .Static },
+        Token{ .token_type = .Mut },
+        Token{ .token_type = .Identifier, .lexeme = "B" },
+        Token{ .token_type = .DoubleColon },
+        Token{ .token_type = .Type, .lexeme = "i32" },
+        Token{ .token_type = .Assign },
+        Token{ .token_type = .Integer, .lexeme = "0" },
+        Token{ .token_type = .DotComma },
 
         // Function declaration
-        Token{ .kind = .FN },
-        Token{ .kind = .Identifier, .value = "suma" },
-        Token{ .kind = .LeftParen },
-        Token{ .kind = .Mut },
-        Token{ .kind = .Identifier, .value = "x" },
-        Token{ .kind = .DoubleColon },
-        Token{ .kind = .Type, .value = "i32" },
-        Token{ .kind = .RightParen },
-        Token{ .kind = .Arrow },
-        Token{ .kind = .Type, .value = "i32" },
-        Token{ .kind = .LeftBrace },
+        Token{ .token_type = .FN },
+        Token{ .token_type = .Identifier, .lexeme = "suma" },
+        Token{ .token_type = .LeftParen },
+        Token{ .token_type = .Mut },
+        Token{ .token_type = .Identifier, .lexeme = "x" },
+        Token{ .token_type = .DoubleColon },
+        Token{ .token_type = .Type, .lexeme = "i32" },
+        Token{ .token_type = .RightParen },
+        Token{ .token_type = .Arrow },
+        Token{ .token_type = .Type, .lexeme = "i32" },
+        Token{ .token_type = .LeftBrace },
 
         // Function body
-        Token{ .kind = .Let },
-        Token{ .kind = .Mut },
-        Token{ .kind = .Identifier, .value = "accum" },
-        Token{ .kind = .Assign },
-        Token{ .kind = .Integer, .value = "0" },
-        Token{ .kind = .DotComma },
+        Token{ .token_type = .Let },
+        Token{ .token_type = .Mut },
+        Token{ .token_type = .Identifier, .lexeme = "accum" },
+        Token{ .token_type = .Assign },
+        Token{ .token_type = .Integer, .lexeme = "0" },
+        Token{ .token_type = .DotComma },
 
-        Token{ .kind = .Identifier, .value = "println" },
-        Token{ .kind = .Exclamation },
-        Token{ .kind = .LeftParen },
-        Token{ .kind = .String, .value = "{}" },
-        Token{ .kind = .Comma },
-        Token{ .kind = .Integer, .value = "15" },
-        Token{ .kind = .RightParen },
-        Token{ .kind = .DotComma },
+        Token{ .token_type = .Identifier, .lexeme = "println" },
+        Token{ .token_type = .Exclamation },
+        Token{ .token_type = .LeftParen },
+        Token{ .token_type = .String, .lexeme = "{}" },
+        Token{ .token_type = .Comma },
+        Token{ .token_type = .Integer, .lexeme = "15" },
+        Token{ .token_type = .RightParen },
+        Token{ .token_type = .DotComma },
 
         // While loop
-        Token{ .kind = .While },
-        Token{ .kind = .Identifier, .value = "x" },
-        Token{ .kind = .GreaterThan },
-        Token{ .kind = .Integer, .value = "0" },
-        Token{ .kind = .LeftBrace },
+        Token{ .token_type = .While },
+        Token{ .token_type = .Identifier, .lexeme = "x" },
+        Token{ .token_type = .GreaterThan },
+        Token{ .token_type = .Integer, .lexeme = "0" },
+        Token{ .token_type = .LeftBrace },
 
         // Loop body
-        Token{ .kind = .Identifier, .value = "accum" },
-        Token{ .kind = .Assign },
-        Token{ .kind = .Identifier, .value = "accum" },
-        Token{ .kind = .Plus },
-        Token{ .kind = .Identifier, .value = "x" },
-        Token{ .kind = .DotComma },
+        Token{ .token_type = .Identifier, .lexeme = "accum" },
+        Token{ .token_type = .Assign },
+        Token{ .token_type = .Identifier, .lexeme = "accum" },
+        Token{ .token_type = .Plus },
+        Token{ .token_type = .Identifier, .lexeme = "x" },
+        Token{ .token_type = .DotComma },
 
-        Token{ .kind = .Identifier, .value = "x" },
-        Token{ .kind = .Assign },
-        Token{ .kind = .Identifier, .value = "x" },
-        Token{ .kind = .Minus },
-        Token{ .kind = .Integer, .value = "1" },
-        Token{ .kind = .DotComma },
+        Token{ .token_type = .Identifier, .lexeme = "x" },
+        Token{ .token_type = .Assign },
+        Token{ .token_type = .Identifier, .lexeme = "x" },
+        Token{ .token_type = .Minus },
+        Token{ .token_type = .Integer, .lexeme = "1" },
+        Token{ .token_type = .DotComma },
 
-        Token{ .kind = .RightBrace },
+        Token{ .token_type = .RightBrace },
 
-        Token{ .kind = .Identifier, .value = "println" },
-        Token{ .kind = .Exclamation },
-        Token{ .kind = .LeftParen },
-        Token{ .kind = .String, .value = "{}" },
-        Token{ .kind = .Comma },
-        Token{ .kind = .Integer, .value = "16" },
-        Token{ .kind = .RightParen },
-        Token{ .kind = .DotComma },
+        Token{ .token_type = .Identifier, .lexeme = "println" },
+        Token{ .token_type = .Exclamation },
+        Token{ .token_type = .LeftParen },
+        Token{ .token_type = .String, .lexeme = "{}" },
+        Token{ .token_type = .Comma },
+        Token{ .token_type = .Integer, .lexeme = "16" },
+        Token{ .token_type = .RightParen },
+        Token{ .token_type = .DotComma },
 
-        // Return value
-        Token{ .kind = .Identifier, .value = "accum" },
-        Token{ .kind = .RightBrace },
+        // Return lexeme
+        Token{ .token_type = .Identifier, .lexeme = "accum" },
+        Token{ .token_type = .RightBrace },
 
         // Main function
-        Token{ .kind = .FN },
-        Token{ .kind = .Identifier, .value = "main" },
-        Token{ .kind = .LeftParen },
-        Token{ .kind = .RightParen },
-        Token{ .kind = .LeftBrace },
+        Token{ .token_type = .FN },
+        Token{ .token_type = .Identifier, .lexeme = "main" },
+        Token{ .token_type = .LeftParen },
+        Token{ .token_type = .RightParen },
+        Token{ .token_type = .LeftBrace },
 
-        Token{ .kind = .Let },
-        Token{ .kind = .Identifier, .value = "y" },
-        Token{ .kind = .DoubleColon },
-        Token{ .kind = .Type, .value = "i32" },
-        Token{ .kind = .DotComma },
+        Token{ .token_type = .Let },
+        Token{ .token_type = .Identifier, .lexeme = "y" },
+        Token{ .token_type = .DoubleColon },
+        Token{ .token_type = .Type, .lexeme = "i32" },
+        Token{ .token_type = .DotComma },
 
-        Token{ .kind = .Unsafe },
-        Token{ .kind = .LeftBrace },
+        Token{ .token_type = .Unsafe },
+        Token{ .token_type = .LeftBrace },
 
-        Token{ .kind = .Identifier, .value = "A" },
-        Token{ .kind = .Assign },
-        Token{ .kind = .Integer, .value = "10" },
-        Token{ .kind = .DotComma },
+        Token{ .token_type = .Identifier, .lexeme = "A" },
+        Token{ .token_type = .Assign },
+        Token{ .token_type = .Integer, .lexeme = "10" },
+        Token{ .token_type = .DotComma },
 
-        Token{ .kind = .Identifier, .value = "B" },
-        Token{ .kind = .Assign },
-        Token{ .kind = .Integer, .value = "11" },
-        Token{ .kind = .DotComma },
+        Token{ .token_type = .Identifier, .lexeme = "B" },
+        Token{ .token_type = .Assign },
+        Token{ .token_type = .Integer, .lexeme = "11" },
+        Token{ .token_type = .DotComma },
 
-        Token{ .kind = .RightBrace },
+        Token{ .token_type = .RightBrace },
 
-        Token{ .kind = .Identifier, .value = "println" },
-        Token{ .kind = .Exclamation },
-        Token{ .kind = .LeftParen },
-        Token{ .kind = .String, .value = "{}" },
-        Token{ .kind = .Comma },
-        Token{ .kind = .Integer, .value = "14" },
-        Token{ .kind = .RightParen },
-        Token{ .kind = .DotComma },
+        Token{ .token_type = .Identifier, .lexeme = "println" },
+        Token{ .token_type = .Exclamation },
+        Token{ .token_type = .LeftParen },
+        Token{ .token_type = .String, .lexeme = "{}" },
+        Token{ .token_type = .Comma },
+        Token{ .token_type = .Integer, .lexeme = "14" },
+        Token{ .token_type = .RightParen },
+        Token{ .token_type = .DotComma },
 
-        Token{ .kind = .Identifier, .value = "y" },
-        Token{ .kind = .Assign },
-        Token{ .kind = .Identifier, .value = "suma" },
-        Token{ .kind = .LeftParen },
-        Token{ .kind = .Integer, .value = "4" },
-        Token{ .kind = .RightParen },
-        Token{ .kind = .DotComma },
+        Token{ .token_type = .Identifier, .lexeme = "y" },
+        Token{ .token_type = .Assign },
+        Token{ .token_type = .Identifier, .lexeme = "suma" },
+        Token{ .token_type = .LeftParen },
+        Token{ .token_type = .Integer, .lexeme = "4" },
+        Token{ .token_type = .RightParen },
+        Token{ .token_type = .DotComma },
 
-        Token{ .kind = .Identifier, .value = "println" },
-        Token{ .kind = .Exclamation },
-        Token{ .kind = .LeftParen },
-        Token{ .kind = .String, .value = "{}" },
-        Token{ .kind = .Comma },
-        Token{ .kind = .Identifier, .value = "y" },
-        Token{ .kind = .RightParen },
-        Token{ .kind = .DotComma },
+        Token{ .token_type = .Identifier, .lexeme = "println" },
+        Token{ .token_type = .Exclamation },
+        Token{ .token_type = .LeftParen },
+        Token{ .token_type = .String, .lexeme = "{}" },
+        Token{ .token_type = .Comma },
+        Token{ .token_type = .Identifier, .lexeme = "y" },
+        Token{ .token_type = .RightParen },
+        Token{ .token_type = .DotComma },
 
-        Token{ .kind = .RightBrace },
+        Token{ .token_type = .RightBrace },
 
-        Token{ .kind = .EndOfFile },
+        Token{ .token_type = .EndOfFile },
     };
 
     try test_lexer(input, &expected_tokens);
@@ -1034,99 +1101,265 @@ test "Test for code snippet 4" {
 
     const expected_tokens = [_]Token{
         // Global variables
-        Token{ .kind = .Static },
-        Token{ .kind = .Mut },
-        Token{ .kind = .Identifier, .value = "A" },
-        Token{ .kind = .DoubleColon },
-        Token{ .kind = .Type, .value = "i32" },
-        Token{ .kind = .Assign },
-        Token{ .kind = .Integer, .value = "0" },
-        Token{ .kind = .DotComma },
+        Token{ .token_type = .Static },
+        Token{ .token_type = .Mut },
+        Token{ .token_type = .Identifier, .lexeme = "A" },
+        Token{ .token_type = .DoubleColon },
+        Token{ .token_type = .Type, .lexeme = "i32" },
+        Token{ .token_type = .Assign },
+        Token{ .token_type = .Integer, .lexeme = "0" },
+        Token{ .token_type = .DotComma },
 
-        Token{ .kind = .Static },
-        Token{ .kind = .Mut },
-        Token{ .kind = .Identifier, .value = "B" },
-        Token{ .kind = .DoubleColon },
-        Token{ .kind = .Type, .value = "i32" },
-        Token{ .kind = .Assign },
-        Token{ .kind = .Integer, .value = "0" },
-        Token{ .kind = .DotComma },
+        Token{ .token_type = .Static },
+        Token{ .token_type = .Mut },
+        Token{ .token_type = .Identifier, .lexeme = "B" },
+        Token{ .token_type = .DoubleColon },
+        Token{ .token_type = .Type, .lexeme = "i32" },
+        Token{ .token_type = .Assign },
+        Token{ .token_type = .Integer, .lexeme = "0" },
+        Token{ .token_type = .DotComma },
 
         // Function declaration
-        Token{ .kind = .FN },
-        Token{ .kind = .Identifier, .value = "sumarec" },
-        Token{ .kind = .LeftParen },
-        Token{ .kind = .Identifier, .value = "x" },
-        Token{ .kind = .DoubleColon },
-        Token{ .kind = .Type, .value = "i32" },
-        Token{ .kind = .RightParen },
-        Token{ .kind = .Arrow },
-        Token{ .kind = .Type, .value = "i32" },
-        Token{ .kind = .LeftBrace },
+        Token{ .token_type = .FN },
+        Token{ .token_type = .Identifier, .lexeme = "sumarec" },
+        Token{ .token_type = .LeftParen },
+        Token{ .token_type = .Identifier, .lexeme = "x" },
+        Token{ .token_type = .DoubleColon },
+        Token{ .token_type = .Type, .lexeme = "i32" },
+        Token{ .token_type = .RightParen },
+        Token{ .token_type = .Arrow },
+        Token{ .token_type = .Type, .lexeme = "i32" },
+        Token{ .token_type = .LeftBrace },
 
         // Function body
-        Token{ .kind = .Identifier, .value = "println" },
-        Token{ .kind = .Exclamation },
-        Token{ .kind = .LeftParen },
-        Token{ .kind = .String, .value = "{}" },
-        Token{ .kind = .Comma },
-        Token{ .kind = .Identifier, .value = "x" },
-        Token{ .kind = .RightParen },
-        Token{ .kind = .DotComma },
+        Token{ .token_type = .Identifier, .lexeme = "println" },
+        Token{ .token_type = .Exclamation },
+        Token{ .token_type = .LeftParen },
+        Token{ .token_type = .String, .lexeme = "{}" },
+        Token{ .token_type = .Comma },
+        Token{ .token_type = .Identifier, .lexeme = "x" },
+        Token{ .token_type = .RightParen },
+        Token{ .token_type = .DotComma },
 
-        Token{ .kind = .If },
-        Token{ .kind = .Identifier, .value = "x" },
-        Token{ .kind = .LessThan },
-        Token{ .kind = .Integer, .value = "1" },
-        Token{ .kind = .LeftBrace },
+        Token{ .token_type = .If },
+        Token{ .token_type = .Identifier, .lexeme = "x" },
+        Token{ .token_type = .LessThan },
+        Token{ .token_type = .Integer, .lexeme = "1" },
+        Token{ .token_type = .LeftBrace },
 
-        Token{ .kind = .FunReturn },
-        Token{ .kind = .Integer, .value = "0" },
-        Token{ .kind = .DotComma },
+        Token{ .token_type = .FunReturn },
+        Token{ .token_type = .Integer, .lexeme = "0" },
+        Token{ .token_type = .DotComma },
 
-        Token{ .kind = .RightBrace },
+        Token{ .token_type = .RightBrace },
 
-        Token{ .kind = .FunReturn },
-        Token{ .kind = .Identifier, .value = "x" },
-        Token{ .kind = .Plus },
-        Token{ .kind = .Identifier, .value = "sumarec" },
-        Token{ .kind = .LeftParen },
-        Token{ .kind = .Identifier, .value = "x" },
-        Token{ .kind = .Minus },
-        Token{ .kind = .Integer, .value = "1" },
-        Token{ .kind = .RightParen },
-        Token{ .kind = .DotComma },
+        Token{ .token_type = .FunReturn },
+        Token{ .token_type = .Identifier, .lexeme = "x" },
+        Token{ .token_type = .Plus },
+        Token{ .token_type = .Identifier, .lexeme = "sumarec" },
+        Token{ .token_type = .LeftParen },
+        Token{ .token_type = .Identifier, .lexeme = "x" },
+        Token{ .token_type = .Minus },
+        Token{ .token_type = .Integer, .lexeme = "1" },
+        Token{ .token_type = .RightParen },
+        Token{ .token_type = .DotComma },
 
-        Token{ .kind = .RightBrace },
+        Token{ .token_type = .RightBrace },
 
         // Main function
-        Token{ .kind = .FN },
-        Token{ .kind = .Identifier, .value = "main" },
-        Token{ .kind = .LeftParen },
-        Token{ .kind = .RightParen },
-        Token{ .kind = .LeftBrace },
+        Token{ .token_type = .FN },
+        Token{ .token_type = .Identifier, .lexeme = "main" },
+        Token{ .token_type = .LeftParen },
+        Token{ .token_type = .RightParen },
+        Token{ .token_type = .LeftBrace },
 
-        Token{ .kind = .Let },
-        Token{ .kind = .Identifier, .value = "y" },
-        Token{ .kind = .Assign },
-        Token{ .kind = .Identifier, .value = "sumarec" },
-        Token{ .kind = .LeftParen },
-        Token{ .kind = .Integer, .value = "4" },
-        Token{ .kind = .RightParen },
-        Token{ .kind = .DotComma },
+        Token{ .token_type = .Let },
+        Token{ .token_type = .Identifier, .lexeme = "y" },
+        Token{ .token_type = .Assign },
+        Token{ .token_type = .Identifier, .lexeme = "sumarec" },
+        Token{ .token_type = .LeftParen },
+        Token{ .token_type = .Integer, .lexeme = "4" },
+        Token{ .token_type = .RightParen },
+        Token{ .token_type = .DotComma },
 
-        Token{ .kind = .Identifier, .value = "println" },
-        Token{ .kind = .Exclamation },
-        Token{ .kind = .LeftParen },
-        Token{ .kind = .String, .value = "{}" },
-        Token{ .kind = .Comma },
-        Token{ .kind = .Identifier, .value = "y" },
-        Token{ .kind = .RightParen },
-        Token{ .kind = .DotComma },
+        Token{ .token_type = .Identifier, .lexeme = "println" },
+        Token{ .token_type = .Exclamation },
+        Token{ .token_type = .LeftParen },
+        Token{ .token_type = .String, .lexeme = "{}" },
+        Token{ .token_type = .Comma },
+        Token{ .token_type = .Identifier, .lexeme = "y" },
+        Token{ .token_type = .RightParen },
+        Token{ .token_type = .DotComma },
 
-        Token{ .kind = .RightBrace },
+        Token{ .token_type = .RightBrace },
 
-        Token{ .kind = .EndOfFile },
+        Token{ .token_type = .EndOfFile },
+    };
+
+    try test_lexer(input, &expected_tokens);
+}
+
+test "Test for code snippet with single-line comments" {
+    const input =
+        \\fn main() {
+        \\    let x = 10; // initialize x to 10
+        \\    let y = 20; // initialize y to 20
+        \\    let z = x + y; // sum x and y
+        \\    println!("{}", z); // print the result
+        \\}
+    ;
+
+    const expected_tokens = [_]Token{
+        Token{ .token_type = .FN },
+        Token{ .token_type = .Identifier, .lexeme = "main" },
+        Token{ .token_type = .LeftParen },
+        Token{ .token_type = .RightParen },
+        Token{ .token_type = .LeftBrace },
+
+        Token{ .token_type = .Let },
+        Token{ .token_type = .Identifier, .lexeme = "x" },
+        Token{ .token_type = .Assign },
+        Token{ .token_type = .Integer, .lexeme = "10" },
+        Token{ .token_type = .DotComma },
+
+        Token{ .token_type = .Let },
+        Token{ .token_type = .Identifier, .lexeme = "y" },
+        Token{ .token_type = .Assign },
+        Token{ .token_type = .Integer, .lexeme = "20" },
+        Token{ .token_type = .DotComma },
+
+        Token{ .token_type = .Let },
+        Token{ .token_type = .Identifier, .lexeme = "z" },
+        Token{ .token_type = .Assign },
+        Token{ .token_type = .Identifier, .lexeme = "x" },
+        Token{ .token_type = .Plus },
+        Token{ .token_type = .Identifier, .lexeme = "y" },
+        Token{ .token_type = .DotComma },
+
+        Token{ .token_type = .Identifier, .lexeme = "println" },
+        Token{ .token_type = .Exclamation },
+        Token{ .token_type = .LeftParen },
+        Token{ .token_type = .String, .lexeme = "{}" },
+        Token{ .token_type = .Comma },
+        Token{ .token_type = .Identifier, .lexeme = "z" },
+        Token{ .token_type = .RightParen },
+        Token{ .token_type = .DotComma },
+
+        Token{ .token_type = .RightBrace },
+
+        Token{ .token_type = .EndOfFile },
+    };
+
+    try test_lexer(input, &expected_tokens);
+}
+test "Test for code snippet with multi-line comments" {
+    const input =
+        \\fn main() {
+        \\    /* This is a multi-line comment
+        \\       that spans multiple lines */
+        \\    let x = 10;
+        \\    /* Another comment */
+        \\    let y = 20;
+        \\    let z = x + y;
+        \\    println!("{}", z);
+        \\}
+    ;
+
+    const expected_tokens = [_]Token{
+        Token{ .token_type = .FN },
+        Token{ .token_type = .Identifier, .lexeme = "main" },
+        Token{ .token_type = .LeftParen },
+        Token{ .token_type = .RightParen },
+        Token{ .token_type = .LeftBrace },
+
+        Token{ .token_type = .Let },
+        Token{ .token_type = .Identifier, .lexeme = "x" },
+        Token{ .token_type = .Assign },
+        Token{ .token_type = .Integer, .lexeme = "10" },
+        Token{ .token_type = .DotComma },
+
+        Token{ .token_type = .Let },
+        Token{ .token_type = .Identifier, .lexeme = "y" },
+        Token{ .token_type = .Assign },
+        Token{ .token_type = .Integer, .lexeme = "20" },
+        Token{ .token_type = .DotComma },
+
+        Token{ .token_type = .Let },
+        Token{ .token_type = .Identifier, .lexeme = "z" },
+        Token{ .token_type = .Assign },
+        Token{ .token_type = .Identifier, .lexeme = "x" },
+        Token{ .token_type = .Plus },
+        Token{ .token_type = .Identifier, .lexeme = "y" },
+        Token{ .token_type = .DotComma },
+
+        Token{ .token_type = .Identifier, .lexeme = "println" },
+        Token{ .token_type = .Exclamation },
+        Token{ .token_type = .LeftParen },
+        Token{ .token_type = .String, .lexeme = "{}" },
+        Token{ .token_type = .Comma },
+        Token{ .token_type = .Identifier, .lexeme = "z" },
+        Token{ .token_type = .RightParen },
+        Token{ .token_type = .DotComma },
+
+        Token{ .token_type = .RightBrace },
+
+        Token{ .token_type = .EndOfFile },
+    };
+
+    try test_lexer(input, &expected_tokens);
+}
+test "Test for code snippet with docstring comments" {
+    const input =
+        \\/// This is the main function
+        \\fn main() {
+        \\    let x = 10;
+        \\    let y = 20;
+        \\    let z = x + y;
+        \\    println!("{}", z);
+        \\}
+    ;
+
+    const expected_tokens = [_]Token{
+        Token{ .token_type = .DocString, .lexeme = "This is the main function" },
+
+        Token{ .token_type = .FN },
+        Token{ .token_type = .Identifier, .lexeme = "main" },
+        Token{ .token_type = .LeftParen },
+        Token{ .token_type = .RightParen },
+        Token{ .token_type = .LeftBrace },
+
+        Token{ .token_type = .Let },
+        Token{ .token_type = .Identifier, .lexeme = "x" },
+        Token{ .token_type = .Assign },
+        Token{ .token_type = .Integer, .lexeme = "10" },
+        Token{ .token_type = .DotComma },
+
+        Token{ .token_type = .Let },
+        Token{ .token_type = .Identifier, .lexeme = "y" },
+        Token{ .token_type = .Assign },
+        Token{ .token_type = .Integer, .lexeme = "20" },
+        Token{ .token_type = .DotComma },
+
+        Token{ .token_type = .Let },
+        Token{ .token_type = .Identifier, .lexeme = "z" },
+        Token{ .token_type = .Assign },
+        Token{ .token_type = .Identifier, .lexeme = "x" },
+        Token{ .token_type = .Plus },
+        Token{ .token_type = .Identifier, .lexeme = "y" },
+        Token{ .token_type = .DotComma },
+
+        Token{ .token_type = .Identifier, .lexeme = "println" },
+        Token{ .token_type = .Exclamation },
+        Token{ .token_type = .LeftParen },
+        Token{ .token_type = .String, .lexeme = "{}" },
+        Token{ .token_type = .Comma },
+        Token{ .token_type = .Identifier, .lexeme = "z" },
+        Token{ .token_type = .RightParen },
+        Token{ .token_type = .DotComma },
+
+        Token{ .token_type = .RightBrace },
+
+        Token{ .token_type = .EndOfFile },
     };
 
     try test_lexer(input, &expected_tokens);
@@ -1141,9 +1374,9 @@ fn test_lexer(input: []const u8, expected_tokens: []const Token) !void {
     while (true) {
         const token = lexer.next_token();
 
-        try std.testing.expectEqual(expected_tokens[index].kind, token.kind);
-        try std.testing.expect(std.mem.eql(u8, expected_tokens[index].value, token.value));
-        if (token.kind == .EndOfFile) break;
+        try std.testing.expectEqual(expected_tokens[index].token_type, token.token_type);
+        try std.testing.expect(std.mem.eql(u8, expected_tokens[index].lexeme, token.lexeme));
+        if (token.token_type == .EndOfFile) break;
         index += 1;
     }
 }

@@ -1,124 +1,152 @@
-Program = { ItemOrComment }
+program         = { item }
 
-ItemOrComment = Item | Comment
+item            = [ DocString ]
+                 | function
+                 | struct_def
+                 | enum_def
+                 | trait_def
+                 | impl_def
+                 | use_decl
+                 | mod_decl
+                 | constant
+                 | static_variable
+                 | type_alias
+                 | macro_def
+                 | foreign_mod
 
-Item = Function
-     | StructDefinition
-     | StaticVariableDeclaration
-     | Statement
+function        = [ "unsafe" ] "fn" identifier "(" [ parameters ] ")" [ "->" type ] block
 
-Function = [ "unsafe" ] "fn" Identifier "(" [ ParameterList ] ")" [ "->" Type ] BlockExpression
+parameters      = parameter { "," parameter }
+parameter       = [ "mut" ] identifier ":" type
 
-StructDefinition = "struct" Identifier "{" { StructField [ "," ] } "}"
+struct_def      = "struct" identifier [ generics ] "{" [ struct_fields ] "}"
+struct_fields   = struct_field { "," struct_field }
+struct_field    = identifier ":" type
 
-StructField = Identifier ":" Type
+enum_def        = "enum" identifier [ generics ] "{" [ enum_variants ] "}"
+enum_variants   = enum_variant { "," enum_variant }
+enum_variant     = identifier [ "(" [ variant_fields ] ")" ]
+variant_fields   = type { "," type }
 
-StaticVariableDeclaration = "static" Identifier ":" Type "=" Expression ";"
+trait_def       = "trait" identifier [ generics ] "{" { trait_item } "}"
+trait_item      = function | type_alias
 
-ParameterList = Parameter { "," Parameter }
+impl_def        = "impl" [ generics ] [ "for" type ] "{" { impl_item } "}"
+impl_item       = function | constant
 
-Parameter = Identifier ":" Type
+use_decl        = "use" path ";"
 
-Type = [ "&" [ "mut" ] ] BaseType
+mod_decl        = "mod" identifier [ ";" | "{" { item } "}" ]
 
-BaseType = "i32" | "i64" | "f32" | "f64" | "bool" | "str" | Identifier
+constant        = "const" identifier ":" type "=" expression ";"
 
-Statement = LetStatement
-          | ExpressionStatement
-          | ReturnStatement
-          | BlockExpression
-          | UnsafeBlockExpression
-          | WhileStatement
-          | ForStatement
-          | IfExpression
+static_variable = "static" identifier ":" type "=" expression ";"
 
-LetStatement = "let" [ "mut" ] Identifier [ ":" Type ] [ "=" Expression ] ";"
+type_alias      = "type" identifier [ generics ] "=" type ";"
 
-ReturnStatement = "return" [ Expression ] ";"
+macro_def       = "macro_rules!" identifier "{" macro_rules_body "}"
 
-ExpressionStatement = Expression ";"
+foreign_mod     = "extern" [ string_literal ] "{" { foreign_item } "}"
+foreign_item    = function | static_item
+static_item     = "static" identifier ":" type "=" expression ";"
 
-BlockExpression = "{" { Statement } [ Expression ] "}"
+block           = "{" { statement } [ expression ] "}"
 
-UnsafeBlockExpression = "unsafe" BlockExpression
+statement       = let_statement
+                 | expression_statement
+                 | item
 
-WhileStatement = "while" Expression BlockExpression
+let_statement    = "let" [ "mut" ] pattern [ ":" type ] [ "=" expression ] ";"
 
-ForStatement = "for" Identifier "in" Expression BlockExpression
+expression_statement = expression ";"
 
-IfExpression = "if" Expression BlockExpression [ "else" ( BlockExpression | IfExpression ) ]
+expression       = assignment
+                 | conditional
+                 | loop
+                 | function_call
+                 | binary_op
+                 | unary_op
+                 | literal
+                 | identifier
+                 | "(" expression ")"
 
-Expression = AssignmentExpression
+assignment       = identifier "=" expression
 
-AssignmentExpression = LogicalOrExpression [ "=" AssignmentExpression ]
+conditional      = "if" expression block [ "else" block ]
 
-LogicalOrExpression = LogicalAndExpression { "||" LogicalAndExpression }
+loop             = "loop" block
+                 | "while" expression block
+                 | "for" identifier "in" expression block
 
-LogicalAndExpression = EqualityExpression { "&&" EqualityExpression }
+function_call    = identifier "(" [ arguments ] ")"
+arguments         = expression { "," expression }
 
-EqualityExpression = RelationalExpression { ( "==" | "!=" ) RelationalExpression }
+binary_op        = expression operator expression
+operator          = "+" | "-" | "*" | "/" | "==" | "!=" | "<" | ">" | "<=" | ">=" | "&&" | "||"
 
-RelationalExpression = AdditiveExpression { ( "<" | ">" | "<=" | ">=" ) AdditiveExpression }
+unary_op         = "-" expression
+                 | "!" expression
 
-AdditiveExpression = MultiplicativeExpression { ( "+" | "-" ) MultiplicativeExpression }
+literal           = integer_literal
+                 | float_literal
+                 | boolean_literal
+                 | string_literal
+                 | char_literal
 
-MultiplicativeExpression = UnaryExpression { ( "*" | "/" ) UnaryExpression }
+pattern           = identifier
+                 | "_"
+                 | pattern_tuple
+                 | pattern_struct
 
-UnaryExpression = [ "-" | "!" ] PostfixExpression
+pattern_tuple     = "(" [ pattern { "," pattern } ] ")"
 
-PostfixExpression = PrimaryExpression { PostfixOperator }
+pattern_struct    = identifier "{" [ pattern_field { "," pattern_field } ] "}"
+pattern_field     = identifier ":" pattern
 
-PostfixOperator = "." Identifier
-                | "(" [ ArgumentList ] ")"
-                | "!" "(" [ MacroArgumentList ] ")"
+type              = primitive_type
+                 | path
+                 | reference_type
+                 | tuple_type
+                 | array_type
+                 | function_type
+                 | generic_type
 
-PrimaryExpression = Literal
-                  | Identifier
-                  | "(" Expression ")"
-                  | BlockExpression
-                  | UnsafeBlockExpression
-                  | IfExpression
+primitive_type    = "i8" | "i16" | "i32" | "i64" | "i128"
+                 | "u8" | "u16" | "u32" | "u64" | "u128"
+                 | "f32" | "f64"
+                 | "bool" | "char" | "str" | "()"
 
-ArgumentList = Expression { "," Expression }
+reference_type    = "&" [ "mut" ] type
 
-MacroArgumentList = [ MacroArgument { "," MacroArgument } ]
+tuple_type        = "(" [ type { "," type } ] ")"
 
-MacroArgument = Expression | Statement
+array_type        = "[" type ";" integer_literal "]"
 
-Literal = IntegerLiteral
-        | FloatLiteral
-        | BooleanLiteral
-        | StringLiteral
-        | CharLiteral
+function_type     = "fn" "(" [ type { "," type } ] ")" [ "->" type ]
 
-IntegerLiteral = Digit { Digit }
+generic_type      = identifier [ "<" type { "," type } ">" ]
 
-FloatLiteral = Digit { Digit } "." Digit { Digit }
+path              = identifier { "::" identifier }
 
-BooleanLiteral = "true" | "false"
+identifier        = letter { letter | digit | "_" }
 
-StringLiteral = "\"" { StringCharacter } "\""
+integer_literal   = digit { digit }
 
-CharLiteral = "'" Character "'"
+float_literal     = digit { digit } "." digit { digit }
 
-StringCharacter = Character | EscapeSequence
+boolean_literal   = "true" | "false"
 
-Character = Any valid character except for the double quote (") and backslash (\), or use of EscapeSequence
+string_literal    = "\"" { any_character_except_quote } "\""
 
-EscapeSequence = "\\" ( "\"" | "'" | "\\" | "n" | "t" | "r" )
+char_literal      = "'" any_character_except_single_quote "'"
 
-Identifier = Letter { Letter | Digit | "_" }
+generics          = "<" generic_params ">"
+generic_params    = generic_param { "," generic_param }
+generic_param     = identifier [ ":" bound ]
 
-Digit = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"
+bound             = identifier [ "+" identifier ]
 
-Letter = "a" | "b" | ... | "z" | "A" | "B" | ... | "Z"
+macro_rules_body   = { macro_rule }
+macro_rule        = pattern "=>" replacement ";"
 
-Comment = SingleLineComment | MultiLineComment
-
-SingleLineComment = "//" { AnyCharacterExceptNewline } ( Newline | EOF )
-
-MultiLineComment = "/*" { AnyCharacterExceptEndComment } "*/"
-
-AnyCharacterExceptNewline = any character except newline
-
-AnyCharacterExceptEndComment = any character except "*/"
+replacement       = { token }
