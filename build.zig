@@ -16,7 +16,7 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     const exe = b.addExecutable(.{
-        .name = "Dreamberd-compiler",
+        .name = "rust-compiler",
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
@@ -69,8 +69,8 @@ pub fn build(b: *std.Build) void {
     const lexer_docs = b.addTest(.{ .root_source_file = b.path("src/lexer.zig"), .name = "lexer_lib", .target = target, .optimize = optimize });
     const parser_docs = b.addTest(.{ .root_source_file = b.path("src/parser.zig"), .name = "parser_lib", .target = target, .optimize = optimize });
 
-    lexer_docs.emit_docs = .emit;
-    parser_docs.emit_docs = .emit;
+    // lexer_docs.emit_docs = .emit;
+    // parser_docs.emit_docs = .emit;
 
     const docs_step = b.step("docs", "Generate documentation");
     docs_step.dependOn(&lexer_docs.step);

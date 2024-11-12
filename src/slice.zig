@@ -15,7 +15,7 @@ test "slices" {
 
     const s = struct_with_slice{ .items = slice };
 
-    std.debug.print("{}/n", .{ s.items.len });
+    std.debug.print("{}/n", .{s.items.len});
 }
 test "slices 2" {
     const array = [_]u8{ 1, 2, 3, 4, 5 };

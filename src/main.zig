@@ -13,7 +13,5 @@ pub fn main() !void {
     const tokens = try lexer.tokenize();
     const ast = try parse(tokens);
     const writer = std.io.getStdOut().writer();
-    try pretty_print( writer,ast);
-
-
+    try pretty_print(writer, ast);
 }

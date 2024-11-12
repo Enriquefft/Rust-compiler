@@ -16,7 +16,6 @@ fn escape_string(s: []const u8) []const u8 {
     return s;
 }
 
-
 // Function to pretty print the entire Program
 pub fn pretty_print_program(writer: anytype, program: Parser.Program) !void {
     for (program.items) |item| {
@@ -81,7 +80,7 @@ fn pretty_print_function(writer: anytype, func: Parser.Function, level: usize) !
     try writer.print("fn {s}(", .{func.fname});
 
     // Print parameters
-    for (func.parameters,0..) |param, i| {
+    for (func.parameters, 0..) |param, i| {
         try writer.print("{s}: ", .{param.name});
         try pretty_print_type_annotation(writer, param.type_annotation);
         if (i < func.parameters.len - 1) {
@@ -111,7 +110,7 @@ fn pretty_print_struct(writer: anytype, struct_def: Parser.StructDefinition, lev
     // Print generics if any
     if (struct_def.generics) |generics| {
         try writer.print("<", .{});
-        for (generics.params,0..) |param, i| {
+        for (generics.params, 0..) |param, i| {
             try writer.print("{s}", .{param.name});
             if (i < generics.params.len - 1) {
                 try writer.print(", ", .{});
@@ -123,10 +122,10 @@ fn pretty_print_struct(writer: anytype, struct_def: Parser.StructDefinition, lev
     try writer.print(" LB\n", .{});
     // Print struct fields
     for (struct_def.fields) |field| {
-                try indent(writer, level + 1);
-                try writer.print("{s}: ", .{field.name});
-                try pretty_print_type_annotation(writer, field.type_annotation);
-                try writer.print(",\n", .{});
+        try indent(writer, level + 1);
+        try writer.print("{s}: ", .{field.name});
+        try pretty_print_type_annotation(writer, field.type_annotation);
+        try writer.print(",\n", .{});
     }
     try indent(writer, level);
     try writer.print("RB\n", .{});
@@ -140,7 +139,7 @@ fn pretty_print_enum(writer: anytype, enum_def: Parser.EnumDefinition, level: us
     // Print generics if any
     if (enum_def.generics) |generics| {
         try writer.print("<", .{});
-        for (generics.params,0..) |param, i| {
+        for (generics.params, 0..) |param, i| {
             try writer.print("{s}", .{param.name});
             if (i < generics.params.len - 1) {
                 try writer.print(", ", .{});
@@ -156,7 +155,7 @@ fn pretty_print_enum(writer: anytype, enum_def: Parser.EnumDefinition, level: us
         try writer.print("{s}", .{variant.name});
         if (variant.fields) |fields| {
             try writer.print("(", .{});
-            for (fields,0..) |field, i| {
+            for (fields, 0..) |field, i| {
                 try pretty_print_type_annotation(writer, field);
                 if (i < fields.len - 1) {
                     try writer.print(", ", .{});
@@ -178,7 +177,7 @@ fn pretty_print_trait(writer: anytype, trait_def: Parser.TraitDefinition, level:
     // Print generics if any
     if (trait_def.generics) |generics| {
         try writer.print("<", .{});
-        for (generics.params,0..) |param, i| {
+        for (generics.params, 0..) |param, i| {
             try writer.print("{s}", .{param.name});
             if (i < generics.params.len - 1) {
                 try writer.print(", ", .{});
@@ -194,7 +193,7 @@ fn pretty_print_trait(writer: anytype, trait_def: Parser.TraitDefinition, level:
             .Function => |func_sig| {
                 try indent(writer, level + 1);
                 try writer.print("fn {s}(", .{func_sig.fname});
-                for (func_sig.parameters,0..) |param, i| {
+                for (func_sig.parameters, 0..) |param, i| {
                     try writer.print("{s}: ", .{param.name});
                     try pretty_print_type_annotation(writer, param.type_annotation);
                     if (i < func_sig.parameters.len - 1) {
@@ -299,7 +298,7 @@ fn pretty_print_type_alias(writer: anytype, type_alias: Parser.TypeAlias, level:
     // Print generics if any
     if (type_alias.generics) |generics| {
         try writer.print("<", .{});
-        for (generics.params,0..) |param, i| {
+        for (generics.params, 0..) |param, i| {
             try writer.print("{s}", .{param.name});
             if (i < generics.params.len - 1) {
                 try writer.print(", ", .{});
@@ -319,7 +318,7 @@ fn pretty_print_macro_definition(writer: anytype, macro_def: Parser.MacroDefinit
     try writer.print("macro_rules! {s} LB\n", .{macro_def.name});
     for (macro_def.rules) |rule| {
         try indent(writer, level + 1);
-        try writer.print("{s} => {s},\n", .{rule.pattern, rule.replacement});
+        try writer.print("{s} => {s},\n", .{ rule.pattern, rule.replacement });
     }
     try indent(writer, level);
     try writer.print("RB\n", .{});
@@ -338,7 +337,7 @@ fn pretty_print_foreign_mod(writer: anytype, foreign_mod: Parser.ForeignMod, lev
             .Function => |foreign_func| {
                 try indent(writer, level + 1);
                 try writer.print("fn {s}(", .{foreign_func.name});
-                for (foreign_func.parameters,0..) |param, i| {
+                for (foreign_func.parameters, 0..) |param, i| {
                     try writer.print("{s}: ", .{param.name});
                     try pretty_print_type_annotation(writer, param.type_annotation);
                     if (i < foreign_func.parameters.len - 1) {
@@ -399,7 +398,7 @@ fn pretty_print_statement(writer: anytype, stmt: Parser.Statement, level: usize)
                 },
                 .Tuple => |tuple| {
                     try writer.print("(", .{});
-                    for (tuple.patterns,0..) |pat, i| {
+                    for (tuple.patterns, 0..) |pat, i| {
                         try pretty_print_pattern(writer, pat, level);
                         if (i < tuple.patterns.len - 1) {
                             try writer.print(", ", .{});
@@ -409,7 +408,7 @@ fn pretty_print_statement(writer: anytype, stmt: Parser.Statement, level: usize)
                 },
                 .Struct => |struct_pat| {
                     try writer.print("{s} LB ", .{struct_pat.name});
-                    for (struct_pat.fields,0..) |field, i| {
+                    for (struct_pat.fields, 0..) |field, i| {
                         try writer.print("{s}: ", .{field.name});
                         try pretty_print_pattern(writer, field.pattern, level);
                         if (i < struct_pat.fields.len - 1) {
@@ -451,7 +450,7 @@ fn pretty_print_pattern(writer: anytype, pattern: Parser.Pattern, level: usize) 
         },
         .Tuple => |tuple_pat| {
             try writer.print("(", .{});
-            for (tuple_pat.patterns,0..) |pat, i| {
+            for (tuple_pat.patterns, 0..) |pat, i| {
                 try pretty_print_pattern(writer, pat, level);
                 if (i < tuple_pat.patterns.len - 1) {
                     try writer.print(", ", .{});
@@ -461,7 +460,7 @@ fn pretty_print_pattern(writer: anytype, pattern: Parser.Pattern, level: usize) 
         },
         .Struct => |struct_pat| {
             try writer.print("{s} LB ", .{struct_pat.name});
-            for (struct_pat.fields,0..) |field, i| {
+            for (struct_pat.fields, 0..) |field, i| {
                 try writer.print("{s}: ", .{field.name});
                 try pretty_print_pattern(writer, field.pattern, level);
                 if (i < struct_pat.fields.len - 1) {
@@ -499,7 +498,7 @@ fn pretty_print_type_annotation(writer: anytype, type_ann: Parser.TypeAnnotation
         .Str => try writer.print("&str", .{}),
         .Tuple => |tuple| {
             try writer.print("(", .{});
-            for (tuple.types,0..) |_type, i| {
+            for (tuple.types, 0..) |_type, i| {
                 try pretty_print_type_annotation(writer, _type);
                 if (i < tuple.types.len - 1) {
                     try writer.print(", ", .{});
@@ -514,7 +513,7 @@ fn pretty_print_type_annotation(writer: anytype, type_ann: Parser.TypeAnnotation
         },
         .Function => |func_type| {
             try writer.print("fn(", .{});
-            for (func_type.parameters,0..) |param, i| {
+            for (func_type.parameters, 0..) |param, i| {
                 try pretty_print_type_annotation(writer, param);
                 if (i < func_type.parameters.len - 1) {
                     try writer.print(", ", .{});
@@ -528,7 +527,7 @@ fn pretty_print_type_annotation(writer: anytype, type_ann: Parser.TypeAnnotation
         },
         .Generic => |generic_type| {
             try writer.print("{s} <", .{generic_type.name});
-            for (generic_type.type_params,0..) |param, i| {
+            for (generic_type.type_params, 0..) |param, i| {
                 try pretty_print_type_annotation(writer, param);
                 if (i < generic_type.type_params.len - 1) {
                     try writer.print(", ", .{});
@@ -537,7 +536,7 @@ fn pretty_print_type_annotation(writer: anytype, type_ann: Parser.TypeAnnotation
             try writer.print(">", .{});
         },
         .Path => |path| {
-                try writer.print("{s}", .{path});
+            try writer.print("{s}", .{path});
         },
     }
 }
@@ -556,13 +555,13 @@ fn pretty_print_expression(writer: anytype, expr: Parser.Expression, level: usiz
             try pretty_print_block(writer, cond_expr.then_branch, level);
             if (cond_expr.else_branch) |else_br| {
                 try writer.print(" else ", .{});
-                        try pretty_print_block(writer, else_br, level);
+                try pretty_print_block(writer, else_br, level);
             }
         },
         .Loop => |loop_expr| {
             try writer.print("loop ", .{});
 
-            switch (loop_expr.*)  {
+            switch (loop_expr.*) {
                 .Loop => |infinite_expr| {
                     try writer.print("Loop", .{});
                     try writer.print("RB", .{});
@@ -576,7 +575,6 @@ fn pretty_print_expression(writer: anytype, expr: Parser.Expression, level: usiz
                     try writer.print("LB", .{});
                     try pretty_print_block(writer, while_expr.body, level);
                     try writer.print("LB", .{});
-
                 },
                 .For => |for_expr| {
                     try writer.print("for (", .{});
@@ -592,7 +590,7 @@ fn pretty_print_expression(writer: anytype, expr: Parser.Expression, level: usiz
         },
         .FunctionCall => |func_call| {
             try writer.print("{s}(", .{func_call.function_name});
-            for (func_call.arguments,0..) |arg, i| {
+            for (func_call.arguments, 0..) |arg, i| {
                 try pretty_print_expression(writer, arg, level);
                 if (i < func_call.arguments.len - 1) {
                     try writer.print(", ", .{});
@@ -618,11 +616,11 @@ fn pretty_print_expression(writer: anytype, expr: Parser.Expression, level: usiz
                     try writer.print("{d}", .{val});
                 },
                 .Boolean => |val| {
-            if (val) {
-                try writer.print("true", .{});
-                } else {
-                try writer.print("false", .{});
-                }
+                    if (val) {
+                        try writer.print("true", .{});
+                    } else {
+                        try writer.print("false", .{});
+                    }
                 },
                 .String => |val| {
                     try writer.print("{s}", .{escape_string(val)});
@@ -643,8 +641,6 @@ fn pretty_print_expression(writer: anytype, expr: Parser.Expression, level: usiz
 
 // Helper function to convert BinaryOperator to string
 fn binary_operator_to_str(op: Parser.BinaryOperator) []const u8 {
-
-
     return switch (op) {
         .Assign => "=",
         .LogicalOr => "||",

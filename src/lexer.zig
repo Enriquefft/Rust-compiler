@@ -14,6 +14,7 @@ pub const TokenType = enum {
 
     /// Represents a string.
     String,
+    Char,
 
     // functions
     /// 'fn'
@@ -23,6 +24,7 @@ pub const TokenType = enum {
     /// '->' used to declare a function return type.
     Arrow,
 
+    Loop,
     While,
     For,
     In,
@@ -78,6 +80,9 @@ pub const TokenType = enum {
     /// Represents the '!' operator.
     Factorial,
 
+    LogicalOr,
+LogicalAnd ,
+
     // Comparison operators
     /// Represents the '<' operator.
     LessThan,
@@ -90,7 +95,7 @@ pub const TokenType = enum {
     /// Represents the '==' operator.
     Equal,
     /// Represents the '!=' operator.
-    Different,
+    NotEqual,
 
     /// Represents the end of the input.
     EndOfFile,
@@ -112,7 +117,7 @@ pub const TokenType = enum {
     DocString,
 
     // Pending implementation
-    Struct
+    Struct,
 };
 
 /// A token with its type and optional lexeme. Used by the parser to interpret the expression.
@@ -177,7 +182,7 @@ pub const Token = struct {
             TokenType.GreaterThan => try writer.print(">", .{}),
             TokenType.GreaterThanOrEqual => try writer.print(">=", .{}),
             TokenType.Equal => try writer.print("==", .{}),
-            TokenType.Different => try writer.print("!=", .{}),
+            TokenType.NotEqual => try writer.print("!=", .{}),
             // Identifier and type tokens
             TokenType.Identifier => try print_lexeme(self, writer, "ID"),
 
@@ -185,6 +190,7 @@ pub const Token = struct {
             // End of file and invalid tokens
             TokenType.EndOfFile => try writer.print("EOF", .{}),
             TokenType.Invalid => try writer.print("Invalid token", .{}),
+            else => try print_lexeme(self, writer, "Unknown"),
         }
     }
 };
@@ -200,13 +206,16 @@ pub const Lexer = struct {
     /// A list of `Token` representing the parts of the expression.
     pub fn tokenize(self: *Lexer) ![]Token {
         var tokens = std.ArrayList(Token).init(std.heap.page_allocator);
+        std.debug.print("Tokens: \n", .{});
         while (true) {
             const token = self.next_token();
             if (token.token_type == .EndOfFile) {
                 break;
             }
+            std.debug.print("{}\n", .{ token});
             try tokens.append(token);
         }
+        std.debug.print("\n\n", .{});
         return try tokens.toOwnedSlice();
     }
 
@@ -244,6 +253,7 @@ pub const Lexer = struct {
             '&' => return Token{ .token_type = .Ampersand },
             '!' => return Token{ .token_type = .Exclamation },
             '"' => return parse_string(self),
+            '\'' => return parse_char(self),
             '*' => return Token{ .token_type = .Multiply }, // overlap with */, but is handled when parsing /*
             // '/' => return Token{ .token_type = .Divide }, // overlap with /*, //, ///
             // '=' => return Token{ .token_type = .Assign }, // overlap with ==
@@ -376,7 +386,7 @@ pub const Lexer = struct {
         if (prev == '!') {
             if (next == '=') {
                 self.current += 1;
-                return Token{ .token_type = .Different };
+                return Token{ .token_type = .NotEqual };
             }
             return Token{ .token_type = .Factorial };
         }
@@ -480,6 +490,23 @@ pub const Lexer = struct {
 
         const string_value = self.input[start .. self.current - 1];
         return Token{ .token_type = .String, .lexeme = string_value };
+    }
+    fn parse_char(self: *Lexer) Token {
+
+        const char_slice = self.input[self.current..self.current + 1];
+        self.current += 1;
+
+        if (self.current >= self.input.len) {
+            return Token{ .token_type = .Invalid };
+        }
+
+        if (self.input[self.current] != '\'') {
+            return Token{ .token_type = .Invalid };
+        }
+        self.current += 1;
+
+        return Token{ .token_type = .Char, .lexeme = char_slice };
+
     }
 };
 
