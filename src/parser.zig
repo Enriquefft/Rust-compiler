@@ -202,6 +202,7 @@ pub const Parser = struct {
     fn parseBlock(self: *Parser) !Block {
         _ =try self.expect(TokenType.LeftBrace);
 
+        // this line
         var statements = std.ArrayList(Statement).init(std.heap.page_allocator);
 
         while (self.peek()) |token| {
@@ -222,7 +223,6 @@ pub const Parser = struct {
         }
 
         return Block{
-            // src/parser.zig:221:37: error: expected type '[]const parser.Statement', found 'error{OutOfMemory}![]parser.Statement'
             .statements = try statements.toOwnedSlice(),
             .expression = block_value,
         };
@@ -712,7 +712,7 @@ pub const AssignmentExpression = struct {
 pub const ConditionalExpression = struct {
     condition: Expression,
     then_branch: Block,
-    else_branch: Block,
+    else_branch: ?Block,
 };
 
 // Literal represents literal values.
@@ -853,10 +853,10 @@ pub const MatchArm = struct {
 
 test "Parse a simple safe function" {
     const input =
-\\fn add(a: i32, b: i32) -> i32 {
-\\    a + b
-\\}
-;
+        \\fn add(a: i32, b: i32) -> i32 {
+        \\    a + b
+        \\}
+    ;
 
     const expected_ast = Program{
         .items = &[_]Item{

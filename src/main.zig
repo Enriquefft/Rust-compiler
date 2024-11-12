@@ -1,16 +1,19 @@
-//! Main entry point for the calculator.
 const std = @import("std");
 const parse = @import("parser.zig").parse;
+const Lexer = @import("lexer.zig").Lexer;
+const pretty_print = @import("ast.zig").pretty_print_program;
 
 pub fn main() !void {
-    var input: [64]u8 = undefined;
-    const stdin = std.io.getStdIn().reader();
-    const stdout = std.io.getStdOut().writer();
+    const input =
+        \\fn add(a: i32, b: i32) -> i32 {
+        \\    a + b
+        \\}
+    ;
+    var lexer = Lexer{ .input = input };
+    const tokens = try lexer.tokenize();
+    const ast = try parse(tokens);
+    const writer = std.io.getStdOut().writer();
+    try pretty_print( writer,ast);
 
-    _ = try stdin.readUntilDelimiter(&input, '\n');
 
-    try stdout.print("Input: {s}\n", .{input});
-
-    const result = try parse(&input);
-    try stdout.print("Result: {}\n", .{result});
 }
