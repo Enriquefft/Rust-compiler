@@ -2,6 +2,7 @@ const std = @import("std");
 const Lexer = @import("lexer.zig").Lexer;
 const Token = @import("lexer.zig").Token;
 const TokenType = @import("lexer.zig").TokenType;
+const serialize = @import("serialize.zig").serialize_program;
 
 pub const ParseError = error{
     UnexpectedToken,
@@ -9,19 +10,21 @@ pub const ParseError = error{
     ExpectedType,
 };
 
-pub fn parse(tokens: []Token) !Program {
-    var parser = Parser.init(tokens);
+pub fn parse(tokens: []Token, allocator: *const std.mem.Allocator) !Program {
+    var parser = Parser.init(tokens, allocator);
     return parser.parseProgram();
 }
 
 pub const Parser = struct {
     tokens: []const Token,
     current: usize, // Index of the current token
+    allocator: *const std.mem.Allocator,
 
-    pub fn init(tokens: []Token) Parser {
+    pub fn init(tokens: []Token, allocator: *const std.mem.Allocator) Parser {
         return Parser{
             .tokens = tokens,
             .current = 0,
+            .allocator = allocator,
         };
     }
 
@@ -80,7 +83,7 @@ pub const Parser = struct {
     }
 
     pub fn parseProgram(self: *Parser) !Program {
-        var items = std.ArrayList(Item).init(std.heap.page_allocator);
+        var items = std.ArrayList(Item).init(self.allocator.*);
 
         while (self.peek()) |token| {
             if (token.token_type == TokenType.EndOfFile) {
@@ -97,31 +100,7 @@ pub const Parser = struct {
             .items = try items.toOwnedSlice(),
         };
     }
-    // item            = [ DocString ]
-    //              | function
-    //              | struct_def
-    //              | enum_def
-    //              | trait_def
-    //              | impl_def
-    //              | use_decl
-    //              | mod_decl
-    //              | constant
-    //              | type_alias
-    //              | macro_def
-    //              | foreign_mod
 
-    /// Checks if the item has a docstring and if its any of the following:
-    /// - Function
-    /// - Struct
-    /// - Enum
-    /// - Trait
-    /// - Impl
-    /// - Use
-    /// - Mod
-    /// - Const
-    /// - Type
-    /// - Macro
-    /// - Foreign
     fn parseItem(self: *Parser) !Item {
         var docstring: ?[]const u8 = null;
 
@@ -173,7 +152,6 @@ pub const Parser = struct {
         _ = try self.expect(TokenType.FN);
 
         const function_name = (try self.expect(TokenType.Identifier)).lexeme;
-        std.debug.print("parseFunction: {s}\n", .{function_name});
 
         _ = try self.expect(TokenType.LeftParen);
         const parameters = try self.parseParameterList();
@@ -197,14 +175,11 @@ pub const Parser = struct {
     }
 
     fn parseBlock(self: *Parser) !Block {
-
-        std.debug.print("parseBlock start\n", .{});
-
         _ = try self.expect(TokenType.LeftBrace);
 
         // this line
-        var statements = std.ArrayList(Statement).init(std.heap.page_allocator);
-        var block_value: ?Expression = null;
+        var statements = std.ArrayList(Statement).init(self.allocator.*);
+        var block_value: ?*const Expression = null;
 
         while (self.peek()) |token| {
             if (token.token_type == TokenType.RightBrace) {
@@ -212,11 +187,9 @@ pub const Parser = struct {
             }
 
             if (self.parseExpression()) |exp| {
-                std.debug.print("parseExpression succeeded\n", .{});
                 block_value = exp;
                 break;
             } else |_| {
-                std.debug.print("parseExpression failed, trying parseStatement\n", .{});
                 const statement = try self.parseStatement();
                 try statements.append(statement);
             }
@@ -230,9 +203,6 @@ pub const Parser = struct {
     }
 
     fn parseStatement(self: *Parser) !Statement {
-
-        std.debug.print("parseStatement start\n", .{});
-
         const current_token = self.peek().?;
 
         if (current_token.token_type == TokenType.Let) {
@@ -250,7 +220,7 @@ pub const Parser = struct {
         if (self.match(&[_]TokenType{TokenType.DoubleColon})) {
             type_annotation = try self.parseTypeAnnotation();
         }
-        var value: ?Expression = null;
+        var value: ?*const Expression = null;
         if (self.match(&[_]TokenType{TokenType.Assign})) {
             value = try self.parseExpression();
         }
@@ -263,7 +233,7 @@ pub const Parser = struct {
     }
 
     fn parseParameterList(self: *Parser) ![]Parameter {
-        var parameters = std.ArrayList(Parameter).init(std.heap.page_allocator);
+        var parameters = std.ArrayList(Parameter).init(self.allocator.*);
 
         if (self.peek()) |token| {
             if (token.token_type == TokenType.RightParen) {
@@ -308,18 +278,40 @@ pub const Parser = struct {
             }
         }
 
-        const base_type_token = self.advance() orelse return error.ExpectedType;
-        const base_type = switch (base_type_token.token_type) {
-            TokenType.Type => try getBaseType(base_type_token.lexeme),
-            TokenType.Identifier => BaseType{ .Path = base_type_token.lexeme },
-            else => return error.ExpectedType,
-        };
+        const base_type = try parseBaseType(self);
+        // const base_type_token = self.advance() orelse return error.ExpectedType;
+        //
+        // const base_type = switch (base_type_token.token_type) {
+        //     TokenType.Type => try getBaseType(base_type_token.lexeme),
+        //     TokenType.Identifier => BaseType{ .Path = base_type_token.lexeme },
+        //     else => return error.ExpectedType,
+        // };
 
         return TypeAnnotation{
             .is_reference = is_reference,
             .is_mutable = is_mutable,
-            .base_type = &base_type,
+            .base_type = base_type,
         };
+    }
+
+    fn parseBaseType(self: *Parser) !*const BaseType {
+        const token = self.peek().?;
+        const base_type = try self.allocator.create(BaseType);
+        switch (token.token_type) {
+            TokenType.Type => {
+                base_type.* = try getBaseType(token.lexeme);
+                _ = self.advance().?; // Consume the type token
+            },
+            TokenType.Identifier => {
+                const path = token.lexeme;
+                _ = self.advance().?; // Consume the identifier
+                // Allocate a BaseType with Path variant
+                base_type.* = BaseType{ .Path = path };
+                return base_type;
+            },
+            else => return error.ExpectedType,
+        }
+        return base_type;
     }
 
     fn getBaseType(lexeme: []const u8) !BaseType {
@@ -336,232 +328,207 @@ pub const Parser = struct {
         } else if (std.mem.eql(u8, lexeme, "str")) {
             return BaseType.Str;
         } else {
+            std.debug.print("Parsed type-path: {s}\n", .{lexeme});
             return BaseType{ .Path = lexeme };
         }
     }
 
-
-const Precedence = enum(u4) {
+    const Precedence = enum(u4) {
         NotFound = 0,
-    Lowest = 1,
-    LogicalOr=2,       // ||
-    LogicalAnd=3,      // &&
-    Equality=4,        // ==, !=
-    Comparison=5,      // <, >, <=, >=
-    Term=6,            // +, -
-    Factor=7,          // *, /
-    Unary=8,           // !, -
-    Call=9,            // function calls
-    Primary=10,
-};
-fn getPrecedence(token_type: TokenType) Precedence {
-    return switch (token_type) {
-        TokenType.LogicalOr => Precedence.LogicalOr,
-        TokenType.LogicalAnd => Precedence.LogicalAnd,
-        TokenType.Equal, TokenType.NotEqual => Precedence.Equality,
-        TokenType.LessThan, TokenType.GreaterThan, TokenType.LessThanOrEqual, TokenType.GreaterThanOrEqual => Precedence.Comparison,
-        TokenType.Plus, TokenType.Minus => Precedence.Term,
-        TokenType.Multiply, TokenType.Divide => Precedence.Factor,
-        TokenType.LeftParen => Precedence.Call,
-        else => @enumFromInt(0),
+        Lowest = 1,
+        LogicalOr = 2, // ||
+        LogicalAnd = 3, // &&
+        Equality = 4, // ==, !=
+        Comparison = 5, // <, >, <=, >=
+        Term = 6, // +, -
+        Factor = 7, // *, /
+        Unary = 8, // !, -
+        Call = 9, // function calls
+        Primary = 10,
     };
-}
+    fn getPrecedence(token_type: TokenType) Precedence {
+        return switch (token_type) {
+            TokenType.LogicalOr => Precedence.LogicalOr,
+            TokenType.LogicalAnd => Precedence.LogicalAnd,
+            TokenType.Equal, TokenType.NotEqual => Precedence.Equality,
+            TokenType.LessThan, TokenType.GreaterThan, TokenType.LessThanOrEqual, TokenType.GreaterThanOrEqual => Precedence.Comparison,
+            TokenType.Plus, TokenType.Minus => Precedence.Term,
+            TokenType.Multiply, TokenType.Divide => Precedence.Factor,
+            TokenType.LeftParen => Precedence.Call,
+            else => @enumFromInt(0),
+        };
+    }
 
-fn parsePrimary(self: *Parser) !Expression {
-    const token = self.advance().?;
-    return switch (token.token_type) {
-        TokenType.Identifier => Expression{ .Identifier = token.lexeme },
-        TokenType.Integer => {
-            const value = try std.fmt.parseInt(i64, token.lexeme, 10);
-            return Expression{ .Literal = Literal{ .Integer = value } };
-        },
-        TokenType.Float => {
-            const value = try std.fmt.parseFloat(f64, token.lexeme);
-            return Expression{ .Literal = Literal{ .Float = value } };
-        },
-        TokenType.Boolean => {
-            const value = std.mem.eql(u8, token.lexeme, "true");
-            return Expression{ .Literal = Literal{ .Boolean = value } };
-        },
-        TokenType.String => Expression{ .Literal = Literal{ .String = token.lexeme } },
-        TokenType.Char => Expression{ .Literal = Literal{ .Char = token.lexeme[0] } },
-        TokenType.LeftParen => {
+    fn parsePrimary(self: *Parser) !*const Expression {
+        const token = self.advance().?;
+
+        if (token.token_type == TokenType.LeftParen) {
             const expr = try self.parseExpressionHelper(Precedence.Lowest);
             _ = try self.expect(TokenType.RightParen);
             return expr;
-        },
-        else => return error.UnexpectedToken,
-    };
-}
+        }
 
-fn parseUnaryOp(self: *Parser) !Expression {
-    const token = self.advance().?;
-    const operator = switch (token.token_type) {
-        TokenType.Minus => UnaryOperator.Negate,
-        TokenType.Exclamation => UnaryOperator.LogicalNot,
-        else => return error.UnexpectedToken,
-    };
+        const expr_ptr = try self.allocator.create(Expression);
 
-    const operand = try self.parseExpressionHelper(Precedence.Unary);
-    return Expression{
-        .UnaryOperation = UnaryOperation{
-            .operator = operator,
-            .operand = &operand,
-        },
-    };
-}
-fn parseBinaryOp(self: *Parser, left: Expression, min_prec: Precedence) !Expression {
+        const expr: Expression = switch (token.token_type) {
+            TokenType.Identifier => Expression{ .Identifier = token.lexeme },
+            TokenType.Integer => Expression{ .Literal = Literal{ .Integer = try std.fmt.parseInt(i64, token.lexeme, 10) } },
+            TokenType.Float => Expression{ .Literal = Literal{ .Float = try std.fmt.parseFloat(f64, token.lexeme) } },
+            TokenType.Boolean => Expression{
+                .Literal = Literal{ .Boolean = std.mem.eql(u8, token.lexeme, "true") },
+            },
+            TokenType.String => Expression{ .Literal = Literal{ .String = token.lexeme } },
+            TokenType.Char => Expression{ .Literal = Literal{ .Char = token.lexeme[0] } },
+            else => return error.UnexpectedToken,
+        };
+        expr_ptr.* = expr;
+        return expr_ptr;
+    }
 
-        std.debug.print("parseBinaryOp start with min_prec: {}\n", .{min_prec});
-
-        var new_left = left;
-    while (true) {
-        const lookahead = self.peek();
-        if (lookahead == null) break;
-        const prec = getPrecedence(lookahead.?.token_type);
-            std.debug.print("parseBinaryOp, found lookahead: {}\n", .{lookahead.?});
-            std.debug.print("parseBinaryOp, found prec: {}\n", .{prec});
-
-
-            std.debug.print("prec value: {d}\n", .{@intFromEnum(prec)});
-            std.debug.print("min_prec value: {d}\n", .{@intFromEnum(min_prec)});
-
-
-        if (@intFromEnum(prec) < @intFromEnum(min_prec)) {
-                std.debug.print("parseBinaryOp, prec < min_prec, breaking\n", .{});
-                break;
-            }
-
-        const operator_token = self.advance().?;
-        const operator = switch (operator_token.token_type) {
-            TokenType.LogicalOr => BinaryOperator.LogicalOr,
-            TokenType.LogicalAnd => BinaryOperator.LogicalAnd,
-            TokenType.Equal => BinaryOperator.Equal,
-            TokenType.NotEqual => BinaryOperator.NotEqual,
-            TokenType.LessThan => BinaryOperator.LessThan,
-            TokenType.GreaterThan => BinaryOperator.GreaterThan,
-            TokenType.LessThanOrEqual => BinaryOperator.LessThanOrEqual,
-            TokenType.GreaterThanOrEqual => BinaryOperator.GreaterThanOrEqual,
-            TokenType.Plus => BinaryOperator.Add,
-            TokenType.Minus => BinaryOperator.Subtract,
-            TokenType.Multiply => BinaryOperator.Multiply,
-            TokenType.Divide => BinaryOperator.Divide,
+    fn parseUnaryOp(self: *Parser) !*const Expression {
+        const token = self.advance().?;
+        const operator = switch (token.token_type) {
+            TokenType.Minus => UnaryOperator.Negate,
+            TokenType.Exclamation => UnaryOperator.LogicalNot,
             else => return error.UnexpectedToken,
         };
 
-            std.debug.print("parseBinaryOp, found operator: {s}\n", .{operator_token});
+        const expr_ptr = try self.allocator.create(Expression);
+        const operand = try self.parseExpressionHelper(Precedence.Unary);
 
-        // Determine the precedence for the next expression
-        const next_min_prec:u4 = switch (operator) {
-            BinaryOperator.LogicalOr, BinaryOperator.LogicalAnd, BinaryOperator.Equal, BinaryOperator.NotEqual,
-            BinaryOperator.LessThan, BinaryOperator.GreaterThan, BinaryOperator.LessThanOrEqual, BinaryOperator.GreaterThanOrEqual => @intFromEnum(prec) + 1,
-            BinaryOperator.Add, BinaryOperator.Subtract => @intFromEnum(prec) + 1,
-            BinaryOperator.Multiply, BinaryOperator.Divide => @intFromEnum(prec) + 1,
-            else => @intFromEnum(Precedence.Lowest),
-        };
-
-            std.debug.print("parseBinaryOp, parsing right side", .{});
-        // Parse the right-hand side expression
-        const right = try self.parseExpressionHelper(@enumFromInt(next_min_prec));
-            std.debug.print("parseBinaryOp, parsed right side\n", .{});
-
-
-        // Combine the left and right expressions with the operator
-        new_left = Expression{
-            .BinaryOperation = BinaryOperation{
-                .left = &left,
+        expr_ptr.* = Expression{
+            .UnaryOperation = UnaryOperation{
                 .operator = operator,
-                .right = &right,
+                .operand = operand,
             },
         };
+        return expr_ptr;
     }
-        std.debug.print("parseBinaryOp finished , returning new_left\n", .{});
+    fn parseBinaryOp(self: *Parser, left: *const Expression, min_prec: Precedence) !*const Expression {
+        var current_left = left;
+        while (true) {
+            const lookahead = self.peek();
+            if (lookahead == null) break;
+            const prec = getPrecedence(lookahead.?.token_type);
+            if (@intFromEnum(prec) < @intFromEnum(min_prec)) {
+                break;
+            }
 
-    return new_left;
-}
+            const operator_token = self.advance().?;
+            const operator = switch (operator_token.token_type) {
+                TokenType.LogicalOr => BinaryOperator.LogicalOr,
+                TokenType.LogicalAnd => BinaryOperator.LogicalAnd,
+                TokenType.Equal => BinaryOperator.Equal,
+                TokenType.NotEqual => BinaryOperator.NotEqual,
+                TokenType.LessThan => BinaryOperator.LessThan,
+                TokenType.GreaterThan => BinaryOperator.GreaterThan,
+                TokenType.LessThanOrEqual => BinaryOperator.LessThanOrEqual,
+                TokenType.GreaterThanOrEqual => BinaryOperator.GreaterThanOrEqual,
+                TokenType.Plus => BinaryOperator.Add,
+                TokenType.Minus => BinaryOperator.Subtract,
+                TokenType.Multiply => BinaryOperator.Multiply,
+                TokenType.Divide => BinaryOperator.Divide,
+                else => return error.UnexpectedToken,
+            };
 
-    fn parseExpression(self: *Parser) !Expression {
+            // Determine the precedence for the next expression
+            const next_min_prec: u4 = switch (operator) {
+                BinaryOperator.LogicalOr, BinaryOperator.LogicalAnd, BinaryOperator.Equal, BinaryOperator.NotEqual, BinaryOperator.LessThan, BinaryOperator.GreaterThan, BinaryOperator.LessThanOrEqual, BinaryOperator.GreaterThanOrEqual => @intFromEnum(prec) + 1,
+                BinaryOperator.Add, BinaryOperator.Subtract => @intFromEnum(prec) + 1,
+                BinaryOperator.Multiply, BinaryOperator.Divide => @intFromEnum(prec) + 1,
+                else => @intFromEnum(Precedence.Lowest),
+            };
 
-        std.debug.print("parseExpression start\n", .{});
+            // Parse the right-hand side expression
+            const right_expr = try self.parseExpressionHelper(@enumFromInt(next_min_prec));
 
+            // Allocate new BinaryOperation on the heap
+            const bin_op = try self.allocator.create(BinaryOperation);
+            bin_op.* = BinaryOperation{
+                .left = current_left,
+                .operator = operator,
+                .right = right_expr,
+            };
+
+            // Allocate new Expression on the heap
+            const new_expr = try self.allocator.create(Expression);
+            new_expr.* = Expression{ .BinaryOperation = bin_op.* };
+
+            // Update current_left for the next iteration
+            current_left = new_expr;
+        }
+        return current_left;
+    }
+
+    fn parseExpression(self: *Parser) !*const Expression {
         return try self.parseExpressionHelper(Precedence.Lowest);
     }
 
-fn parseExpressionHelper(self: *Parser, min_prec: Precedence ) anyerror!Expression {
-    const expr = switch (self.peek().?.token_type) {
-        TokenType.If => Expression{ .Conditional = &try self.parseConditionalExpression() },
-        TokenType.Loop, TokenType.While, TokenType.For => Expression{ .Loop = &try self.parseLoopExpression() },
-        TokenType.Identifier, TokenType.Integer, TokenType.Float, TokenType.Boolean, TokenType.String, TokenType.Char, TokenType.LeftParen, TokenType.Minus, TokenType.Exclamation => try self.parseUnaryOrPrimary(),
-        else => return error.UnexpectedToken,
-    };
-    std.debug.print("parseExpressionHelper, found 1st expr\n", .{});
+    fn parseExpressionHelper(self: *Parser, min_prec: Precedence) anyerror!*const Expression {
+        const token_type = self.peek().?.token_type;
 
-    return try self.parseBinaryOp(expr, min_prec);
-}
+        switch (token_type) {
+            TokenType.If => {
+                const expr_ptr = try self.allocator.create(Expression);
+                expr_ptr.* = Expression{ .Conditional = try self.parseConditionalExpression() };
+                return try self.parseBinaryOp(expr_ptr, min_prec);
+            },
+            TokenType.Loop, TokenType.While, TokenType.For => {
+                const expr_ptr = try self.allocator.create(Expression);
+                expr_ptr.* = Expression{ .Loop = try self.parseLoopExpression() };
 
+                return try self.parseBinaryOp(expr_ptr, min_prec);
+            },
+            TokenType.Identifier, TokenType.Integer, TokenType.Float, TokenType.Boolean, TokenType.String, TokenType.Char, TokenType.LeftParen, TokenType.Minus, TokenType.Exclamation => {
+                const expr_ptr = try self.parseUnaryOrPrimary();
+                return try self.parseBinaryOp(expr_ptr, min_prec);
+            },
+            else => return error.UnexpectedToken,
+        }
+    }
 
-fn parseUnaryOrPrimary(self: *Parser) !Expression {
-    const token = self.peek().?;
-    return switch (token.token_type) {
-        TokenType.Minus, TokenType.Exclamation => try self.parseUnaryOp(),
-        else => try self.parsePrimary(),
-    };
-}
+    fn parseUnaryOrPrimary(self: *Parser) !*const Expression {
+        const token = self.peek().?;
+        return switch (token.token_type) {
+            TokenType.Minus, TokenType.Exclamation => try self.parseUnaryOp(),
+            else => try self.parsePrimary(),
+        };
+    }
 
-    fn parseConditionalExpression(self: *Parser) anyerror!ConditionalExpression {
+    fn parseConditionalExpression(self: *Parser) anyerror!*const ConditionalExpression {
         _ = try self.expect(TokenType.If);
         const condition = try self.parseExpression();
         const then_branch = try self.parseBlock();
         var else_branch: ?Block = null;
         if (self.match(&[_]TokenType{TokenType.Else})) {
-                else_branch = try self.parseBlock();
+            else_branch = try self.parseBlock();
         }
-        return ConditionalExpression{
+        const cond_expr = try self.allocator.create(ConditionalExpression);
+        cond_expr.* = ConditionalExpression{
             .condition = condition,
             .then_branch = then_branch,
             .else_branch = else_branch,
         };
+        return cond_expr;
     }
 
-    fn parseLoopExpression(self: *Parser) anyerror!LoopExpression {
-        return LoopExpression{
+    fn parseLoopExpression(self: *Parser) anyerror!*const LoopExpression {
+        const loop_expr = try self.allocator.create(LoopExpression);
+        loop_expr.* = LoopExpression{
             .Loop = Loop{ .body = try self.parseBlock() },
         };
-    }
-
-    fn parseBinaryOperator(self: *Parser) anyerror!BinaryOperator {
-        const current_token = self.peek().?;
-        const operator = switch (current_token.token_type) {
-            TokenType.Assign => BinaryOperator.Assign,
-            TokenType.LogicalOr => BinaryOperator.LogicalOr,
-            TokenType.LogicalAnd => BinaryOperator.LogicalAnd,
-            TokenType.Equal => BinaryOperator.Equal,
-            TokenType.NotEqual => BinaryOperator.NotEqual,
-            TokenType.LessThan => BinaryOperator.LessThan,
-            TokenType.GreaterThan => BinaryOperator.GreaterThan,
-            TokenType.LessThanOrEqual => BinaryOperator.LessThanOrEqual,
-            TokenType.GreaterThanOrEqual => BinaryOperator.GreaterThanOrEqual,
-            TokenType.Plus => BinaryOperator.Add,
-            TokenType.Minus => BinaryOperator.Subtract,
-            TokenType.Multiply => BinaryOperator.Multiply,
-            TokenType.Divide => BinaryOperator.Divide,
-            else => return error.UnexpectedToken,
-        };
-        std.debug.print("found BinaryOperator: {}\n", .{current_token});
-        _ = self.advance();
-        return operator;
+        return loop_expr;
     }
 
     fn parseAssignmentExpression(self: *Parser) anyerror!AssignmentExpression {
         const identifier = (try self.expect(TokenType.Identifier)).lexeme;
         _ = try self.expect(TokenType.Assign);
-        std.debug.print("parseAssignmentExpression: {s}\n", .{identifier});
 
         const assignment_value = try self.parseExpression();
 
         return AssignmentExpression{
-                .identifier = identifier,
-                .value = assignment_value,
+            .identifier = identifier,
+            .value = assignment_value,
         };
     }
 };
@@ -651,17 +618,17 @@ pub const BaseType = union(enum) {
 };
 
 pub const TupleType = struct {
-    types: []TypeAnnotation,
+    types: []const TypeAnnotation,
 };
 
 pub const ArrayType = struct {
-    element_type: TypeAnnotation,
+    element_type: *const TypeAnnotation,
     size: u64, // Assuming size is known at compile time, idk
 };
 
 pub const FunctionType = struct {
-    parameters: []TypeAnnotation,
-    return_type: ?TypeAnnotation,
+    parameters: []const TypeAnnotation,
+    return_type: ?*const TypeAnnotation,
 };
 
 pub const GenericType = struct {
@@ -737,14 +704,14 @@ pub const StaticVariable = struct {
     name: []const u8,
     type_annotation: TypeAnnotation,
     is_mutable: bool,
-    value: Expression,
+    value: *const Expression,
 };
 
 pub const ConstantVariable = struct {
     name: []const u8,
     is_mutable: bool,
     type_annotation: ?TypeAnnotation,
-    value: Expression,
+    value: *const Expression,
 };
 
 pub const TypeAlias = struct {
@@ -795,7 +762,7 @@ pub const Path = struct {
 
 pub const Statement = union(enum) {
     LetStatement: LetStatement,
-    Expression: Expression,
+    Expression: *const Expression,
     Item: Item,
 };
 
@@ -803,7 +770,7 @@ pub const LetStatement = struct {
     is_mutable: bool,
     pattern: Pattern,
     type_annotation: ?TypeAnnotation,
-    value: ?Expression,
+    value: ?*const Expression,
 };
 
 pub const Pattern = union(enum) {
@@ -834,7 +801,7 @@ pub const ReturnStatement = struct {
 // Block represents a block of statements with an optional trailing expression.
 pub const Block = struct {
     statements: []const Statement,
-    expression: ?Expression,
+    expression: ?*const Expression,
 };
 
 pub const WhileStatement = struct {
@@ -868,16 +835,16 @@ pub const Expression = union(enum) {
     UnaryOperation: UnaryOperation,
     Literal: Literal,
     Identifier: []const u8,
-    Expression: *Expression,
+    Expression: *const Expression,
 };
 
 pub const AssignmentExpression = struct {
     identifier: []const u8,
-    value: Expression,
+    value: *const Expression,
 };
 
 pub const ConditionalExpression = struct {
-    condition: Expression,
+    condition: *const Expression,
     then_branch: Block,
     else_branch: ?Block,
 };
@@ -903,7 +870,7 @@ pub const UnaryOperation = struct {
 
 pub const FunctionCall = struct {
     function_name: []const u8,
-    arguments: []Expression,
+    arguments: []*const Expression,
 };
 
 pub const FieldAccess = struct {
@@ -944,34 +911,35 @@ pub const Loop = struct {
 };
 
 pub const WhileLoop = struct {
-    condition: Expression,
+    condition: *const Expression,
     body: Block,
 };
 
 pub const ForLoop = struct {
     iterator: Pattern,
-    iterable: Expression,
+    iterable: *const Expression,
     body: Block,
 };
 
 pub const IfLetExpression = struct {
     pattern: Pattern,
-    expression: Expression,
+    expression: *const Expression,
     then_branch: Block,
     else_branch: ?ElseBranch,
 };
 
 pub const MatchExpression = struct {
-    value: Expression,
+    value: *const Expression,
     arms: []MatchArm,
 };
 
 pub const MatchArm = struct {
     pattern: Pattern,
-    guard: ?Expression,
-    result: Expression,
+    guard: ?*const Expression,
+    result: *const Expression,
 };
 
+const testing = std.testing;
 
 test "Parse a simple safe function" {
     const input =
@@ -980,46 +948,44 @@ test "Parse a simple safe function" {
         \\}
     ;
 
-    const expected_ast = Program{
-        .items = &[_]Item{
-            Item{
-                .docstring = null,
-                .content = ItemContent{
-                    .Function = Function{
-                        .is_unsafe = false,
-                        .fname = "add",
-                        .generics = null,
-                        .parameters = &[_]Parameter{
-                            Parameter{
-                                .name = "a",
-                                .type_annotation = TypeAnnotation{
-                                    .is_reference = false,
-                                    .is_mutable = false,
-                                    .base_type = &.I32,
-                                },
-                            },
-                            Parameter{
-                                .name = "b",
-                                .type_annotation = TypeAnnotation{
-                                    .is_reference = false,
-                                    .is_mutable = false,
-                                    .base_type = &.I32,
-                                },
+    const items: []const Item = &[_]Item{
+        Item{
+            .docstring = null,
+            .content = ItemContent{
+                .Function = Function{
+                    .is_unsafe = false,
+                    .fname = "add",
+                    .generics = null,
+                    .parameters = &[_]Parameter{
+                        Parameter{
+                            .name = "a",
+                            .type_annotation = TypeAnnotation{
+                                .is_reference = false,
+                                .is_mutable = false,
+                                .base_type = &.I32,
                             },
                         },
-                        .return_type = TypeAnnotation{
-                            .is_reference = false,
-                            .is_mutable = false,
-                            .base_type = &.I32,
+                        Parameter{
+                            .name = "b",
+                            .type_annotation = TypeAnnotation{
+                                .is_reference = false,
+                                .is_mutable = false,
+                                .base_type = &.I32,
+                            },
                         },
-                        .body = Block{
-                            .statements = &[_]Statement{},
-                            .expression = Expression{
-                                .BinaryOperation = BinaryOperation{
-                                    .left = &Expression{ .Identifier = "a" },
-                                    .operator = .Add,
-                                    .right = &Expression{ .Identifier = "b" },
-                                },
+                    },
+                    .return_type = TypeAnnotation{
+                        .is_reference = false,
+                        .is_mutable = false,
+                        .base_type = &.I32,
+                    },
+                    .body = Block{
+                        .statements = &[_]Statement{},
+                        .expression = &Expression{
+                            .BinaryOperation = BinaryOperation{
+                                .left = &Expression{ .Identifier = "a" },
+                                .operator = .Add,
+                                .right = &Expression{ .Identifier = "b" },
                             },
                         },
                     },
@@ -1028,13 +994,42 @@ test "Parse a simple safe function" {
         },
     };
 
+    const expected_ast = Program{ .items = items };
+
     try test_parser(input, expected_ast);
 }
 
 fn test_parser(input: []const u8, expected_ast: Program) !void {
+    // Temporal fix
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+
+    // this will free anything created from this arena
+    defer arena.deinit();
+
+    // create an std.mem.Allocator from the arena, this will be
+    // the allocator we'll use internally
+    const allocator = arena.allocator();
+
+    // TODO: Implement deallocation at parse level as a member function
+    // const allocator = &testing.allocator;
+
     var lexer = Lexer{ .input = input };
     const tokens = try lexer.tokenize();
-    const ast = try parse(tokens);
+    const ast = try parse(tokens, &allocator);
 
-    try std.testing.expectEqual(ast, expected_ast);
+    var actual_buffer = std.ArrayList(u8).init(allocator);
+    defer actual_buffer.deinit();
+    const actual_writer = actual_buffer.writer();
+
+    var expected_buffer = std.ArrayList(u8).init(allocator);
+    defer expected_buffer.deinit();
+    const expected_writer = expected_buffer.writer();
+
+        try serialize(actual_writer, ast);
+     try serialize(expected_writer, expected_ast);
+
+    const actual_json = actual_buffer.items;
+    const expected_json = expected_buffer.items;
+
+    try std.testing.expectEqualSlices(u8, actual_json, expected_json);
 }

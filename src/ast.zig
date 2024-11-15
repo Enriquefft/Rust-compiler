@@ -95,11 +95,11 @@ fn pretty_print_function(writer: anytype, func: Parser.Function, level: usize) !
         try pretty_print_type_annotation(writer, ret_type);
     }
 
-    try writer.print(" LB\n", .{});
+    try writer.print(" {{\n", .{});
     // Print function body
     try pretty_print_block(writer, func.body, level + 1);
     try indent(writer, level);
-    try writer.print("RB\n", .{});
+    try writer.print("}}\n", .{});
 }
 
 // Function to pretty print a Struct
@@ -119,7 +119,7 @@ fn pretty_print_struct(writer: anytype, struct_def: Parser.StructDefinition, lev
         try writer.print(">", .{});
     }
 
-    try writer.print(" LB\n", .{});
+    try writer.print(" {{\n", .{});
     // Print struct fields
     for (struct_def.fields) |field| {
         try indent(writer, level + 1);
@@ -128,7 +128,7 @@ fn pretty_print_struct(writer: anytype, struct_def: Parser.StructDefinition, lev
         try writer.print(",\n", .{});
     }
     try indent(writer, level);
-    try writer.print("RB\n", .{});
+    try writer.print("}}\n", .{});
 }
 
 // Function to pretty print an Enum
@@ -148,7 +148,7 @@ fn pretty_print_enum(writer: anytype, enum_def: Parser.EnumDefinition, level: us
         try writer.print(">", .{});
     }
 
-    try writer.print(" LB\n", .{});
+    try writer.print(" {{\n", .{});
     // Print enum variants
     for (enum_def.variants) |variant| {
         try indent(writer, level + 1);
@@ -166,7 +166,7 @@ fn pretty_print_enum(writer: anytype, enum_def: Parser.EnumDefinition, level: us
         try writer.print(",\n", .{});
     }
     try indent(writer, level);
-    try writer.print("RB\n", .{});
+    try writer.print("}}\n", .{});
 }
 
 // Function to pretty print a Trait
@@ -186,7 +186,7 @@ fn pretty_print_trait(writer: anytype, trait_def: Parser.TraitDefinition, level:
         try writer.print(">", .{});
     }
 
-    try writer.print(" LB\n", .{});
+    try writer.print(" {{\n", .{});
     // Print trait items
     for (trait_def.items) |item| {
         switch (item) {
@@ -216,7 +216,7 @@ fn pretty_print_trait(writer: anytype, trait_def: Parser.TraitDefinition, level:
         }
     }
     try indent(writer, level);
-    try writer.print("RB\n", .{});
+    try writer.print("}}\n", .{});
 }
 
 // Function to pretty print an Impl
@@ -234,7 +234,7 @@ fn pretty_print_impl(writer: anytype, impl_def: Parser.ImplDefinition, level: us
     // Print type being implemented
     try pretty_print_type_annotation(writer, impl_def.for_type);
 
-    try writer.print(" LB\n", .{});
+    try writer.print(" {{\n", .{});
     // Print impl items
     for (impl_def.items) |item| {
         switch (item) {
@@ -247,20 +247,20 @@ fn pretty_print_impl(writer: anytype, impl_def: Parser.ImplDefinition, level: us
         }
     }
     try indent(writer, level);
-    try writer.print("RB\n", .{});
+    try writer.print("}}\n", .{});
 }
 
 // Function to pretty print a Module
 fn pretty_print_module(writer: anytype, mod_decl: Parser.ModuleDeclaration, level: usize) anyerror!void {
     try indent(writer, level);
-    try writer.print("mod {s} LB\n", .{mod_decl.name});
+    try writer.print("mod {s} {{\n", .{mod_decl.name});
     if (mod_decl.items) |items| {
         for (items) |item| {
             try pretty_print_item(writer, item, level + 1);
         }
     }
     try indent(writer, level);
-    try writer.print("RB\n", .{});
+    try writer.print("}}\n", .{});
 }
 
 // Function to pretty print a Static Variable
@@ -315,13 +315,13 @@ fn pretty_print_type_alias(writer: anytype, type_alias: Parser.TypeAlias, level:
 // Function to pretty print a Macro Definition
 fn pretty_print_macro_definition(writer: anytype, macro_def: Parser.MacroDefinition, level: usize) !void {
     try indent(writer, level);
-    try writer.print("macro_rules! {s} LB\n", .{macro_def.name});
+    try writer.print("macro_rules! {s} {{\n", .{macro_def.name});
     for (macro_def.rules) |rule| {
         try indent(writer, level + 1);
         try writer.print("{s} => {s},\n", .{ rule.pattern, rule.replacement });
     }
     try indent(writer, level);
-    try writer.print("RB\n", .{});
+    try writer.print("}}\n", .{});
 }
 
 // Function to pretty print a Foreign Module
@@ -331,7 +331,7 @@ fn pretty_print_foreign_mod(writer: anytype, foreign_mod: Parser.ForeignMod, lev
     if (foreign_mod.abi) |abi| {
         try writer.print("{s} ", .{abi});
     }
-    try writer.print("LB\n", .{});
+    try writer.print("{{\n", .{});
     for (foreign_mod.items) |item| {
         switch (item) {
             .Function => |foreign_func| {
@@ -364,7 +364,7 @@ fn pretty_print_foreign_mod(writer: anytype, foreign_mod: Parser.ForeignMod, lev
         }
     }
     try indent(writer, level);
-    try writer.print("RB\n", .{});
+    try writer.print("}}\n", .{});
 }
 
 // Function to pretty print a Block
@@ -407,7 +407,7 @@ fn pretty_print_statement(writer: anytype, stmt: Parser.Statement, level: usize)
                     try writer.print(")", .{});
                 },
                 .Struct => |struct_pat| {
-                    try writer.print("{s} LB ", .{struct_pat.name});
+                    try writer.print("{s} {{ ", .{struct_pat.name});
                     for (struct_pat.fields, 0..) |field, i| {
                         try writer.print("{s}: ", .{field.name});
                         try pretty_print_pattern(writer, field.pattern, level);
@@ -415,7 +415,7 @@ fn pretty_print_statement(writer: anytype, stmt: Parser.Statement, level: usize)
                             try writer.print(", ", .{});
                         }
                     }
-                    try writer.print(" RB", .{});
+                    try writer.print(" }}", .{});
                 },
             }
             if (let_stmt.type_annotation) |type_ann| {
@@ -459,7 +459,7 @@ fn pretty_print_pattern(writer: anytype, pattern: Parser.Pattern, level: usize) 
             try writer.print(")", .{});
         },
         .Struct => |struct_pat| {
-            try writer.print("{s} LB ", .{struct_pat.name});
+            try writer.print("{s} {{ ", .{struct_pat.name});
             for (struct_pat.fields, 0..) |field, i| {
                 try writer.print("{s}: ", .{field.name});
                 try pretty_print_pattern(writer, field.pattern, level);
@@ -467,7 +467,7 @@ fn pretty_print_pattern(writer: anytype, pattern: Parser.Pattern, level: usize) 
                     try writer.print(", ", .{});
                 }
             }
-            try writer.print(" RB", .{});
+            try writer.print(" }}", .{});
         },
     }
 }
@@ -480,6 +480,7 @@ fn pretty_print_type_annotation(writer: anytype, type_ann: Parser.TypeAnnotation
             try writer.print("mut ", .{});
         }
     }
+
     switch (type_ann.base_type.*) {
         .I8 => try writer.print("i8", .{}),
         .I16 => try writer.print("i16", .{}),
@@ -508,11 +509,10 @@ fn pretty_print_type_annotation(writer: anytype, type_ann: Parser.TypeAnnotation
         },
         .Array => |array| {
             try writer.print("[", .{});
-            try pretty_print_type_annotation(writer, array.element_type);
+            try pretty_print_type_annotation(writer, array.element_type.*);
             try writer.print("; {d}]", .{array.size});
         },
         .Function => |func_type| {
-            try writer.print("fn(", .{});
             for (func_type.parameters, 0..) |param, i| {
                 try pretty_print_type_annotation(writer, param);
                 if (i < func_type.parameters.len - 1) {
@@ -522,7 +522,7 @@ fn pretty_print_type_annotation(writer: anytype, type_ann: Parser.TypeAnnotation
             try writer.print(")", .{});
             if (func_type.return_type) |ret| {
                 try writer.print(" -> ", .{});
-                try pretty_print_type_annotation(writer, ret);
+                try pretty_print_type_annotation(writer, ret.*);
             }
         },
         .Generic => |generic_type| {
@@ -542,8 +542,8 @@ fn pretty_print_type_annotation(writer: anytype, type_ann: Parser.TypeAnnotation
 }
 
 // Function to pretty print an Expression
-fn pretty_print_expression(writer: anytype, expr: Parser.Expression, level: usize) !void {
-    switch (expr) {
+fn pretty_print_expression(writer: anytype, expr: *const Parser.Expression, level: usize) !void {
+    switch (expr.*) {
         .Assignment => |assign_expr| {
             try writer.print("{s} = ", .{assign_expr.identifier});
             try pretty_print_expression(writer, assign_expr.value, level);
@@ -564,17 +564,17 @@ fn pretty_print_expression(writer: anytype, expr: Parser.Expression, level: usiz
             switch (loop_expr.*) {
                 .Loop => |infinite_expr| {
                     try writer.print("Loop", .{});
-                    try writer.print("RB", .{});
+                    try writer.print("}}", .{});
                     try pretty_print_block(writer, infinite_expr.body, level);
-                    try writer.print("RB", .{});
+                    try writer.print("}}", .{});
                 },
                 .While => |while_expr| {
                     try writer.print("while (", .{});
                     try pretty_print_expression(writer, while_expr.condition, level);
                     try writer.print(") ", .{});
-                    try writer.print("LB", .{});
+                    try writer.print("{{", .{});
                     try pretty_print_block(writer, while_expr.body, level);
-                    try writer.print("LB", .{});
+                    try writer.print("{{", .{});
                 },
                 .For => |for_expr| {
                     try writer.print("for (", .{});
@@ -582,9 +582,9 @@ fn pretty_print_expression(writer: anytype, expr: Parser.Expression, level: usiz
                     try writer.print(" in ", .{});
                     try pretty_print_expression(writer, for_expr.iterable, level);
                     try writer.print(") ", .{});
-                    try writer.print("LB", .{});
+                    try writer.print("{{", .{});
                     try pretty_print_block(writer, for_expr.body, level);
-                    try writer.print("RB", .{});
+                    try writer.print("}}", .{});
                 },
             }
         },
@@ -599,13 +599,13 @@ fn pretty_print_expression(writer: anytype, expr: Parser.Expression, level: usiz
             try writer.print(")", .{});
         },
         .BinaryOperation => |bin_op| {
-            try pretty_print_expression(writer, bin_op.left.*, level);
+            try pretty_print_expression(writer, bin_op.left, level);
             try writer.print(" {s} ", .{binary_operator_to_str(bin_op.operator)});
-            try pretty_print_expression(writer, bin_op.right.*, level);
+            try pretty_print_expression(writer, bin_op.right, level);
         },
         .UnaryOperation => |un_op| {
             try writer.print("{s} ", .{unary_operator_to_str(un_op.operator)});
-            try pretty_print_expression(writer, un_op.operand.*, level);
+            try pretty_print_expression(writer, un_op.operand, level);
         },
         .Literal => |lit| {
             switch (lit) {
@@ -634,7 +634,7 @@ fn pretty_print_expression(writer: anytype, expr: Parser.Expression, level: usiz
             try writer.print("{s}", .{id});
         },
         .Expression => |expr_ptr| {
-            try pretty_print_expression(writer, expr_ptr.*, level);
+            try pretty_print_expression(writer, expr_ptr, level);
         },
     }
 }
@@ -665,28 +665,3 @@ fn unary_operator_to_str(op: Parser.UnaryOperator) []const u8 {
         .LogicalNot => "!",
     };
 }
-
-// // Function to pretty print a Trait
-// fn pretty_print_trait(writer: anytype, trait_def: Parser.TraitDefinition, level: usize) !void {
-//     // Implementation similar to Struct and Enum
-// }
-//
-// // Function to pretty print an Impl
-// fn pretty_print_impl(writer: anytype, impl_def: Parser.ImplDefinition, level: usize) !void {
-//     // Implementation similar to Function and Struct
-// }
-//
-// // Function to pretty print a Type Alias
-// fn pretty_print_type_alias(writer: anytype, type_alias: Parser.TypeAlias, level: usize) !void {
-//     // Similar to Function and Struct
-// }
-//
-// // Function to pretty print a Macro Definition
-// fn pretty_print_macro_definition(writer: anytype, macro_def: Parser.MacroDefinition, level: usize) !void {
-//     // Similar to Function and Struct
-// }
-//
-// // Function to pretty print a Foreign Module
-// fn pretty_print_foreign_mod(writer: anytype, foreign_mod: Parser.ForeignMod, level: usize) !void {
-//     // Similar to Function and Struct
-// }

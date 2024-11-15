@@ -81,7 +81,7 @@ pub const TokenType = enum {
     Factorial,
 
     LogicalOr,
-LogicalAnd ,
+    LogicalAnd,
 
     // Comparison operators
     /// Represents the '<' operator.
@@ -153,8 +153,8 @@ pub const Token = struct {
             TokenType.Else => try writer.print("else", .{}),
 
             // TODO: print the correct lexeme ({})
-            TokenType.LeftBrace => try writer.print("LB", .{}),
-            TokenType.RightBrace => try writer.print("RB", .{}),
+            TokenType.LeftBrace => try writer.print("{{", .{}),
+            TokenType.RightBrace => try writer.print("}}", .{}),
             // Assignment tokens
             TokenType.Let => try writer.print("let", .{}),
             TokenType.Mut => try writer.print("mut", .{}),
@@ -212,7 +212,7 @@ pub const Lexer = struct {
             if (token.token_type == .EndOfFile) {
                 break;
             }
-            std.debug.print("{}\n", .{ token});
+            std.debug.print("{}\n", .{token});
             try tokens.append(token);
         }
         std.debug.print("\n\n", .{});
@@ -492,8 +492,7 @@ pub const Lexer = struct {
         return Token{ .token_type = .String, .lexeme = string_value };
     }
     fn parse_char(self: *Lexer) Token {
-
-        const char_slice = self.input[self.current..self.current + 1];
+        const char_slice = self.input[self.current .. self.current + 1];
         self.current += 1;
 
         if (self.current >= self.input.len) {
@@ -506,7 +505,6 @@ pub const Lexer = struct {
         self.current += 1;
 
         return Token{ .token_type = .Char, .lexeme = char_slice };
-
     }
 };
 
