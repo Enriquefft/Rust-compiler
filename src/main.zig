@@ -4,7 +4,7 @@ const Lexer = @import("lexer.zig").Lexer;
 const Serializer = @import("serialize.zig");
 
 pub fn main() anyerror!void {
-    const write_to_file = false;
+    const write_to_file = true;
 
     const input =
         \\fn add(a: i32, b: i32) -> i32 {

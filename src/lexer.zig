@@ -1,123 +1,64 @@
 const std = @import("std");
 
-pub const log_level: std.log.Level = .info;
-/// Represents the different types of tokens that can be identified in a rust program
+/// Error set for the Lexer
+pub const LexerError = error{ UnexpectedCharacter, UnterminatedString, UnterminatedChar, InvalidEscapeSequence, UnexpectedEndOfFile, UnterminatedComment };
+
+/// Represents the different types of tokens that can be identified in a Rust program
 pub const TokenType = enum {
-    /// Represents an integer number.
+    // Literals
     Integer,
-
-    /// Represents a floating-point number.
     Float,
-
-    /// Represents a boolean.
     Boolean,
-
-    /// Represents a string.
     String,
     Char,
 
-    // functions
-    /// 'fn'
+    // Keywords
     FN,
-    /// 'return'
-    FunReturn,
-    /// '->' used to declare a function return type.
-    Arrow,
-
-    Loop,
+    Return,
+    Let,
+    Mut,
+    Static,
+    Unsafe,
     While,
     For,
     In,
-
     If,
     Else,
-
-    /// {} used to declare a block of code.
-    LeftBrace,
-    RightBrace,
-
-    Unsafe,
-
-    // assignments
-    /// 'let' used to declare a variable.
-    Let,
-
-    Mut,
-
-    Static,
-
-    Ampersand,
-
-    Exclamation,
-
-    /// ':' used to declare a variable type.
-    DoubleColon,
-    /// '=' used to assign a lexeme to a variable.
-    Assign,
-
-    /// Comma (,)
-    Comma,
-    /// dot-comma (;)
-    DotComma,
-    /// Represents the '(' character.
-    LeftParen,
-    /// Represents the ')' character.
-    RightParen,
-
-    // Match operators
-    /// Represents the '+' operator.
-    Plus,
-    /// Represents the '-' operator.
-    Minus,
-    /// Represents the '*' operator.
-    Multiply,
-    /// Represents the '/' operator.
-    Divide,
-    /// Represents the '^' operator.
-    Power,
-    /// Represents the '%' operator.
-    Modulo,
-    /// Represents the '!' operator.
-    Factorial,
-
-    LogicalOr,
-    LogicalAnd,
-
-    // Comparison operators
-    /// Represents the '<' operator.
-    LessThan,
-    /// Represents the '<=' operator.
-    LessThanOrEqual,
-    /// Represents the '>' operator.
-    GreaterThan,
-    /// Represents the '>=' operator.
-    GreaterThanOrEqual,
-    /// Represents the '==' operator.
-    Equal,
-    /// Represents the '!=' operator.
-    NotEqual,
-
-    /// Represents the end of the input.
-    EndOfFile,
-    /// Represents an invalid or unrecognized token.
-    Invalid,
-
-    // keywords
-
-    /// Represents a variable type
     Type,
 
-    /// ID
+    // Operators
+    Arrow,
+    Assign,
+    Plus,
+    Minus,
+    Multiply,
+    Divide,
+    Power,
+    Modulo,
+    Factorial,
+    LogicalOr,
+    LogicalAnd,
+    LessThan,
+    LessThanOrEqual,
+    GreaterThan,
+    GreaterThanOrEqual,
+    Equal,
+    NotEqual,
+
+    // Punctuation
+    LeftBrace,
+    RightBrace,
+    DoubleColon,
+    Comma,
+    DotComma,
+    LeftParen,
+    RightParen,
+
+    // Special
+    EndOfFile,
     Identifier,
-
-    /// Comments (they are ignored during lexing)
-    // SingleCommentSlash,
-    // MultiCommentStart,
-    // MultiCommentEnd,
     DocString,
-
-    // Pending implementation
-    Struct,
+    Invalid,
 };
 
 /// A token with its type and optional lexeme. Used by the parser to interpret the expression.
@@ -125,97 +66,89 @@ pub const Token = struct {
     token_type: TokenType,
     lexeme: []const u8 = "",
 
-    fn print_lexeme(self: Token, writer: anytype, name: []const u8) !void {
-        try writer.print("{s}: {s}\n", .{ name, self.lexeme });
-    }
-
     /// Formats the token for display.
-    pub fn format(self: Token, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
-        switch (self.token_type) {
-            // Numeric tokens
-            TokenType.Integer => try print_lexeme(self, writer, "Integer"),
+    pub fn format(self: Token, writer: std.io.Writer) !void {
+        const name = switch (self.token_type) {
+            TokenType.Integer => "Integer",
+            TokenType.Float => "Float",
+            TokenType.Boolean => "Boolean",
+            TokenType.String => "String",
+            TokenType.Char => "Char",
+            TokenType.FN => "fn",
+            TokenType.Return => "return",
+            TokenType.Let => "let",
+            TokenType.Mut => "mut",
+            TokenType.Static => "static",
+            TokenType.Unsafe => "unsafe",
+            TokenType.While => "while",
+            TokenType.For => "for",
+            TokenType.In => "in",
+            TokenType.If => "if",
+            TokenType.Else => "else",
+            TokenType.Type => "Type",
+            TokenType.Arrow => "->",
+            TokenType.Assign => "=",
+            TokenType.Plus => "+",
+            TokenType.Minus => "-",
+            TokenType.Multiply => "*",
+            TokenType.Divide => "/",
+            TokenType.Power => "^",
+            TokenType.Modulo => "%",
+            TokenType.Factorial => "!",
+            TokenType.LogicalOr => "||",
+            TokenType.LogicalAnd => "&&",
+            TokenType.LessThan => "<",
+            TokenType.LessThanOrEqual => "<=",
+            TokenType.GreaterThan => ">",
+            TokenType.GreaterThanOrEqual => ">=",
+            TokenType.Equal => "==",
+            TokenType.NotEqual => "!=",
+            TokenType.LeftBrace => "{",
+            TokenType.RightBrace => "}",
+            TokenType.DoubleColon => ":",
+            TokenType.Comma => ",",
+            TokenType.DotComma => ";",
+            TokenType.LeftParen => "(",
+            TokenType.RightParen => ")",
+            TokenType.EndOfFile => "EOF",
+            TokenType.Identifier => "Identifier",
+            TokenType.DocString => "DocString",
+            TokenType.Invalid => "Invalid",
+        };
 
-            TokenType.Float => try print_lexeme(self, writer, "Float"),
-            // Literal tokens
-            TokenType.Boolean => try print_lexeme(self, writer, "Boolean"),
-
-            TokenType.String => try print_lexeme(self, writer, "String"),
-            // Function-related tokens
-            TokenType.FN => try writer.print("fun", .{}),
-            TokenType.FunReturn => try writer.print("return", .{}),
-            TokenType.Arrow => try writer.print("->", .{}),
-
-            TokenType.Unsafe => try writer.print("unsafe", .{}),
-            TokenType.While => try writer.print("while", .{}),
-            TokenType.For => try writer.print("for", .{}),
-            TokenType.In => try writer.print("in", .{}),
-            TokenType.If => try writer.print("if", .{}),
-            TokenType.Else => try writer.print("else", .{}),
-
-            // TODO: print the correct lexeme ({})
-            TokenType.LeftBrace => try writer.print("{{", .{}),
-            TokenType.RightBrace => try writer.print("}}", .{}),
-            // Assignment tokens
-            TokenType.Let => try writer.print("let", .{}),
-            TokenType.Mut => try writer.print("mut", .{}),
-            TokenType.Static => try writer.print("static", .{}),
-            TokenType.DoubleColon => try writer.print(":", .{}),
-            TokenType.Assign => try writer.print("=", .{}),
-            TokenType.Ampersand => try writer.print("&", .{}),
-            TokenType.Exclamation => try writer.print("!", .{}),
-            // Punctuation tokens
-            TokenType.Comma => try writer.print(",", .{}),
-            TokenType.DotComma => try writer.print(";", .{}),
-            TokenType.LeftParen => try writer.print("(", .{}),
-            TokenType.RightParen => try writer.print(")", .{}),
-            // Mathematical operators
-            TokenType.Plus => try writer.print("+", .{}),
-            TokenType.Minus => try writer.print("-", .{}),
-            TokenType.Multiply => try writer.print("*", .{}),
-            TokenType.Divide => try writer.print("/", .{}),
-            TokenType.Power => try writer.print("^", .{}),
-            TokenType.Modulo => try writer.print("%", .{}),
-            TokenType.Factorial => try writer.print("!", .{}),
-            // Comparison operators
-            TokenType.LessThan => try writer.print("<", .{}),
-            TokenType.LessThanOrEqual => try writer.print("<=", .{}),
-            TokenType.GreaterThan => try writer.print(">", .{}),
-            TokenType.GreaterThanOrEqual => try writer.print(">=", .{}),
-            TokenType.Equal => try writer.print("==", .{}),
-            TokenType.NotEqual => try writer.print("!=", .{}),
-            // Identifier and type tokens
-            TokenType.Identifier => try print_lexeme(self, writer, "ID"),
-
-            TokenType.Type => try print_lexeme(self, writer, "Type"),
-            // End of file and invalid tokens
-            TokenType.EndOfFile => try writer.print("EOF", .{}),
-            TokenType.Invalid => try writer.print("Invalid token", .{}),
-            else => try print_lexeme(self, writer, "Unknown"),
+        if (self.lexeme.len > 0) {
+            try writer.print("{s}: \"{s}\"\n", .{ name, self.lexeme });
+        } else {
+            try writer.print("{s}\n", .{name});
         }
     }
 };
 
-/// The `Lexer` structure processes a mathematical expression into a series of tokens.
+/// The `Lexer` structure processes Rust code into a series of tokens.
 pub const Lexer = struct {
     input: []const u8,
     current: usize = 0,
+    allocator: std.mem.Allocator,
+
+    /// Initializes a new Lexer.
+    pub fn init(input: []const u8, allocator: std.mem.Allocator) Lexer {
+        return Lexer{
+            .input = input,
+            .allocator = allocator,
+        };
+    }
 
     /// Retrieves a list of tokens from the input.
     ///
     /// # Returns
     /// A list of `Token` representing the parts of the expression.
     pub fn tokenize(self: *Lexer) ![]Token {
-        var tokens = std.ArrayList(Token).init(std.heap.page_allocator);
-        std.debug.print("Tokens: \n", .{});
+        var tokens = std.ArrayList(Token).init(self.allocator);
         while (true) {
-            const token = self.next_token();
-            if (token.token_type == .EndOfFile) {
-                break;
-            }
-            std.debug.print("{}\n", .{token});
+            const token = try self.next_token();
             try tokens.append(token);
+            if (token.token_type == .EndOfFile) break;
         }
-        std.debug.print("\n\n", .{});
         return try tokens.toOwnedSlice();
     }
 
@@ -223,12 +156,8 @@ pub const Lexer = struct {
     ///
     /// # Returns
     /// A `Token` representing the next part of the expression.
-    pub fn next_token(self: *Lexer) Token {
-        // Skip any whitespace
-
-        while (self.current < self.input.len and is_whitespace(self.input[self.current])) {
-            self.current += 1;
-        }
+    pub fn next_token(self: *Lexer) !Token {
+        self.skip_whitespace();
 
         if (self.current >= self.input.len) {
             return Token{ .token_type = .EndOfFile };
@@ -237,342 +166,282 @@ pub const Lexer = struct {
         const c = self.input[self.current];
         self.current += 1;
 
-        switch (c) {
-            // match single characters
-            '{' => return Token{ .token_type = .LeftBrace },
-            '}' => return Token{ .token_type = .RightBrace },
-            ':' => return Token{ .token_type = .DoubleColon },
-            ',' => return Token{ .token_type = .Comma },
-            ';' => return Token{ .token_type = .DotComma },
-            '(' => return Token{ .token_type = .LeftParen },
-            ')' => return Token{ .token_type = .RightParen },
-
-            '+' => return Token{ .token_type = .Plus },
-            '^' => return Token{ .token_type = .Power },
-            '%' => return Token{ .token_type = .Modulo },
-            '&' => return Token{ .token_type = .Ampersand },
-            '!' => return Token{ .token_type = .Exclamation },
-            '"' => return parse_string(self),
-            '\'' => return parse_char(self),
-            '*' => return Token{ .token_type = .Multiply }, // overlap with */, but is handled when parsing /*
-            // '/' => return Token{ .token_type = .Divide }, // overlap with /*, //, ///
-            // '=' => return Token{ .token_type = .Assign }, // overlap with ==
-            // '-' => return Token{ .token_type = .Minus }, // overlap with ->
-            // '!' => return Token{ .token_type = .Factorial }, // overlap with !=
-            // '<' => return Token{ .token_type = .LessThan }, // overlap with <=
-            // '>' => return Token{ .token_type = .GreaterThan }, // overlap with >=
-            else => {
-                if (is_small_char_begin(c)) {
-                    return parse_small_char(self, c);
-                }
-                if (is_digit(c)) {
-                    self.current -= 1;
-                    return parse_digit(self);
-                }
-                if (is_letter(c)) {
-                    self.current -= 1;
-                    return parse_keyword(self);
-                }
-
-                return Token{ .token_type = .Invalid };
-            },
-        }
+        return switch (c) {
+            '{' => Token{ .token_type = .LeftBrace },
+            '}' => Token{ .token_type = .RightBrace },
+            ':' => Token{ .token_type = .DoubleColon },
+            ',' => Token{ .token_type = .Comma },
+            ';' => Token{ .token_type = .DotComma },
+            '(' => Token{ .token_type = .LeftParen },
+            ')' => Token{ .token_type = .RightParen },
+            '+' => Token{ .token_type = .Plus },
+            '-' => try self.parse_minus(),
+            '*' => Token{ .token_type = .Multiply },
+            '/' => try self.parse_divide(),
+            '^' => Token{ .token_type = .Power },
+            '%' => Token{ .token_type = .Modulo },
+            '!' => try self.parse_exclamation(),
+            '"' => try self.parse_string(),
+            '\'' => try self.parse_char(),
+            '=' => try self.parse_equal(),
+            '<' => try self.parse_less_than(),
+            '>' => try self.parse_greater_than(),
+            else => try self.parse_identifier_or_number(c),
+        };
     }
 
-    fn parse_keyword(self: *Lexer) Token {
-        // read word with whitespace
-
-        const start = self.current;
-
-        while (self.current < self.input.len and !is_whitespace(self.input[self.current]) and is_alpha(self.input[self.current])) {
+    /// Skips any whitespace characters.
+    fn skip_whitespace(self: *Lexer) void {
+        while (self.current < self.input.len and is_whitespace(self.input[self.current])) {
             self.current += 1;
         }
-
-        const word = self.input[start..self.current];
-
-        if (std.mem.eql(u8, word, "fn")) {
-            return Token{ .token_type = .FN };
-        }
-        if (std.mem.eql(u8, word, "return")) {
-            return Token{ .token_type = .FunReturn };
-        }
-        if (std.mem.eql(u8, word, "let")) {
-            return Token{ .token_type = .Let };
-        }
-        if (std.mem.eql(u8, word, "mut")) {
-            return Token{ .token_type = .Mut };
-        }
-        if (std.mem.eql(u8, word, "static")) {
-            return Token{ .token_type = .Static };
-        }
-
-        if (std.mem.eql(u8, word, "unsafe")) {
-            return Token{ .token_type = .Unsafe };
-        }
-
-        if (std.mem.eql(u8, word, "while")) {
-            return Token{ .token_type = .While };
-        }
-        if (std.mem.eql(u8, word, "for")) {
-            return Token{ .token_type = .For };
-        }
-        if (std.mem.eql(u8, word, "in")) {
-            return Token{ .token_type = .In };
-        }
-        if (std.mem.eql(u8, word, "if")) {
-            return Token{ .token_type = .If };
-        }
-        if (std.mem.eql(u8, word, "else")) {
-            return Token{ .token_type = .Else };
-        }
-
-        // types (i32, i64, f32, f64, bool, str)
-        if (std.mem.eql(u8, word, "i32")) {
-            return Token{ .token_type = .Type, .lexeme = word };
-        }
-        if (std.mem.eql(u8, word, "f32")) {
-            return Token{ .token_type = .Type, .lexeme = word };
-        }
-        if (std.mem.eql(u8, word, "i64")) {
-            return Token{ .token_type = .Type, .lexeme = word };
-        }
-        if (std.mem.eql(u8, word, "f64")) {
-            return Token{ .token_type = .Type, .lexeme = word };
-        }
-        if (std.mem.eql(u8, word, "bool")) {
-            return Token{ .token_type = .Type, .lexeme = word };
-        }
-        if (std.mem.eql(u8, word, "str")) {
-            return Token{ .token_type = .Type, .lexeme = word };
-        }
-
-        // boolean lexemes
-        if (std.mem.eql(u8, word, "true")) {
-            return Token{ .token_type = .Boolean, .lexeme = word };
-        }
-        if (std.mem.eql(u8, word, "false")) {
-            return Token{ .token_type = .Boolean, .lexeme = word };
-        }
-
-        return Token{ .token_type = .Identifier, .lexeme = word };
     }
 
-    /// parses a possible 1-3 char symbol
-    fn parse_small_char(self: *Lexer, prev: u8) Token {
-        // test for any of:
-        // =, ==, -, ->, !, !=, <, <=, >, >=, /, /*, //, ///
+    /// Parses tokens that start with '-'.
+    fn parse_minus(self: *Lexer) !Token {
+        if (self.current < self.input.len and self.input[self.current] == '>') {
+            self.current += 1;
+            return Token{ .token_type = .Arrow };
+        }
+        return Token{ .token_type = .Minus };
+    }
 
-        // exceeded input
+    /// Parses tokens that start with '/'.
+    fn parse_divide(self: *Lexer) !Token {
         if (self.current >= self.input.len) {
-            return Token{ .token_type = .EndOfFile };
-        }
-
-        const next = self.input[self.current];
-
-        if (prev == '=') {
-            if (next == '=') {
-                self.current += 1;
-                return Token{ .token_type = .Equal };
-            }
-            return Token{ .token_type = .Assign };
-        }
-        if (prev == '-') {
-            if (next == '>') {
-                self.current += 1;
-                return Token{ .token_type = .Arrow };
-            }
-            return Token{ .token_type = .Minus };
-        }
-        if (prev == '!') {
-            if (next == '=') {
-                self.current += 1;
-                return Token{ .token_type = .NotEqual };
-            }
-            return Token{ .token_type = .Factorial };
-        }
-        if (prev == '<') {
-            if (next == '=') {
-                self.current += 1;
-                return Token{ .token_type = .LessThanOrEqual };
-            }
-            return Token{ .token_type = .LessThan };
-        }
-        if (prev == '>') {
-            if (next == '=') {
-                self.current += 1;
-                return Token{ .token_type = .GreaterThanOrEqual };
-            }
-            return Token{ .token_type = .GreaterThan };
-        }
-        //comments
-
-        if (prev == '/') {
-            if (next == '/') {
-                self.current += 1;
-                if (self.current >= self.input.len) {
-                    return Token{ .token_type = .EndOfFile };
-                } else if (self.input[self.current] == '/') {
-                    self.current += 1;
-
-                    // skip whitespace
-                    while (self.current < self.input.len and is_whitespace(self.input[self.current])) {
-                        self.current += 1;
-                    }
-
-                    const doc_string_start: usize = self.current;
-                    while (self.current < self.input.len and self.input[self.current] != '\n') {
-                        self.current += 1;
-                    }
-
-                    return Token{ .token_type = .DocString, .lexeme = self.input[doc_string_start..self.current] };
-                }
-
-                // single line comment
-                while (self.current < self.input.len and self.input[self.current] != '\n') {
-                    self.current += 1;
-                }
-                return self.next_token();
-            }
-            if (next == '*') {
-                // multi line comment
-                while (self.current < self.input.len) {
-                    if (self.input[self.current] == '*' and self.input[self.current + 1] == '/') {
-                        self.current += 2;
-                        break;
-                    }
-                    self.current += 1;
-                }
-                return self.next_token();
-            }
             return Token{ .token_type = .Divide };
         }
-
-        return Token{ .token_type = .Invalid };
+        const next = self.input[self.current];
+        if (next == '/') {
+            self.current += 1;
+            if (self.current < self.input.len and self.input[self.current] == '/') {
+                self.current += 1;
+                return try self.parse_doc_string();
+            }
+            return self.skip_single_line_comment();
+        }
+        if (next == '*') {
+            self.current += 1;
+            return try self.skip_multi_line_comment();
+        }
+        return Token{ .token_type = .Divide };
     }
 
-    fn lookup_integer(self: *Lexer) void {
+    /// Parses tokens that start with '!'.
+    fn parse_exclamation(self: *Lexer) !Token {
+        if (self.current < self.input.len and self.input[self.current] == '=') {
+            self.current += 1;
+            return Token{ .token_type = .NotEqual };
+        }
+        return Token{ .token_type = .Factorial };
+    }
+
+    /// Parses tokens that start with '='.
+    fn parse_equal(self: *Lexer) !Token {
+        if (self.current < self.input.len and self.input[self.current] == '=') {
+            self.current += 1;
+            return Token{ .token_type = .Equal };
+        }
+        return Token{ .token_type = .Assign };
+    }
+
+    /// Parses tokens that start with '<'.
+    fn parse_less_than(self: *Lexer) !Token {
+        if (self.current < self.input.len and self.input[self.current] == '=') {
+            self.current += 1;
+            return Token{ .token_type = .LessThanOrEqual };
+        }
+        return Token{ .token_type = .LessThan };
+    }
+
+    /// Parses tokens that start with '>'.
+    fn parse_greater_than(self: *Lexer) !Token {
+        if (self.current < self.input.len and self.input[self.current] == '=') {
+            self.current += 1;
+            return Token{ .token_type = .GreaterThanOrEqual };
+        }
+        return Token{ .token_type = .GreaterThan };
+    }
+
+    /// Parses string literals.
+    fn parse_string(self: *Lexer) !Token {
+        const start = self.current;
+        while (self.current < self.input.len and self.input[self.current] != '"') {
+            if (self.input[self.current] == '\\') {
+                self.current += 1; // Skip escape character
+                if (self.current >= self.input.len) {
+                    return LexerError.UnterminatedString;
+                }
+            }
+            self.current += 1;
+        }
+        if (self.current >= self.input.len) {
+            return LexerError.UnterminatedString;
+        }
+        const string_value = self.input[start..self.current];
+        self.current += 1; // Skip closing quote
+        return Token{ .token_type = .String, .lexeme = string_value };
+    }
+
+    /// Parses character literals.
+    fn parse_char(self: *Lexer) !Token {
+        if (self.current >= self.input.len) {
+            return LexerError.UnterminatedChar;
+        }
+        const char_start = self.current;
+        if (self.input[self.current] == '\\') {
+            self.current += 1; // Skip escape character
+            if (self.current >= self.input.len) {
+                return LexerError.InvalidEscapeSequence;
+            }
+        }
+        self.current += 1;
+        if (self.current >= self.input.len or self.input[self.current] != '\'') {
+            return LexerError.UnterminatedChar;
+        }
+        const char_value = self.input[char_start..self.current];
+        self.current += 1; // Skip closing quote
+        return Token{ .token_type = .Char, .lexeme = char_value };
+    }
+
+    /// Parses doc strings (/// comments).
+    fn parse_doc_string(self: *Lexer) !Token {
+        self.skip_whitespace();
+        const start = self.current;
+        while (self.current < self.input.len and self.input[self.current] != '\n') {
+            self.current += 1;
+        }
+        const doc_string = self.input[start..self.current];
+        return Token{ .token_type = .DocString, .lexeme = doc_string };
+    }
+
+    /// Skips single-line comments.
+    fn skip_single_line_comment(self: *Lexer) LexerError!Token {
+        while (self.current < self.input.len and self.input[self.current] != '\n') {
+            self.current += 1;
+        }
+        return self.next_token();
+    }
+
+    /// Skips multi-line comments.
+    fn skip_multi_line_comment(self: *Lexer) LexerError!Token {
+        while (self.current < self.input.len - 1) {
+            if (self.input[self.current] == '*' and self.input[self.current + 1] == '/') {
+                self.current += 2;
+                return self.next_token();
+            }
+            self.current += 1;
+        }
+        return LexerError.UnterminatedComment;
+    }
+
+    /// Parses identifiers or numbers.
+    fn parse_identifier_or_number(self: *Lexer, first_char: u8) !Token {
+        if (is_digit(first_char)) {
+            self.current -= 1;
+            return try self.parse_number();
+        }
+        if (is_alpha_num(first_char)) {
+            self.current -= 1;
+            return self.parse_identifier();
+        }
+        return LexerError.UnexpectedCharacter;
+    }
+
+    /// Parses identifiers and keywords.
+    fn parse_identifier(self: *Lexer) !Token {
+        const start = self.current;
+        while (self.current < self.input.len and is_alpha_num(self.input[self.current])) {
+            self.current += 1;
+        }
+        const word = self.input[start..self.current];
+
+        // Replace the switch with if-else statements
+        if (std.mem.eql(u8, word, "fn")) {
+            return Token{ .token_type = .FN };
+        } else if (std.mem.eql(u8, word, "return")) {
+            return Token{ .token_type = .Return };
+        } else if (std.mem.eql(u8, word, "let")) {
+            return Token{ .token_type = .Let };
+        } else if (std.mem.eql(u8, word, "mut")) {
+            return Token{ .token_type = .Mut };
+        } else if (std.mem.eql(u8, word, "static")) {
+            return Token{ .token_type = .Static };
+        } else if (std.mem.eql(u8, word, "unsafe")) {
+            return Token{ .token_type = .Unsafe };
+        } else if (std.mem.eql(u8, word, "while")) {
+            return Token{ .token_type = .While };
+        } else if (std.mem.eql(u8, word, "for")) {
+            return Token{ .token_type = .For };
+        } else if (std.mem.eql(u8, word, "in")) {
+            return Token{ .token_type = .In };
+        } else if (std.mem.eql(u8, word, "if")) {
+            return Token{ .token_type = .If };
+        } else if (std.mem.eql(u8, word, "else")) {
+            return Token{ .token_type = .Else };
+        } else if (std.mem.eql(u8, word, "i32") or
+            std.mem.eql(u8, word, "i64") or
+            std.mem.eql(u8, word, "f32") or
+            std.mem.eql(u8, word, "f64") or
+            std.mem.eql(u8, word, "bool") or
+            std.mem.eql(u8, word, "str"))
+        {
+            return Token{ .token_type = .Type, .lexeme = word };
+        } else if (std.mem.eql(u8, word, "true") or
+            std.mem.eql(u8, word, "false"))
+        {
+            return Token{ .token_type = .Boolean, .lexeme = word };
+        } else {
+            return Token{ .token_type = .Identifier, .lexeme = word };
+        }
+    }
+
+    /// Parses numeric literals (integers and floats).
+    fn parse_number(self: *Lexer) !Token {
+        const start = self.current;
         while (self.current < self.input.len and is_digit(self.input[self.current])) {
             self.current += 1;
         }
-    }
 
-    fn parse_digit(self: *Lexer) Token {
-        const start = self.current;
-
-        lookup_integer(self);
-
-        const int_value = self.input[start..self.current];
-
-        if (self.current >= self.input.len) {
-            return Token{ .token_type = .Integer, .lexeme = int_value };
-        }
-
-        if (!is_dot(self.input[self.current])) {
-            return Token{ .token_type = .Integer, .lexeme = int_value };
-        }
-        // dot found
-        self.current += 1;
-        lookup_integer(self);
-
-        const float_value = self.input[start..self.current];
-        return Token{ .token_type = .Float, .lexeme = float_value };
-    }
-
-    fn parse_string(self: *Lexer) Token {
-        const start = self.current;
-        while (self.current < self.input.len and self.input[self.current] != '"') {
+        var token_type = TokenType.Integer;
+        if (self.current < self.input.len and self.input[self.current] == '.') {
             self.current += 1;
-        }
-        if (self.current >= self.input.len) {
-            return Token{ .token_type = .Invalid };
-        }
-        self.current += 1;
-
-        const string_value = self.input[start .. self.current - 1];
-        return Token{ .token_type = .String, .lexeme = string_value };
-    }
-    fn parse_char(self: *Lexer) Token {
-        const char_slice = self.input[self.current .. self.current + 1];
-        self.current += 1;
-
-        if (self.current >= self.input.len) {
-            return Token{ .token_type = .Invalid };
+            if (self.current < self.input.len and is_digit(self.input[self.current])) {
+                while (self.current < self.input.len and is_digit(self.input[self.current])) {
+                    self.current += 1;
+                }
+                token_type = TokenType.Float;
+            } else {
+                return LexerError.UnexpectedCharacter;
+            }
         }
 
-        if (self.input[self.current] != '\'') {
-            return Token{ .token_type = .Invalid };
-        }
-        self.current += 1;
-
-        return Token{ .token_type = .Char, .lexeme = char_slice };
+        const number = self.input[start..self.current];
+        return Token{ .token_type = token_type, .lexeme = number };
     }
 };
 
-/// checks if a char leads to a 2-3 char symbol
-/// # Parameters
-/// - `c`: The character to check.
-///
-/// # Returns
-/// `true` if the character could be a small char, `false` otherwise.
-fn is_small_char_begin(c: u8) bool {
-    return c == '<' or c == '>' or c == '=' or c == '!' or c == '-' or c == '/' or c == '*';
+/// Checks if a character is a letter.
+fn is_letter(c: u8) bool {
+    return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z');
 }
 
 /// Checks if a character is a digit.
-///
-/// # Parameters
-/// - `c`: The character to check.
-///
-/// # Returns
-/// `true` if the character is a digit, `false` otherwise.
 fn is_digit(c: u8) bool {
     return c >= '0' and c <= '9';
 }
 
-/// Checks if a character is a letter.
-///
-/// # Parameters
-/// - `c`: The character to check.
-///
-/// # Returns
-/// `true` if the character is a letter, `false` otherwise.
-fn is_letter(c: u9) bool {
-    return c >= 'a' and c <= 'z' or c >= 'A' and c <= 'Z';
-}
-
-// is dot
-/// Checks if a character is a dot.
-///
-/// # Parameters
-/// - `c`: The character to check.
-///
-/// # Returns
-/// `true` if the character is a dot, `false` otherwise.
-fn is_dot(c: u8) bool {
-    return c == '.';
-}
-
-/// Checks if a character is a letter, digit or underscore.
-///
-/// # Parameters
-/// - `c`: The character to check.
-///
-/// # Returns
-/// `true` if the character is a letter, digit or underscore, `false` otherwise.
-fn is_alpha(c: u8) bool {
+/// Checks if a character is alphanumeric or an underscore.
+fn is_alpha_num(c: u8) bool {
     return is_letter(c) or is_digit(c) or c == '_';
 }
 
 /// Checks if a character is whitespace.
-///
-/// # Parameters
-/// - `c`: The character to check.
-///
-/// # Returns
-/// `true` if the character is a whitespace character, `false` otherwise.
 fn is_whitespace(c: u8) bool {
     return c == ' ' or c == '\n' or c == '\t' or c == '\r';
 }
+
+// ===================== TESTS =====================
 
 test "simple integer literal" {
     const input = "42;";
@@ -647,7 +516,7 @@ test "function with parameters and return type" {
         Token{ .token_type = .Arrow },
         Token{ .token_type = .Type, .lexeme = "i32" },
         Token{ .token_type = .LeftBrace },
-        Token{ .token_type = .FunReturn },
+        Token{ .token_type = .Return },
         Token{ .token_type = .Identifier, .lexeme = "a" },
         Token{ .token_type = .Plus },
         Token{ .token_type = .Identifier, .lexeme = "b" },
@@ -726,6 +595,7 @@ test "complex expression" {
 
     try test_lexer(input, &expected_tokens);
 }
+
 test "function with local variable and return" {
     const input = "fn compute(x: i32, y: i32) -> i32 { let result = x * y; return result; }";
     const expected_tokens = [_]Token{
@@ -750,7 +620,7 @@ test "function with local variable and return" {
         Token{ .token_type = .Multiply },
         Token{ .token_type = .Identifier, .lexeme = "y" },
         Token{ .token_type = .DotComma },
-        Token{ .token_type = .FunReturn },
+        Token{ .token_type = .Return },
         Token{ .token_type = .Identifier, .lexeme = "result" },
         Token{ .token_type = .DotComma },
         Token{ .token_type = .RightBrace },
@@ -760,13 +630,11 @@ test "function with local variable and return" {
     try test_lexer(input, &expected_tokens);
 }
 
-// los reales
 test "Test for code snippet 1" {
     const input =
         \\fn foo(x: i32) {
         \\    println!("{}", x + 1);
         \\}
-        \\
         \\fn main() {
         \\    let x = 20;
         \\    println!("{}", x);
@@ -786,7 +654,7 @@ test "Test for code snippet 1" {
         Token{ .token_type = .LeftBrace },
 
         Token{ .token_type = .Identifier, .lexeme = "println" },
-        Token{ .token_type = .Exclamation },
+        Token{ .token_type = .Factorial },
         Token{ .token_type = .LeftParen },
         Token{ .token_type = .String, .lexeme = "{}" },
         Token{ .token_type = .Comma },
@@ -811,7 +679,7 @@ test "Test for code snippet 1" {
         Token{ .token_type = .DotComma },
 
         Token{ .token_type = .Identifier, .lexeme = "println" },
-        Token{ .token_type = .Exclamation },
+        Token{ .token_type = .Factorial },
         Token{ .token_type = .LeftParen },
         Token{ .token_type = .String, .lexeme = "{}" },
         Token{ .token_type = .Comma },
@@ -826,7 +694,7 @@ test "Test for code snippet 1" {
         Token{ .token_type = .DotComma },
 
         Token{ .token_type = .Identifier, .lexeme = "println" },
-        Token{ .token_type = .Exclamation },
+        Token{ .token_type = .Factorial },
         Token{ .token_type = .LeftParen },
         Token{ .token_type = .String, .lexeme = "{}" },
         Token{ .token_type = .Comma },
@@ -846,7 +714,6 @@ test "Test for code snippet 2" {
     const input =
         \\static mut A: i32 = 0;
         \\static mut B: i32 = 0;
-        \\
         \\fn main() {
         \\    let y: i32;
         \\    unsafe {
@@ -859,6 +726,7 @@ test "Test for code snippet 2" {
     ;
 
     const expected_tokens = [_]Token{
+        // Global variables
         Token{ .token_type = .Static },
         Token{ .token_type = .Mut },
         Token{ .token_type = .Identifier, .lexeme = "A" },
@@ -877,6 +745,7 @@ test "Test for code snippet 2" {
         Token{ .token_type = .Integer, .lexeme = "0" },
         Token{ .token_type = .DotComma },
 
+        // Main function
         Token{ .token_type = .FN },
         Token{ .token_type = .Identifier, .lexeme = "main" },
         Token{ .token_type = .LeftParen },
@@ -912,7 +781,7 @@ test "Test for code snippet 2" {
         Token{ .token_type = .RightBrace },
 
         Token{ .token_type = .Identifier, .lexeme = "println" },
-        Token{ .token_type = .Exclamation },
+        Token{ .token_type = .Factorial },
         Token{ .token_type = .LeftParen },
         Token{ .token_type = .String, .lexeme = "{}" },
         Token{ .token_type = .Comma },
@@ -932,7 +801,6 @@ test "Test for code snippet 3" {
     const input =
         \\static mut A: i32 = 0;
         \\static mut B: i32 = 0;
-        \\
         \\fn suma(mut x: i32) -> i32 {
         \\    let mut accum = 0;
         \\    println!("{}", 15);
@@ -943,7 +811,6 @@ test "Test for code snippet 3" {
         \\    println!("{}", 16);
         \\    accum
         \\}
-        \\
         \\fn main() {
         \\    let y: i32;
         \\    unsafe {
@@ -998,7 +865,7 @@ test "Test for code snippet 3" {
         Token{ .token_type = .DotComma },
 
         Token{ .token_type = .Identifier, .lexeme = "println" },
-        Token{ .token_type = .Exclamation },
+        Token{ .token_type = .Factorial },
         Token{ .token_type = .LeftParen },
         Token{ .token_type = .String, .lexeme = "{}" },
         Token{ .token_type = .Comma },
@@ -1031,7 +898,7 @@ test "Test for code snippet 3" {
         Token{ .token_type = .RightBrace },
 
         Token{ .token_type = .Identifier, .lexeme = "println" },
-        Token{ .token_type = .Exclamation },
+        Token{ .token_type = .Factorial },
         Token{ .token_type = .LeftParen },
         Token{ .token_type = .String, .lexeme = "{}" },
         Token{ .token_type = .Comma },
@@ -1072,7 +939,7 @@ test "Test for code snippet 3" {
         Token{ .token_type = .RightBrace },
 
         Token{ .token_type = .Identifier, .lexeme = "println" },
-        Token{ .token_type = .Exclamation },
+        Token{ .token_type = .Factorial },
         Token{ .token_type = .LeftParen },
         Token{ .token_type = .String, .lexeme = "{}" },
         Token{ .token_type = .Comma },
@@ -1089,7 +956,7 @@ test "Test for code snippet 3" {
         Token{ .token_type = .DotComma },
 
         Token{ .token_type = .Identifier, .lexeme = "println" },
-        Token{ .token_type = .Exclamation },
+        Token{ .token_type = .Factorial },
         Token{ .token_type = .LeftParen },
         Token{ .token_type = .String, .lexeme = "{}" },
         Token{ .token_type = .Comma },
@@ -1109,7 +976,6 @@ test "Test for code snippet 4" {
     const input =
         \\static mut A: i32 = 0;
         \\static mut B: i32 = 0;
-        \\
         \\fn sumarec(x: i32) -> i32 {
         \\    println!("{}", x);
         \\    if x < 1 {
@@ -1117,7 +983,6 @@ test "Test for code snippet 4" {
         \\    }
         \\    return x + sumarec(x - 1);
         \\}
-        \\
         \\fn main() {
         \\    let y = sumarec(4);
         \\    println!("{}", y);
@@ -1158,7 +1023,7 @@ test "Test for code snippet 4" {
 
         // Function body
         Token{ .token_type = .Identifier, .lexeme = "println" },
-        Token{ .token_type = .Exclamation },
+        Token{ .token_type = .Factorial },
         Token{ .token_type = .LeftParen },
         Token{ .token_type = .String, .lexeme = "{}" },
         Token{ .token_type = .Comma },
@@ -1172,13 +1037,13 @@ test "Test for code snippet 4" {
         Token{ .token_type = .Integer, .lexeme = "1" },
         Token{ .token_type = .LeftBrace },
 
-        Token{ .token_type = .FunReturn },
+        Token{ .token_type = .Return },
         Token{ .token_type = .Integer, .lexeme = "0" },
         Token{ .token_type = .DotComma },
 
         Token{ .token_type = .RightBrace },
 
-        Token{ .token_type = .FunReturn },
+        Token{ .token_type = .Return },
         Token{ .token_type = .Identifier, .lexeme = "x" },
         Token{ .token_type = .Plus },
         Token{ .token_type = .Identifier, .lexeme = "sumarec" },
@@ -1208,7 +1073,7 @@ test "Test for code snippet 4" {
         Token{ .token_type = .DotComma },
 
         Token{ .token_type = .Identifier, .lexeme = "println" },
-        Token{ .token_type = .Exclamation },
+        Token{ .token_type = .Factorial },
         Token{ .token_type = .LeftParen },
         Token{ .token_type = .String, .lexeme = "{}" },
         Token{ .token_type = .Comma },
@@ -1262,7 +1127,7 @@ test "Test for code snippet with single-line comments" {
         Token{ .token_type = .DotComma },
 
         Token{ .token_type = .Identifier, .lexeme = "println" },
-        Token{ .token_type = .Exclamation },
+        Token{ .token_type = .Factorial },
         Token{ .token_type = .LeftParen },
         Token{ .token_type = .String, .lexeme = "{}" },
         Token{ .token_type = .Comma },
@@ -1277,6 +1142,7 @@ test "Test for code snippet with single-line comments" {
 
     try test_lexer(input, &expected_tokens);
 }
+
 test "Test for code snippet with multi-line comments" {
     const input =
         \\fn main() {
@@ -1318,7 +1184,7 @@ test "Test for code snippet with multi-line comments" {
         Token{ .token_type = .DotComma },
 
         Token{ .token_type = .Identifier, .lexeme = "println" },
-        Token{ .token_type = .Exclamation },
+        Token{ .token_type = .Factorial },
         Token{ .token_type = .LeftParen },
         Token{ .token_type = .String, .lexeme = "{}" },
         Token{ .token_type = .Comma },
@@ -1333,6 +1199,7 @@ test "Test for code snippet with multi-line comments" {
 
     try test_lexer(input, &expected_tokens);
 }
+
 test "Test for code snippet with docstring comments" {
     const input =
         \\/// This is the main function
@@ -1374,7 +1241,7 @@ test "Test for code snippet with docstring comments" {
         Token{ .token_type = .DotComma },
 
         Token{ .token_type = .Identifier, .lexeme = "println" },
-        Token{ .token_type = .Exclamation },
+        Token{ .token_type = .Factorial },
         Token{ .token_type = .LeftParen },
         Token{ .token_type = .String, .lexeme = "{}" },
         Token{ .token_type = .Comma },
@@ -1391,17 +1258,18 @@ test "Test for code snippet with docstring comments" {
 }
 
 fn test_lexer(input: []const u8, expected_tokens: []const Token) !void {
-    var lexer = Lexer{
-        .input = input,
-    };
-    var index: usize = 0;
+    const allocator = std.testing.allocator;
+    var lexer = Lexer.init(input, allocator);
+    const tokens = try lexer.tokenize();
+    defer allocator.free(tokens);
 
-    while (true) {
-        const token = lexer.next_token();
+    try std.testing.expectEqual(expected_tokens.len, tokens.len);
 
-        try std.testing.expectEqual(expected_tokens[index].token_type, token.token_type);
-        try std.testing.expect(std.mem.eql(u8, expected_tokens[index].lexeme, token.lexeme));
-        if (token.token_type == .EndOfFile) break;
-        index += 1;
+    for (tokens, 0..) |token, i| {
+        const expected = expected_tokens[i];
+        // Compare token types
+        try std.testing.expectEqual(expected.token_type, token.token_type);
+        // Compare lexemes
+        try std.testing.expect(std.mem.eql(u8, token.lexeme, expected.lexeme));
     }
 }

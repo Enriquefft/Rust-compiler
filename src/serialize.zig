@@ -534,6 +534,19 @@ fn serialize_expression(writer: anytype, expr: *const Parser.Expression) !void {
             try escape_json_string(writer, id);
             try writer.writeByte('"');
         },
+
+        .BinaryOperation => |bin_op| {
+            try writer.writeAll("\"operator\": \"");
+            try escape_json_string(writer, @tagName(bin_op.operator));
+            try writer.writeAll("\",");
+            try writer.writeAll("\"left\": ");
+            try serialize_expression(writer, bin_op.left);
+            try writer.writeByte(',');
+            try writer.writeAll("\"right\": ");
+            try serialize_expression(writer, bin_op.right);
+        },
+
+
         else => {
             // Implement serialization for other Expression variants
             // For brevity, not all variants are implemented here
