@@ -20,9 +20,9 @@ pub fn main() anyerror!void {
     // the allocator we'll use internally
     const allocator = arena.allocator();
 
-    var lexer = Lexer{ .input = input };
+    var lexer = Lexer.init(input, allocator);
     const tokens = try lexer.tokenize();
-    const ast = try parse(tokens, &allocator);
+    const ast = try parse(tokens, allocator);
 
     // Initialize a resizable buffer
     var buffer = std.ArrayList(u8).init(allocator);

@@ -1,6 +1,5 @@
 const std = @import("std");
 const Parser = @import("parser.zig");
-const parse = Parser.parse;
 const Lexer = @import("lexer.zig").Lexer;
 
 // Function to escape strings for JSON and write directly to the writer
@@ -48,7 +47,7 @@ fn write_indent(writer: anytype, indent: usize) !void {
 }
 
 fn printJsonPretty(writer: anytype, value: std.json.Value, indent: usize) !void {
-    const newIndent:usize = indent + 1;
+    const newIndent: usize = indent + 1;
 
     switch (value) {
         .null => try writer.print("null", .{}),
@@ -77,7 +76,6 @@ fn printJsonPretty(writer: anytype, value: std.json.Value, indent: usize) !void 
             try writer.print("\n", .{});
             try write_indent(writer, indent);
             try writer.print("]", .{});
-
         },
         .object => {
             const obj = value.object; // std.StringHashMap(std.json.Value)
@@ -97,13 +95,11 @@ fn printJsonPretty(writer: anytype, value: std.json.Value, indent: usize) !void 
                 try write_indent(writer, newIndent);
                 try writer.print("\"{s}\": ", .{entry.key_ptr.*});
 
-
                 try printJsonPretty(writer, entry.value_ptr.*, newIndent);
             }
             try writer.print("\n", .{});
             try write_indent(writer, indent);
             try writer.print("}}", .{});
-
         },
     }
 }
@@ -113,7 +109,7 @@ pub fn serialize_program(writer: anytype, program: Parser.Program) !void {
     try writer.writeByte('{');
     try writer.writeAll("\"items\": [");
     for (program.items, 0..) |item, index| {
-        try serialize_item(writer, item);
+        try serialize_item(writer, &item);
         if (index < program.items.len - 1) {
             try writer.writeByte(',');
         }
@@ -122,7 +118,7 @@ pub fn serialize_program(writer: anytype, program: Parser.Program) !void {
 }
 
 // Function to serialize an Item
-fn serialize_item(writer: anytype, item: Parser.Item) anyerror!void {
+fn serialize_item(writer: anytype, item: *const Parser.Item) anyerror!void {
     try writer.writeByte('{');
 
     // Serialize docstring if present
@@ -149,11 +145,11 @@ fn serialize_item(writer: anytype, item: Parser.Item) anyerror!void {
             try serialize_function(writer, func);
         },
         // Handle other variants similarly...
-        else => {
-            // Implement serialization for other ItemContent variants
-            // For brevity, not all variants are implemented here
-            try writer.writeAll("\"value\": null");
-        },
+        // else => {
+        // Implement serialization for other ItemContent variants
+        // For brevity, not all variants are implemented here
+        // try writer.writeAll("\"value\": null");
+        // },
     }
 
     try writer.writeByte('}'); // Close "content" object
@@ -545,7 +541,6 @@ fn serialize_expression(writer: anytype, expr: *const Parser.Expression) !void {
             try writer.writeAll("\"right\": ");
             try serialize_expression(writer, bin_op.right);
         },
-
 
         else => {
             // Implement serialization for other Expression variants

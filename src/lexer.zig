@@ -59,6 +59,10 @@ pub const TokenType = enum {
     Identifier,
     DocString,
     Invalid,
+
+    Ampersand,
+    Loop,
+    Exclamation,
 };
 
 /// A token with its type and optional lexeme. Used by the parser to interpret the expression.
@@ -67,7 +71,7 @@ pub const Token = struct {
     lexeme: []const u8 = "",
 
     /// Formats the token for display.
-    pub fn format(self: Token, writer: std.io.Writer) !void {
+    pub fn format(self: Token, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
         const name = switch (self.token_type) {
             TokenType.Integer => "Integer",
             TokenType.Float => "Float",
@@ -81,6 +85,7 @@ pub const Token = struct {
             TokenType.Static => "static",
             TokenType.Unsafe => "unsafe",
             TokenType.While => "while",
+            TokenType.Loop => "loop",
             TokenType.For => "for",
             TokenType.In => "in",
             TokenType.If => "if",
@@ -114,6 +119,9 @@ pub const Token = struct {
             TokenType.Identifier => "Identifier",
             TokenType.DocString => "DocString",
             TokenType.Invalid => "Invalid",
+
+            TokenType.Ampersand => "&",
+            TokenType.Exclamation => "!",
         };
 
         if (self.lexeme.len > 0) {
