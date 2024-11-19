@@ -35,7 +35,6 @@ pub const TokenType = enum {
     Divide,
     Power,
     Modulo,
-    Factorial,
     LogicalOr,
     LogicalAnd,
     LessThan,
@@ -53,6 +52,8 @@ pub const TokenType = enum {
     DotComma,
     LeftParen,
     RightParen,
+    LeftBracket,
+    RightBracket,
 
     // Special
     EndOfFile,
@@ -63,6 +64,12 @@ pub const TokenType = enum {
     Ampersand,
     Loop,
     Exclamation,
+
+    PathSep,
+    Super,
+    Self,
+    Crate,
+    Dollar,
 };
 
 /// A token with its type and optional lexeme. Used by the parser to interpret the expression.
@@ -99,7 +106,7 @@ pub const Token = struct {
             TokenType.Divide => "/",
             TokenType.Power => "^",
             TokenType.Modulo => "%",
-            TokenType.Factorial => "!",
+            TokenType.Exclamation => "!",
             TokenType.LogicalOr => "||",
             TokenType.LogicalAnd => "&&",
             TokenType.LessThan => "<",
@@ -121,7 +128,14 @@ pub const Token = struct {
             TokenType.Invalid => "Invalid",
 
             TokenType.Ampersand => "&",
-            TokenType.Exclamation => "!",
+
+            TokenType.PathSep => "::",
+            TokenType.Super => "super",
+            TokenType.Self => "self",
+            TokenType.Crate => "crate",
+            TokenType.Dollar => "$",
+            TokenType.LeftBracket => "[",
+            TokenType.RightBracket => "]",
         };
 
         if (self.lexeme.len > 0) {
@@ -241,7 +255,7 @@ pub const Lexer = struct {
             self.current += 1;
             return Token{ .token_type = .NotEqual };
         }
-        return Token{ .token_type = .Factorial };
+        return Token{ .token_type = .Exclamation };
     }
 
     /// Parses tokens that start with '='.
@@ -662,7 +676,7 @@ test "Test for code snippet 1" {
         Token{ .token_type = .LeftBrace },
 
         Token{ .token_type = .Identifier, .lexeme = "println" },
-        Token{ .token_type = .Factorial },
+        Token{ .token_type = .Exclamation },
         Token{ .token_type = .LeftParen },
         Token{ .token_type = .String, .lexeme = "{}" },
         Token{ .token_type = .Comma },
@@ -687,7 +701,7 @@ test "Test for code snippet 1" {
         Token{ .token_type = .DotComma },
 
         Token{ .token_type = .Identifier, .lexeme = "println" },
-        Token{ .token_type = .Factorial },
+        Token{ .token_type = .Exclamation },
         Token{ .token_type = .LeftParen },
         Token{ .token_type = .String, .lexeme = "{}" },
         Token{ .token_type = .Comma },
@@ -702,7 +716,7 @@ test "Test for code snippet 1" {
         Token{ .token_type = .DotComma },
 
         Token{ .token_type = .Identifier, .lexeme = "println" },
-        Token{ .token_type = .Factorial },
+        Token{ .token_type = .Exclamation },
         Token{ .token_type = .LeftParen },
         Token{ .token_type = .String, .lexeme = "{}" },
         Token{ .token_type = .Comma },
@@ -789,7 +803,7 @@ test "Test for code snippet 2" {
         Token{ .token_type = .RightBrace },
 
         Token{ .token_type = .Identifier, .lexeme = "println" },
-        Token{ .token_type = .Factorial },
+        Token{ .token_type = .Exclamation },
         Token{ .token_type = .LeftParen },
         Token{ .token_type = .String, .lexeme = "{}" },
         Token{ .token_type = .Comma },
@@ -873,7 +887,7 @@ test "Test for code snippet 3" {
         Token{ .token_type = .DotComma },
 
         Token{ .token_type = .Identifier, .lexeme = "println" },
-        Token{ .token_type = .Factorial },
+        Token{ .token_type = .Exclamation },
         Token{ .token_type = .LeftParen },
         Token{ .token_type = .String, .lexeme = "{}" },
         Token{ .token_type = .Comma },
@@ -906,7 +920,7 @@ test "Test for code snippet 3" {
         Token{ .token_type = .RightBrace },
 
         Token{ .token_type = .Identifier, .lexeme = "println" },
-        Token{ .token_type = .Factorial },
+        Token{ .token_type = .Exclamation },
         Token{ .token_type = .LeftParen },
         Token{ .token_type = .String, .lexeme = "{}" },
         Token{ .token_type = .Comma },
@@ -947,7 +961,7 @@ test "Test for code snippet 3" {
         Token{ .token_type = .RightBrace },
 
         Token{ .token_type = .Identifier, .lexeme = "println" },
-        Token{ .token_type = .Factorial },
+        Token{ .token_type = .Exclamation },
         Token{ .token_type = .LeftParen },
         Token{ .token_type = .String, .lexeme = "{}" },
         Token{ .token_type = .Comma },
@@ -964,7 +978,7 @@ test "Test for code snippet 3" {
         Token{ .token_type = .DotComma },
 
         Token{ .token_type = .Identifier, .lexeme = "println" },
-        Token{ .token_type = .Factorial },
+        Token{ .token_type = .Exclamation },
         Token{ .token_type = .LeftParen },
         Token{ .token_type = .String, .lexeme = "{}" },
         Token{ .token_type = .Comma },
@@ -1031,7 +1045,7 @@ test "Test for code snippet 4" {
 
         // Function body
         Token{ .token_type = .Identifier, .lexeme = "println" },
-        Token{ .token_type = .Factorial },
+        Token{ .token_type = .Exclamation },
         Token{ .token_type = .LeftParen },
         Token{ .token_type = .String, .lexeme = "{}" },
         Token{ .token_type = .Comma },
@@ -1081,7 +1095,7 @@ test "Test for code snippet 4" {
         Token{ .token_type = .DotComma },
 
         Token{ .token_type = .Identifier, .lexeme = "println" },
-        Token{ .token_type = .Factorial },
+        Token{ .token_type = .Exclamation },
         Token{ .token_type = .LeftParen },
         Token{ .token_type = .String, .lexeme = "{}" },
         Token{ .token_type = .Comma },
@@ -1135,7 +1149,7 @@ test "Test for code snippet with single-line comments" {
         Token{ .token_type = .DotComma },
 
         Token{ .token_type = .Identifier, .lexeme = "println" },
-        Token{ .token_type = .Factorial },
+        Token{ .token_type = .Exclamation },
         Token{ .token_type = .LeftParen },
         Token{ .token_type = .String, .lexeme = "{}" },
         Token{ .token_type = .Comma },
@@ -1192,7 +1206,7 @@ test "Test for code snippet with multi-line comments" {
         Token{ .token_type = .DotComma },
 
         Token{ .token_type = .Identifier, .lexeme = "println" },
-        Token{ .token_type = .Factorial },
+        Token{ .token_type = .Exclamation },
         Token{ .token_type = .LeftParen },
         Token{ .token_type = .String, .lexeme = "{}" },
         Token{ .token_type = .Comma },
@@ -1249,7 +1263,7 @@ test "Test for code snippet with docstring comments" {
         Token{ .token_type = .DotComma },
 
         Token{ .token_type = .Identifier, .lexeme = "println" },
-        Token{ .token_type = .Factorial },
+        Token{ .token_type = .Exclamation },
         Token{ .token_type = .LeftParen },
         Token{ .token_type = .String, .lexeme = "{}" },
         Token{ .token_type = .Comma },
@@ -1280,4 +1294,12 @@ fn test_lexer(input: []const u8, expected_tokens: []const Token) !void {
         // Compare lexemes
         try std.testing.expect(std.mem.eql(u8, token.lexeme, expected.lexeme));
     }
+}
+
+pub fn compareToken(actual: Token, expected: Token) !void {
+
+    // Compare token types
+    try std.testing.expectEqual(expected.token_type, actual.token_type);
+    // Compare lexemes
+    try std.testing.expect(std.mem.eql(u8, actual.lexeme, expected.lexeme));
 }

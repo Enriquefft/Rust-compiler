@@ -55,14 +55,30 @@ block           = "{" { statement } [ expression ] "}"
 statement       = let_statement
                  | expression_statement
                  | item
+                 | macro_invocation_semi
 
 let_statement    = "let" [ "mut" ] pattern [ ":" type ] [ "=" expression ] ";"
 
 expression_statement = expression ";"
 
+macro_invocation    = simple_path "!" delim_token_tree
+
+delim_token_tree    = "(" { token_tree } ")"
+                    | "[" { token_tree } "]"
+                    | "{" { token_tree } "}"
+
+token_tree          = token_except_delimiters
+                    | delim_token_tree
+
+macro_invocation_semi = simple_path "!" "(" { token_tree } ")" ";"
+                      | simple_path "!" "[" { token_tree } "]" ";"
+                      | simple_path "!" "{" { token_tree } "}"
+
+
 expression       = assignment
                  | conditional
                  | loop
+                 | range
                  | function_call
                  | binary_op
                  | unary_op
@@ -86,6 +102,8 @@ operator          = "+" | "-" | "*" | "/" | "==" | "!=" | "<" | ">" | "<=" | ">=
 
 unary_op         = "-" expression
                  | "!" expression
+
+range           = expression ".." expression
 
 literal           = integer_literal
                  | float_literal
@@ -126,7 +144,10 @@ function_type     = "fn" "(" [ type { "," type } ] ")" [ "->" type ]
 
 generic_type      = identifier [ "<" type { "," type } ">" ]
 
-path              = identifier { "::" identifier }
+simple_path              = [ "::" ] path_segment { "::" path_segment }
+expression_path= [ "::" ] expression_path_segment { "::" expression_path_segment }
+expression_path_segment  = path_segment [ "::" generic_args ]
+path_segment        = identifier | "self" | "super" | "crate" | "$create"
 
 identifier        = letter { letter | digit | "_" }
 
@@ -143,6 +164,8 @@ char_literal      = "'" any_character_except_single_quote "'"
 generics          = "<" generic_params ">"
 generic_params    = generic_param { "," generic_param }
 generic_param     = identifier [ ":" bound ]
+
+generic_args      = TODO
 
 bound             = identifier [ "+" identifier ]
 

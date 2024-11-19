@@ -1,6 +1,7 @@
 const std = @import("std");
 const parse = @import("parser.zig").parse;
 const Lexer = @import("lexer.zig").Lexer;
+const Analyzer = @import("analyzer2.zig").SemanticAnalyzer;
 const Serializer = @import("serialize.zig");
 
 pub fn main() anyerror!void {
@@ -23,6 +24,9 @@ pub fn main() anyerror!void {
     var lexer = Lexer.init(input, allocator);
     const tokens = try lexer.tokenize();
     const ast = try parse(tokens, allocator);
+
+    var analyzer = try Analyzer.init(allocator);
+    try analyzer.analyze(ast);
 
     // Initialize a resizable buffer
     var buffer = std.ArrayList(u8).init(allocator);

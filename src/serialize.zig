@@ -2,6 +2,8 @@ const std = @import("std");
 const Parser = @import("parser.zig");
 const Lexer = @import("lexer.zig").Lexer;
 
+pub const SerializeError = error{NotImplemented};
+
 // Function to escape strings for JSON and write directly to the writer
 fn escape_json_string(writer: anytype, s: []const u8) !void {
     // We'll write each character, escaping special JSON characters as needed
@@ -371,6 +373,10 @@ fn serialize_statement(writer: anytype, stmt: Parser.Statement) !void {
         .Item => |item| {
             try writer.writeAll("\"value\": ");
             try serialize_item(writer, item);
+        },
+        .MacroInvocationSemi => |_| {
+            try writer.writeAll("\"value\": ");
+            return SerializeError.NotImplemented;
         },
     }
 
