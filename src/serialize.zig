@@ -557,5 +557,3 @@ fn serialize_expression(writer: anytype, expr: *const Parser.Expression) !void {
 
     try writer.writeByte('}');
 }
-
-// ... Implement other serialization functions as needed ...
