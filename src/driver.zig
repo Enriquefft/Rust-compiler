@@ -2,6 +2,8 @@ const std = @import("std");
 const diag = @import("diag/diagnostics.zig");
 const source_map = @import("diag/source_map.zig");
 const lexer = @import("frontend/lexer.zig");
+const parser = @import("frontend/parser.zig");
+const ast = @import("frontend/ast.zig");
 
 pub const CompileStatus = enum {
     success,
@@ -12,10 +14,13 @@ pub const CompileResult = struct {
     diagnostics: diag.Diagnostics,
     source_map: source_map.SourceMap,
     status: CompileStatus,
+    ast_arena: std.heap.ArenaAllocator,
+    ast: ast.Crate,
 
     pub fn deinit(self: *CompileResult) void {
         self.diagnostics.deinit();
         self.source_map.deinit();
+        self.ast_arena.deinit();
     }
 };
 
@@ -39,6 +44,9 @@ pub fn compileFile(options: CompileOptions) !CompileResult {
     const tokens = try lexer.lex(options.allocator, file_id, contents, &diagnostics);
     defer options.allocator.free(tokens);
 
+    var ast_arena = std.heap.ArenaAllocator.init(options.allocator);
+    const crate = parser.parseCrate(ast_arena.allocator(), tokens, &diagnostics);
+
     // TODO: Frontend parsing to AST per Architecture.md.
     // TODO: Lowering to HIR and semantic analysis.
     // TODO: MIR construction and optimization passes.
@@ -53,10 +61,11 @@ pub fn compileFile(options: CompileOptions) !CompileResult {
     if (status == .errors and options.exit_on_error) {
         diagnostics.deinit();
         sm.deinit();
+        ast_arena.deinit();
         std.process.exit(1);
     }
 
-    return .{ .diagnostics = diagnostics, .source_map = sm, .status = status };
+    return .{ .diagnostics = diagnostics, .source_map = sm, .status = status, .ast_arena = ast_arena, .ast = crate };
 }
 
 test "compileFile succeeds on tokenizable source" {
