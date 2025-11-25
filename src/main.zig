@@ -30,6 +30,6 @@ pub fn main() !void {
     }
 }
 
-test "frontend lexer is reachable" {
-    _ = @import("frontend/lexer.zig");
+test "Run all tests" {
+    _ = @import("all_tests.zig");
 }
