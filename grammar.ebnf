@@ -1,175 +1,112 @@
-program         = { item }
+PlainIdent = letter , { letter | digit | "_" } ;
+Ident      = PlainIdent | "r#" , PlainIdent ;   (* PlainIdent must not be Keyword *)
 
-item            = [ DocString ]
-                 | function
-                 | struct_def
-                 | enum_def
-                 | trait_def
-                 | impl_def
-                 | use_decl
-                 | mod_decl
-                 | constant
-                 | static_variable
-                 | type_alias
-                 | macro_def
-                 | foreign_mod
+IntLit     = digit , { digit } ;
+FloatLit   = digit , { digit } , "." , digit , { digit } ;
+BoolLit    = "true" | "false" ;
+StringLit  = '"' , { char - '"' } , '"' ;
+CharLit    = "'" , char , "'" ;
 
-function        = [ "unsafe" ] "fn" identifier "(" [ parameters ] ")" [ "->" type ] block
+Keyword    = "fn" | "struct" | "impl" | "type" | "let" | "mut"
+           | "if" | "else" | "while" | "for" | "in" | "return" | "as"
+           | BoolLit ;
 
-parameters      = parameter { "," parameter }
-parameter       = [ "mut" ] identifier ":" type
+Crate  = { Item } ;
 
-struct_def      = "struct" identifier [ generics ] "{" [ struct_fields ] "}"
-struct_fields   = struct_field { "," struct_field }
-struct_field    = identifier ":" type
+Item   = FnItem | StructItem | ImplItem | TypeAliasItem | ";" ;
 
-enum_def        = "enum" identifier [ generics ] "{" [ enum_variants ] "}"
-enum_variants   = enum_variant { "," enum_variant }
-enum_variant     = identifier [ "(" [ variant_fields ] ")" ]
-variant_fields   = type { "," type }
+TypeAliasItem = "type" , Ident , [ GenParams ] , "=" , Type , ";" ;
 
-trait_def       = "trait" identifier [ generics ] "{" { trait_item } "}"
-trait_item      = function | type_alias
+StructItem    = "struct" , Ident , [ GenParams ] ,
+                "{" , [ Field , { "," , Field } , [ "," ] ] , "}" ;
+Field         = Ident , ":" , Type ;
 
-impl_def        = "impl" [ generics ] [ "for" type ] "{" { impl_item } "}"
-impl_item       = function | constant
+FnItem        = "fn" , Ident , [ GenParams ] ,
+                "(" , [ Param , { "," , Param } , [ "," ] ] , ")" ,
+                [ "->" , Type ] , Block ;
 
-use_decl        = "use" path ";"
+ImplItem      = "impl" , [ GenParams ] ,
+                ( Type | Path , "for" , Type ) ,
+                "{" , { FnItem | ";" } , "}" ;
 
-mod_decl        = "mod" identifier [ ";" | "{" { item } "}" ]
+GenParams = "<" , Ident , { "," , Ident } , ">" ;
+GenArgs   = "<" , Type  , { "," , Type  } , ">" ;
 
-constant        = "const" identifier ":" type "=" expression ";"
+Path      = Ident , { "::" , Ident } , [ GenArgs ] ;
 
-static_variable = "static" identifier ":" type "=" expression ";"
+Type   = PrimType
+       | "[" , Type , ";" , ConstExpr , "]"
+       | "*" , ( "const" | "mut" ) , Type
+       | "&" , [ "mut" ] , Type
+       | "fn" , "(" , [ Type , { "," , Type } ] , ")" , "->" , Type
+       | Path ;
 
-type_alias      = "type" identifier [ generics ] "=" type ";"
+PrimType  = "u32" | "u64" | "usize" | "i32" | "i64" | "f32" | "f64"
+          | "bool" | "char" | "str" | "String" ;
 
-macro_def       = "macro_rules!" identifier "{" macro_rules_body "}"
+ConstExpr = IntLit | Ident ;
 
-foreign_mod     = "extern" [ string_literal ] "{" { foreign_item } "}"
-foreign_item    = function | static_item
-static_item     = "static" identifier ":" type "=" expression ";"
+Block = "{" , { Stmt } , [ Expr ] , "}" ;
 
-block           = "{" { statement } [ expression ] "}"
+Stmt  = LetStmt | WhileStmt | IfStmt | ReturnStmt | ForStmt | Expr , ";" | ";" ;
 
-statement       = let_statement
-                 | expression_statement
-                 | item
-                 | macro_invocation_semi
+ForStmt = "for" , Pattern , "in" , Expr , Block ;
 
-let_statement    = "let" [ "mut" ] pattern [ ":" type ] [ "=" expression ] ";"
+LetStmt    = "let" , [ "mut" ] , Pattern ,
+             [ ":" , Type ] , [ "=" , Expr ] , ";" ;
 
-expression_statement = expression ";"
+Pattern    = Ident | "_" ;
 
-macro_invocation    = simple_path "!" delim_token_tree
+WhileStmt  = "while" , Expr , Block ;
 
-delim_token_tree    = "(" { token_tree } ")"
-                    | "[" { token_tree } "]"
-                    | "{" { token_tree } "}"
+IfStmt     = "if" , Expr , Block , [ "else" , ( IfStmt | Block ) ] ;
 
-token_tree          = token_except_delimiters
-                    | delim_token_tree
+ReturnStmt = "return" , [ Expr ] , ";" ;
 
-macro_invocation_semi = simple_path "!" "(" { token_tree } ")" ";"
-                      | simple_path "!" "[" { token_tree } "]" ";"
-                      | simple_path "!" "{" { token_tree } "}"
+PlaceExpr = PlaceBase , { ("[" , Expr , "]") | ("." , Ident) } ;
 
+PlaceBase = Ident | "*" , PlaceExpr | "(" , PlaceExpr , ")" ;
 
-expression       = assignment
-                 | conditional
-                 | loop
-                 | range
-                 | function_call
-                 | binary_op
-                 | unary_op
-                 | literal
-                 | identifier
-                 | "(" expression ")"
+Expr        = Assign ;
 
-assignment       = identifier "=" expression
+Assign      = IfExpr
+            | PlaceExpr , ("=" | "+=" | "-=" | "*=" | "/=") , Assign ;
 
-conditional      = "if" expression block [ "else" block ]
+IfExpr      = "if" , Expr , Block , "else" , ( IfExpr | Block )
+            | Or ;
 
-loop             = "loop" block
-                 | "while" expression block
-                 | "for" identifier "in" expression block
+Or          = And , { "||" , And } ;
+And         = Eq  , { "&&" , Eq  } ;
+Eq          = Rel , { ("==" | "!=") , Rel } ;
+Rel         = Range , { ("<" | "<=" | ">" | ">=") , Range } ;
+Range       = Add , { (".." | "..=") , Add } ;
+Add         = Mul , { ("+" | "-") , Mul } ;
+Mul         = Cast, { ("*" | "/" | "%") , Cast } ;
 
-function_call    = identifier "(" [ arguments ] ")"
-arguments         = expression { "," expression }
+Cast        = Unary , { "as" , Type } ;
 
-binary_op        = expression operator expression
-operator          = "+" | "-" | "*" | "/" | "==" | "!=" | "<" | ">" | "<=" | ">=" | "&&" | "||"
+Unary       = { "!" | "-" | "*" | "&" , [ "mut" ] } , Postfix ;
 
-unary_op         = "-" expression
-                 | "!" expression
+Postfix     = Primary , { Call | Index | Field | Method } ;
 
-range           = expression ".." expression
+Call        = "(" , [ Expr , { "," , Expr } , [ "," ] ] , ")" ;
+Index       = "[" , Expr , "]" ;
+Field       = "." , Ident ;
+Method      = "." , Ident , Call ;
 
-literal           = integer_literal
-                 | float_literal
-                 | boolean_literal
-                 | string_literal
-                 | char_literal
+MacroCall   = Path , "!" , Call ;
 
-pattern           = identifier
-                 | "_"
-                 | pattern_tuple
-                 | pattern_struct
+Primary     = Literal
+            | MacroCall
+            | Path
+            | "[" , [ Expr , { "," , Expr } , [ "," ] ] , "]"
+            | Path , "{" , [ Init , { "," , Init } , [ "," ] ] , "}"
+            | "|" , [ Param , { "," , Param } , [ "," ] ] , "|" , ( Expr | Block )
+            | "(" , Expr , ")"
+            | Block ;
 
-pattern_tuple     = "(" [ pattern { "," pattern } ] ")"
+Init        = Ident , ":" , Expr ;
 
-pattern_struct    = identifier "{" [ pattern_field { "," pattern_field } ] "}"
-pattern_field     = identifier ":" pattern
+Literal     = IntLit | FloatLit | BoolLit | CharLit | StringLit ;
 
-type              = primitive_type
-                 | path
-                 | reference_type
-                 | tuple_type
-                 | array_type
-                 | function_type
-                 | generic_type
-
-primitive_type    = "i8" | "i16" | "i32" | "i64" | "i128"
-                 | "u8" | "u16" | "u32" | "u64" | "u128"
-                 | "f32" | "f64"
-                 | "bool" | "char" | "str" | "()"
-
-reference_type    = "&" [ "mut" ] type
-
-tuple_type        = "(" [ type { "," type } ] ")"
-
-array_type        = "[" type ";" integer_literal "]"
-
-function_type     = "fn" "(" [ type { "," type } ] ")" [ "->" type ]
-
-generic_type      = identifier [ "<" type { "," type } ">" ]
-
-simple_path              = [ "::" ] path_segment { "::" path_segment }
-expression_path= [ "::" ] expression_path_segment { "::" expression_path_segment }
-expression_path_segment  = path_segment [ "::" generic_args ]
-path_segment        = identifier | "self" | "super" | "crate" | "$create"
-
-identifier        = letter { letter | digit | "_" }
-
-integer_literal   = digit { digit }
-
-float_literal     = digit { digit } "." digit { digit }
-
-boolean_literal   = "true" | "false"
-
-string_literal    = "\"" { any_character_except_quote } "\""
-
-char_literal      = "'" any_character_except_single_quote "'"
-
-generics          = "<" generic_params ">"
-generic_params    = generic_param { "," generic_param }
-generic_param     = identifier [ ":" bound ]
-
-generic_args      = TODO
-
-bound             = identifier [ "+" identifier ]
-
-macro_rules_body   = { macro_rule }
-macro_rule        = pattern "=>" replacement ";"
-
-replacement       = { token }
+Param       = Pattern , [ ":" , Type ] ;
