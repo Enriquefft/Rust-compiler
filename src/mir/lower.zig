@@ -125,9 +125,22 @@ const FunctionBuilder = struct {
             .ConstBool => |v| {
                 return .{ .ImmBool = v };
             },
+            .ConstChar => |v| {
+                return .{ .ImmChar = v };
+            },
+            .ConstString => |v| {
+                return .{ .ImmString = v };
+            },
             .LocalRef => |local| {
                 try self.ensureLocal(local, expr.ty, expr.span);
                 return .{ .Local = local };
+            },
+            .GlobalRef => |def_id| {
+                if (def_id >= self.hir_crate.items.items.len) {
+                    self.diagnostics.reportError(expr.span, "reference to unknown item during MIR lowering");
+                    return null;
+                }
+                return .{ .Global = def_id };
             },
             .Block => |blk| {
                 var last: ?mir.Operand = null;
@@ -169,8 +182,11 @@ const FunctionBuilder = struct {
                 return null;
             },
             .Call => |call| {
-                const callee_expr = self.hir_crate.exprs.items[call.callee];
-                if (callee_expr.kind != .GlobalRef) {
+                const callee_op = try self.lowerExpr(call.callee) orelse {
+                    self.diagnostics.reportError(expr.span, "missing callee while lowering call");
+                    return null;
+                };
+                if (callee_op != .Global) {
                     self.diagnostics.reportError(expr.span, "only direct function calls are supported in MIR lowering");
                     return null;
                 }
@@ -182,7 +198,7 @@ const FunctionBuilder = struct {
                     }
                 }
                 const tmp = self.newTemp();
-                _ = try self.emitInst(.{ .ty = mapType(self.hir_crate, expr.ty, expr.span, self.diagnostics), .dest = tmp, .kind = .{ .Call = .{ .fn_id = callee_expr.kind.GlobalRef, .args = try args.toOwnedSlice(self.allocator) } } });
+                _ = try self.emitInst(.{ .ty = mapType(self.hir_crate, expr.ty, expr.span, self.diagnostics), .dest = tmp, .kind = .{ .Call = .{ .target = callee_op, .args = try args.toOwnedSlice(self.allocator) } } });
                 return .{ .Temp = tmp };
             },
             .Assignment => |assign| {
@@ -256,17 +272,53 @@ const FunctionBuilder = struct {
                 self.diagnostics.reportWarning(expr.span, "casts lowered as no-op in MIR");
                 return try self.lowerExpr(c.expr);
             },
-            .Range, .Index, .Field, .Array, .StructInit => {
-                self.diagnostics.reportError(expr.span, "expression not yet supported in MIR lowering");
-                return null;
+            .Range => |range| {
+                const start = try self.lowerExpr(range.start) orelse return null;
+                const end = try self.lowerExpr(range.end) orelse return null;
+                const tmp = self.newTemp();
+                _ = try self.emitInst(.{ .ty = mapType(self.hir_crate, expr.ty, expr.span, self.diagnostics), .dest = tmp, .kind = .{ .Range = .{ .inclusive = range.inclusive, .start = start, .end = end } } });
+                return .{ .Temp = tmp };
             },
-            .GlobalRef => {
-                self.diagnostics.reportError(expr.span, "global references not yet supported in MIR lowering");
-                return null;
+            .Index => |index| {
+                const target = try self.lowerExpr(index.target) orelse return null;
+                const idx = try self.lowerExpr(index.index) orelse return null;
+                const tmp = self.newTemp();
+                _ = try self.emitInst(.{ .ty = mapType(self.hir_crate, expr.ty, expr.span, self.diagnostics), .dest = tmp, .kind = .{ .Index = .{ .target = target, .index = idx } } });
+                return .{ .Temp = tmp };
             },
-            .ConstChar, .ConstString => {
-                self.diagnostics.reportError(expr.span, "literal type not yet supported in MIR lowering");
-                return null;
+            .Field => |field| {
+                const target = try self.lowerExpr(field.target) orelse return null;
+                const tmp = self.newTemp();
+                _ = try self.emitInst(.{ .ty = mapType(self.hir_crate, expr.ty, expr.span, self.diagnostics), .dest = tmp, .kind = .{ .Field = .{ .target = target, .name = field.name } } });
+                return .{ .Temp = tmp };
+            },
+            .Array => |elements| {
+                var elems = std.ArrayListUnmanaged(mir.Operand){};
+                defer elems.deinit(self.allocator);
+
+                for (elements) |elem_id| {
+                    if (try self.lowerExpr(elem_id)) |op| {
+                        try elems.append(self.allocator, op);
+                    }
+                }
+
+                const tmp = self.newTemp();
+                _ = try self.emitInst(.{ .ty = mapType(self.hir_crate, expr.ty, expr.span, self.diagnostics), .dest = tmp, .kind = .{ .Array = .{ .elems = try elems.toOwnedSlice(self.allocator) } } });
+                return .{ .Temp = tmp };
+            },
+            .StructInit => |struct_init| {
+                var fields = std.ArrayListUnmanaged(mir.StructField){};
+                defer fields.deinit(self.allocator);
+
+                for (struct_init.fields) |field| {
+                    if (try self.lowerExpr(field.value)) |value_op| {
+                        try fields.append(self.allocator, .{ .name = field.name, .value = value_op });
+                    }
+                }
+
+                const tmp = self.newTemp();
+                _ = try self.emitInst(.{ .ty = mapType(self.hir_crate, expr.ty, expr.span, self.diagnostics), .dest = tmp, .kind = .{ .StructInit = .{ .fields = try fields.toOwnedSlice(self.allocator) } } });
+                return .{ .Temp = tmp };
             },
             .UnresolvedIdent, .Unknown => {
                 self.diagnostics.reportError(expr.span, "expression could not be lowered to MIR");
@@ -369,7 +421,10 @@ fn mapType(hir_crate: *const hir.Crate, ty_id: ?hir.TypeId, span: hir.Span, diag
             .Char => .Char,
             .String => .String,
             .Str => .Str,
-            .Array, .Pointer, .Ref, .Fn, .Struct, .Path => blk: {
+            .Array => .Array,
+            .Pointer, .Ref => .Pointer,
+            .Struct => .Struct,
+            .Fn, .Path => blk: {
                 diagnostics.reportWarning(span, "type not supported in MIR lowering");
                 break :blk null;
             },
@@ -454,6 +509,50 @@ test "lower function with simple block" {
     try std.testing.expectEqual(mir.MirType.I64, mir_fn.locals[0]);
 }
 
+test "lower char and string literals" {
+    const allocator = std.testing.allocator;
+    var diagnostics = diag.Diagnostics.init(allocator);
+    defer diagnostics.deinit();
+
+    var crate = hir.Crate.init(allocator);
+    defer crate.deinit();
+
+    const span = hir.emptySpan(0);
+    const char_ty = ensureType(&crate, .Char);
+    const string_ty = ensureType(&crate, .String);
+
+    const char_expr_id: hir.ExprId = @intCast(crate.exprs.items.len);
+    try crate.exprs.append(crate.allocator(), .{ .id = char_expr_id, .kind = .{ .ConstChar = 'a' }, .ty = char_ty, .span = span });
+
+    const string_expr_id: hir.ExprId = @intCast(crate.exprs.items.len);
+    try crate.exprs.append(crate.allocator(), .{ .id = string_expr_id, .kind = .{ .ConstString = "hi" }, .ty = string_ty, .span = span });
+
+    const stmt_id: hir.StmtId = @intCast(crate.stmts.items.len);
+    try crate.stmts.append(crate.allocator(), .{ .id = stmt_id, .kind = .{ .Let = .{ .pat = .{ .id = 0, .kind = .{ .Identifier = "c" }, .span = span }, .ty = char_ty, .value = char_expr_id } }, .span = span });
+
+    const stmt_slice = try crate.allocator().alloc(hir.StmtId, 1);
+    stmt_slice[0] = stmt_id;
+
+    const block_expr_id: hir.ExprId = @intCast(crate.exprs.items.len);
+    try crate.exprs.append(crate.allocator(), .{ .id = block_expr_id, .kind = .{ .Block = .{ .stmts = stmt_slice, .tail = string_expr_id } }, .ty = string_ty, .span = span });
+
+    try crate.patterns.append(crate.allocator(), .{ .id = 0, .kind = .{ .Identifier = "c" }, .span = span });
+
+    try crate.items.append(crate.allocator(), .{ .id = 0, .kind = .{ .Function = .{ .def_id = 0, .name = "main", .params = &[_]hir.LocalId{}, .return_type = string_ty, .body = block_expr_id, .span = span } }, .span = span });
+
+    var mir_crate = try lowerFromHir(allocator, &crate, &diagnostics);
+    defer mir_crate.deinit();
+
+    try std.testing.expect(!diagnostics.hasErrors());
+    const mir_fn = mir_crate.fns.items[0];
+    try std.testing.expectEqual(@as(usize, 1), mir_fn.blocks.len);
+    try std.testing.expectEqual(@as(usize, 1), mir_fn.locals.len);
+    try std.testing.expectEqual(mir.MirType.Char, mir_fn.locals[0]);
+    try std.testing.expect(mir_fn.blocks[0].insts[0].kind == .StoreLocal);
+    try std.testing.expect(mir_fn.blocks[0].insts[0].kind.StoreLocal.src == .ImmChar);
+    try std.testing.expect(mir_fn.blocks[0].term.Ret.?.ImmString.len == 2);
+}
+
 fn buildBlockWithTail(crate: *hir.Crate, stmts: []const hir.StmtId, tail: hir.ExprId, ty: hir.TypeId, span: hir.Span) !hir.ExprId {
     const block_expr_id: hir.ExprId = @intCast(crate.exprs.items.len);
     const stmts_copy = try crate.allocator().alloc(hir.StmtId, stmts.len);
@@ -497,6 +596,129 @@ test "lower if expression creates branch blocks" {
     const mir_fn = mir_crate.fns.items[0];
     try std.testing.expectEqual(@as(usize, 4), mir_fn.blocks.len);
     try std.testing.expect(mir_fn.blocks[0].term == .If);
+}
+
+test "lower range and aggregate expressions" {
+    const allocator = std.testing.allocator;
+    var diagnostics = diag.Diagnostics.init(allocator);
+    defer diagnostics.deinit();
+
+    var crate = hir.Crate.init(allocator);
+    defer crate.deinit();
+
+    const span = hir.emptySpan(0);
+    const i32_ty = ensureType(&crate, .{ .PrimInt = .I32 });
+    const range_ty = ensureType(&crate, .{ .Struct = .{ .def_id = 2, .type_args = &[_]hir.TypeId{} } });
+    const array_ty = ensureType(&crate, .{ .Array = .{ .elem = i32_ty, .size_const = 2 } });
+    const struct_ty = ensureType(&crate, .{ .Struct = .{ .def_id = 3, .type_args = &[_]hir.TypeId{} } });
+    const fn_ty = ensureType(&crate, .{ .Fn = .{ .params = &[_]hir.TypeId{}, .ret = i32_ty } });
+
+    const helper_const_id: hir.ExprId = @intCast(crate.exprs.items.len);
+    try crate.exprs.append(crate.allocator(), .{ .id = helper_const_id, .kind = .{ .ConstInt = 7 }, .ty = i32_ty, .span = span });
+    try crate.items.append(crate.allocator(), .{ .id = 0, .kind = .{ .Function = .{ .def_id = 1, .name = "helper", .params = &[_]hir.LocalId{}, .return_type = i32_ty, .body = helper_const_id, .span = span } }, .span = span });
+
+    const one_id: hir.ExprId = @intCast(crate.exprs.items.len);
+    try crate.exprs.append(crate.allocator(), .{ .id = one_id, .kind = .{ .ConstInt = 1 }, .ty = i32_ty, .span = span });
+
+    const two_id: hir.ExprId = @intCast(crate.exprs.items.len);
+    try crate.exprs.append(crate.allocator(), .{ .id = two_id, .kind = .{ .ConstInt = 2 }, .ty = i32_ty, .span = span });
+
+    const zero_id: hir.ExprId = @intCast(crate.exprs.items.len);
+    try crate.exprs.append(crate.allocator(), .{ .id = zero_id, .kind = .{ .ConstInt = 0 }, .ty = i32_ty, .span = span });
+
+    const range_expr_id: hir.ExprId = @intCast(crate.exprs.items.len);
+    try crate.exprs.append(crate.allocator(), .{ .id = range_expr_id, .kind = .{ .Range = .{ .inclusive = true, .start = one_id, .end = two_id } }, .ty = range_ty, .span = span });
+
+    const array_expr_id: hir.ExprId = @intCast(crate.exprs.items.len);
+    const array_elems = try crate.allocator().alloc(hir.ExprId, 2);
+    array_elems[0] = one_id;
+    array_elems[1] = two_id;
+    try crate.exprs.append(crate.allocator(), .{ .id = array_expr_id, .kind = .{ .Array = array_elems }, .ty = array_ty, .span = span });
+
+    const index_expr_id: hir.ExprId = @intCast(crate.exprs.items.len);
+    try crate.exprs.append(crate.allocator(), .{ .id = index_expr_id, .kind = .{ .Index = .{ .target = array_expr_id, .index = zero_id } }, .ty = i32_ty, .span = span });
+
+    const struct_fields = try crate.allocator().alloc(hir.StructInitField, 1);
+    struct_fields[0] = .{ .name = "x", .value = one_id };
+    const struct_path = try crate.allocator().alloc([]const u8, 1);
+    struct_path[0] = "Point";
+    const struct_expr_id: hir.ExprId = @intCast(crate.exprs.items.len);
+    try crate.exprs.append(crate.allocator(), .{ .id = struct_expr_id, .kind = .{ .StructInit = .{ .path = struct_path, .fields = struct_fields } }, .ty = struct_ty, .span = span });
+
+    const field_expr_id: hir.ExprId = @intCast(crate.exprs.items.len);
+    try crate.exprs.append(crate.allocator(), .{ .id = field_expr_id, .kind = .{ .Field = .{ .target = struct_expr_id, .name = "x" } }, .ty = i32_ty, .span = span });
+
+    const global_ref_id: hir.ExprId = @intCast(crate.exprs.items.len);
+    try crate.exprs.append(crate.allocator(), .{ .id = global_ref_id, .kind = .{ .GlobalRef = 1 }, .ty = fn_ty, .span = span });
+
+    const call_expr_id: hir.ExprId = @intCast(crate.exprs.items.len);
+    try crate.exprs.append(crate.allocator(), .{ .id = call_expr_id, .kind = .{ .Call = .{ .callee = global_ref_id, .args = &[_]hir.ExprId{} } }, .ty = i32_ty, .span = span });
+
+    const range_stmt_id: hir.StmtId = @intCast(crate.stmts.items.len);
+    try crate.stmts.append(crate.allocator(), .{ .id = range_stmt_id, .kind = .{ .Let = .{ .pat = .{ .id = 0, .kind = .{ .Identifier = "range" }, .span = span }, .ty = range_ty, .value = range_expr_id } }, .span = span });
+
+    const array_stmt_id: hir.StmtId = @intCast(crate.stmts.items.len);
+    try crate.stmts.append(crate.allocator(), .{ .id = array_stmt_id, .kind = .{ .Let = .{ .pat = .{ .id = 1, .kind = .{ .Identifier = "arr" }, .span = span }, .ty = array_ty, .value = array_expr_id } }, .span = span });
+
+    const index_stmt_id: hir.StmtId = @intCast(crate.stmts.items.len);
+    try crate.stmts.append(crate.allocator(), .{ .id = index_stmt_id, .kind = .{ .Let = .{ .pat = .{ .id = 2, .kind = .{ .Identifier = "first" }, .span = span }, .ty = i32_ty, .value = index_expr_id } }, .span = span });
+
+    const struct_stmt_id: hir.StmtId = @intCast(crate.stmts.items.len);
+    try crate.stmts.append(crate.allocator(), .{ .id = struct_stmt_id, .kind = .{ .Let = .{ .pat = .{ .id = 3, .kind = .{ .Identifier = "point" }, .span = span }, .ty = struct_ty, .value = struct_expr_id } }, .span = span });
+
+    const field_stmt_id: hir.StmtId = @intCast(crate.stmts.items.len);
+    try crate.stmts.append(crate.allocator(), .{ .id = field_stmt_id, .kind = .{ .Let = .{ .pat = .{ .id = 4, .kind = .{ .Identifier = "field" }, .span = span }, .ty = i32_ty, .value = field_expr_id } }, .span = span });
+
+    try crate.patterns.append(crate.allocator(), .{ .id = 0, .kind = .{ .Identifier = "range" }, .span = span });
+    try crate.patterns.append(crate.allocator(), .{ .id = 1, .kind = .{ .Identifier = "arr" }, .span = span });
+    try crate.patterns.append(crate.allocator(), .{ .id = 2, .kind = .{ .Identifier = "first" }, .span = span });
+    try crate.patterns.append(crate.allocator(), .{ .id = 3, .kind = .{ .Identifier = "point" }, .span = span });
+    try crate.patterns.append(crate.allocator(), .{ .id = 4, .kind = .{ .Identifier = "field" }, .span = span });
+
+    const stmts_slice = try crate.allocator().alloc(hir.StmtId, 5);
+    stmts_slice[0] = range_stmt_id;
+    stmts_slice[1] = array_stmt_id;
+    stmts_slice[2] = index_stmt_id;
+    stmts_slice[3] = struct_stmt_id;
+    stmts_slice[4] = field_stmt_id;
+
+    const block_expr_id: hir.ExprId = @intCast(crate.exprs.items.len);
+    try crate.exprs.append(crate.allocator(), .{ .id = block_expr_id, .kind = .{ .Block = .{ .stmts = stmts_slice, .tail = call_expr_id } }, .ty = i32_ty, .span = span });
+
+    try crate.items.append(crate.allocator(), .{ .id = 1, .kind = .{ .Function = .{ .def_id = 0, .name = "main", .params = &[_]hir.LocalId{}, .return_type = i32_ty, .body = block_expr_id, .span = span } }, .span = span });
+
+    var mir_crate = try lowerFromHir(allocator, &crate, &diagnostics);
+    defer mir_crate.deinit();
+
+    try std.testing.expect(!diagnostics.hasErrors());
+    try std.testing.expectEqual(@as(usize, 2), mir_crate.fns.items.len);
+    const mir_fn = mir_crate.fns.items[1];
+    try std.testing.expectEqual(@as(usize, 1), mir_fn.blocks.len);
+
+    var saw_range = false;
+    var saw_array = false;
+    var saw_index = false;
+    var saw_struct = false;
+    var saw_field = false;
+    var saw_call = false;
+    for (mir_fn.blocks[0].insts) |inst| {
+        switch (inst.kind) {
+            .Range => saw_range = true,
+            .Array => saw_array = true,
+            .Index => saw_index = true,
+            .StructInit => saw_struct = true,
+            .Field => saw_field = true,
+            .Call => saw_call = true,
+            else => {},
+        }
+    }
+
+    try std.testing.expect(saw_range);
+    try std.testing.expect(saw_array);
+    try std.testing.expect(saw_index);
+    try std.testing.expect(saw_struct);
+    try std.testing.expect(saw_field);
+    try std.testing.expect(saw_call);
 }
 
 fn ensureType(crate: *hir.Crate, kind: hir.Type.Kind) hir.TypeId {

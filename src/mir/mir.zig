@@ -16,6 +16,9 @@ pub const MirType = enum {
     Char,
     String,
     Str,
+    Array,
+    Pointer,
+    Struct,
     Unknown,
 };
 
@@ -25,6 +28,9 @@ pub const Operand = union(enum) {
     ImmInt: i64,
     ImmFloat: f64,
     ImmBool: bool,
+    ImmChar: u21,
+    ImmString: []const u8,
+    Global: u32,
 };
 
 pub const BinOp = enum { Add, Sub, Mul, Div, Mod, And, Or, Xor };
@@ -48,10 +54,18 @@ pub const InstKind = union(enum) {
     StoreLocal: struct { local: LocalId, src: Operand },
 
     Call: struct {
-        fn_id: u32,
+        target: Operand,
         args: []Operand,
     },
+
+    Range: struct { inclusive: bool, start: Operand, end: Operand },
+    Index: struct { target: Operand, index: Operand },
+    Field: struct { target: Operand, name: []const u8 },
+    Array: struct { elems: []Operand },
+    StructInit: struct { fields: []StructField },
 };
+
+pub const StructField = struct { name: []const u8, value: Operand };
 
 pub const Inst = struct {
     ty: ?MirType,
