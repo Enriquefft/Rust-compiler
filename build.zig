@@ -21,14 +21,14 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run the rust-compiler");
     run_step.dependOn(&run_cmd.step);
 
-    // const unit_tests = b.addTest(.{
-    //     .root_source_file = b.path("src/main.zig"),
-    //     .target = target,
-    //     .optimize = optimize,
-    // });
-    //
-    // const test_step = b.step("test", "Run unit tests and golden tests");
-    // test_step.dependOn(&unit_tests.step);
+    const unit_tests = b.addTest(.{
+        .root_source_file = b.path("src/main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const test_step = b.step("test", "Run unit tests and golden tests");
+    test_step.dependOn(&unit_tests.step);
     // TODO: attach golden file runners once tests/ fixtures land per architecture roadmap.
 
     // TODO: add documentation/auxiliary targets (e.g., docs, lint) when modules exist.

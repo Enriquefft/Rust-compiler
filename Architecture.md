@@ -2,7 +2,7 @@
 
 This document describes the architecture and code structure for a Rust-subset compiler implemented in Zig.
 
-The grammar is defined separately in `grammar.ebnf`.
+The grammar is defined separately in `grammar.ebnf` and is not repeated here. This document focuses on the modules, data structures, and compilation pipeline.
 
 ---
 
@@ -13,12 +13,12 @@ The grammar is defined separately in `grammar.ebnf`.
 - Implement a **Rust-like language** as defined in `grammar.ebnf`.
 - Compiler written in **Zig**.
 - End-to-end pipeline from **source** to **x86-64**:
-  - Lexing → Parsing → AST → HIR → MIR → Optimizations → x86-64.
+  - Lexing → Parsing → AST → HIR → MIR → Optimizations → x86-64 → assembly/object code.
 - Incorporate **simple optimizations**:
   - Constant folding
   - Dead code elimination (DCE)
   - Simple CFG simplification
-- Emit **x86-64** code as textual assembly (`.s`).
+- Emit **x86-64** code, initially as textual assembly (`.s`).
 - Produce useful **diagnostics** (file/line/column, error messages).
 
 ### 1.2 Non-Goals (initially)
