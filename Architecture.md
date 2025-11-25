@@ -24,6 +24,7 @@ The grammar is defined separately in `grammar.ebnf` and is not repeated here. Th
 ### 1.2 Non-Goals (initially)
 
 - Full Rust semantics (lifetimes, borrow checker, traits, full macro system).
+- Macros are allowed but are just lowered to be plain calls (`println!` is equivalent to `printl`)
 - Advanced optimizations (loop unrolling, vectorization, inlining, etc.).
 - Cross-platform codegen beyond x86-64 in the first version.
 - Full support for all grammar features at once:
@@ -294,7 +295,7 @@ Representative enums:
   * function calls, method calls, indexing, field access
   * block `{ ... }`
   * struct literal, array literal
-  * closure/lambda (if implemented)
+  * closure/lambda
 
 * `StmtKind`:
 
@@ -408,11 +409,10 @@ pub const HirExprKind = union(enum) {
 
     If: struct { cond: HirExprId, then_block: HirExprId, else_block: ?HirExprId },
     While: struct { cond: HirExprId, body: HirExprId },
-    For: struct { pat: PatternId, iter: HirExprId, body: HirExprId }, // may be desugared later
+    For: struct { pat: PatternId, iter: HirExprId, body: HirExprId },
 
     Assign: struct { place: HirExprId, value: HirExprId },
     AssignOp: struct { op: BinaryOp, place: HirExprId, value: HirExprId },
-    // etc.
 };
 
 pub const HirExpr = struct {
@@ -498,7 +498,9 @@ pub const MirType = enum {
     F32,
     F64,
     Bool,
-    // extend as needed
+    Char,
+    String,
+    Str
 };
 ```
 
@@ -618,6 +620,74 @@ Key lowering patterns:
   * Lower condition at `loop_cond`.
 
   * `TermKind.If` to branch into body or exit.
+
+
+    * **For loops (`for pat in expr { body }`):**
+
+      We do not desugar `for` into a `while` node in HIR. Instead, the MIR
+      builder lowers `for` directly to basic blocks using `TermKind.If` and `TermKind.Goto`.
+
+      Initial implementation only supports `for` over numeric ranges:
+
+      * `for x in a..b { body }`
+      * `for x in a..=b { body }`
+
+      where `a` and `b` are integer expressions.
+
+      Lowering pattern:
+
+      1. Lower the range expression:
+         * For `a..b`:
+           * `start = lowerExpr(a)`
+           * `end   = lowerExpr(b)`
+           * `inclusive = false`
+         * For `a..=b`:
+           * `start = lowerExpr(a)`
+           * `end   = lowerExpr(b)`
+           * `inclusive = true`
+
+         Allocate locals for `start`, `end`, and the loop index `idx`.
+         Emit stores:
+         * `StoreLocal(local_start, start)`
+         * `StoreLocal(local_end, end)`
+         * `StoreLocal(local_idx, start)`
+
+      2. Create blocks:
+         * `loop_cond`: evaluates the loop condition.
+         * `loop_body`: executes the body.
+         * `loop_step`: increments the index.
+         * `loop_exit`: continuation after the loop.
+
+      3. From the current block, emit `TermKind.Goto(loop_cond)`.
+
+      4. In `loop_cond`:
+         * Load `idx` and `end` into temps.
+         * Depending on `inclusive`:
+           * Half-open: `cond = Cmp(Lt, idx, end)`
+           * Closed:    `cond = Cmp(Le, idx, end)`
+         * Emit `TermKind.If { cond, then_block = loop_body, else_block = loop_exit }`.
+
+      5. In `loop_body`:
+         * Bind the loop pattern:
+           * If `pat` is an identifier `x`, map it to the same local as `idx`,
+             or create a new local for `x` and copy `idx` into it.
+           * If `pat` is `_`, no binding is created.
+         * Lower the loop body statements into `loop_body` using the usual
+           stmt/expr lowering rules.
+         * At the end of `loop_body`, emit `TermKind.Goto(loop_step)`.
+
+      6. In `loop_step`:
+         * Load `idx` into a temp, emit `t = Bin(Add, idx, ImmInt(1))`,
+           then `StoreLocal(local_idx, t)`.
+         * Emit `TermKind.Goto(loop_cond)`.
+
+      7. After lowering, set the current block to `loop_exit`.
+
+      Because MIR has no `break`/`continue` in this subset, there are no
+      extra edges out of the loop body. If we introduce `break`/`continue`
+      later, they will target `loop_exit` / `loop_step` respectively.
+
+
 
 ### 8.3 MIR Design Rationale
 

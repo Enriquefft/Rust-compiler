@@ -215,7 +215,7 @@ This document describes the language subset implemented by the minimal compiler 
 * Semantically treated as if writing:
 
   ```rust
-  println!("value = {}", x); // same as println!("value = {}", x)
+  println("value = {}", x);
   ```
 * No user-defined macro expansion or hygienic macro system.
 
@@ -232,5 +232,3 @@ The grammar is purely syntactic, but the compiler/runtime supports:
       next: Option<Box<Node<T>>>,
   }
   ```
-* Basic automatic reclamation of heap-allocated objects by the chosen runtime strategy
-  (reference counting, simple tracing, etc.).

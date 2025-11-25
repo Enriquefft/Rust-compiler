@@ -8,7 +8,7 @@ StringLit  = '"' , { char - '"' } , '"' ;
 CharLit    = "'" , char , "'" ;
 
 Keyword    = "fn" | "struct" | "impl" | "type" | "let" | "mut"
-           | "if" | "else" | "while" | "for" | "in" | "return" | "as"
+           | "if" | "else" | "while" | "for" | "in" | "return" | "as" | "self"
            | BoolLit ;
 
 Crate  = { Item } ;
@@ -22,11 +22,10 @@ StructItem    = "struct" , Ident , [ GenParams ] ,
 Field         = Ident , ":" , Type ;
 
 FnItem        = "fn" , Ident , [ GenParams ] ,
-                "(" , [ Param , { "," , Param } , [ "," ] ] , ")" ,
+                "(" , [ SelfParam | Param , { "," , Param } , [ "," ] ] , ")" ,
                 [ "->" , Type ] , Block ;
 
-ImplItem      = "impl" , [ GenParams ] ,
-                ( Type | Path , "for" , Type ) ,
+ImplItem      = "impl" , [ GenParams ] , Type  ,
                 "{" , { FnItem | ";" } , "}" ;
 
 GenParams = "<" , Ident , { "," , Ident } , ">" ;
@@ -110,3 +109,7 @@ Init        = Ident , ":" , Expr ;
 Literal     = IntLit | FloatLit | BoolLit | CharLit | StringLit ;
 
 Param       = Pattern , [ ":" , Type ] ;
+
+SelfParam     = "self"
+              | "&" , "self"
+              | "&" , "mut" , "self" ;
