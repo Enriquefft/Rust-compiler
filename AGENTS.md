@@ -18,6 +18,7 @@ These instructions apply to the entire repository unless a more specific `AGENTS
 - Default builds use Zig. When adding or modifying code, run `zig test` or `zig build test` if tests exist. If the repository introduces a specific build target, prefer `zig build`.
 - Add regression tests alongside new features when possible (use `tests/` once it exists). If no automated tests apply, describe manual validation steps in commits/PRs.
 - Apply `zig fmt` before committing Zig source changes.
+- Use the aggregated runner in `src/all_tests.zig` to exercise every module; update the import list there whenever you add a new Zig source file with tests so `zig build test` remains comprehensive.
 
 ## Documentation Expectations
 - Keep `Architecture.md`, `Features.md`, and `grammar.ebnf` in sync with behavior changes. Update relevant sections when altering the language, pipeline stages, or runtime assumptions.
