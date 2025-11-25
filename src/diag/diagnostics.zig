@@ -51,11 +51,11 @@ pub const Diagnostics = struct {
     /// Emit diagnostics to stderr. The current implementation prints byte offsets;
     /// a richer renderer can be added when line mapping is implemented.
     pub fn emitAll(self: *Diagnostics, source_map_ref: *source_map.SourceMap) !void {
-        var writer = std.io.getStdErr().writer();
         for (self.entries.items) |entry| {
             const file = source_map_ref.getFile(entry.primary_span.file_id);
             const path = if (file) |f| f.path else "<unknown>";
-            try writer.print("{s}: {s}:{d}-{d}: {s}\n", .{
+            var line_buffer: [256]u8 = undefined;
+            const line = try std.fmt.bufPrint(&line_buffer, "{s}: {s}:{d}-{d}: {s}\n", .{
                 switch (entry.severity) {
                     .err => "error",
                     .warning => "warning",
@@ -65,6 +65,7 @@ pub const Diagnostics = struct {
                 entry.primary_span.end,
                 entry.message,
             });
+            try std.fs.File.stderr().writeAll(line);
         }
     }
 };

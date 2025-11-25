@@ -1,7 +1,5 @@
 const std = @import("std");
-const lexer = @import("frontend/lexer.zig");
-const diag = @import("diag/diagnostics.zig");
-const source_map = @import("diag/source_map.zig");
+const driver = @import("driver.zig");
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -18,27 +16,18 @@ pub fn main() !void {
     }
 
     const path = maybe_path.?;
-    const contents = try std.fs.cwd().readFileAlloc(allocator, path, std.math.maxInt(usize));
-    defer allocator.free(contents);
 
-    var sm = source_map.SourceMap.init(allocator);
-    defer sm.deinit();
-    const file_id = try sm.addFile(path, contents);
+    var result = try driver.compileFile(.{
+        .allocator = allocator,
+        .input_path = path,
+        .emit_diagnostics = true,
+        .exit_on_error = true,
+    });
+    defer result.deinit();
 
-    var diagnostics = diag.Diagnostics.init(allocator);
-    defer diagnostics.deinit();
-
-    const toks = try lexer.lex(allocator, file_id, contents, &diagnostics);
-    defer allocator.free(toks);
-
-    var stdout = std.io.getStdOut().writer();
-    for (toks) |tok| {
-        try stdout.print("{s}\t{s}\n", .{ @tagName(tok.kind), tok.lexeme });
-    }
-
-    if (diagnostics.hasErrors()) {
-        try diagnostics.emitAll(&sm);
-        std.process.exit(1);
+    switch (result.status) {
+        .success => {},
+        .errors => unreachable, // compileFile exits when exit_on_error is true
     }
 }
 
