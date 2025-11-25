@@ -52,8 +52,14 @@ pub fn compileFile(options: CompileOptions) !CompileResult {
 
     var hir_crate = try hir.lowerFromAst(options.allocator, crate, &diagnostics);
 
-    // TODO: Frontend parsing to AST per Architecture.md.
-    // TODO: Semantic analysis (name resolution, type checking) on HIR.
+    if (!diagnostics.hasErrors()) {
+        try hir.performNameResolution(&hir_crate, &diagnostics);
+    }
+
+    if (!diagnostics.hasErrors()) {
+        try hir.performTypeCheck(&hir_crate, &diagnostics);
+    }
+
     // TODO: MIR construction and optimization passes.
     // TODO: Backend code generation and emission.
 

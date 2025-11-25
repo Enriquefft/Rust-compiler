@@ -2,14 +2,147 @@ const std = @import("std");
 const diag = @import("../diag/diagnostics.zig");
 const hir = @import("hir.zig");
 
-pub fn resolve(crate: *hir.Crate, diagnostics: *diag.Diagnostics) !void {
-    _ = crate;
-    _ = diagnostics;
-    // Name resolution will populate symbol tables and attach DefIds to references.
-    // Stub implementation intentionally left minimal for incremental bring-up.
+const Error = error{OutOfMemory};
+
+pub fn resolve(crate: *hir.Crate, diagnostics: *diag.Diagnostics) Error!void {
+    var module_symbols = std.StringHashMap(hir.DefId).init(crate.allocator());
+    defer module_symbols.deinit();
+
+    // Populate the module-level symbol table and catch duplicate items.
+    for (crate.items.items) |item| {
+        switch (item.kind) {
+            .Function => |func| try insertGlobal(&module_symbols, func.name, func.def_id, item.span, diagnostics),
+            .Struct => |structure| try insertGlobal(&module_symbols, structure.name, structure.def_id, item.span, diagnostics),
+            .TypeAlias => |alias| try insertGlobal(&module_symbols, alias.name, alias.def_id, item.span, diagnostics),
+            else => {},
+        }
+    }
+
+    for (crate.items.items) |*item| {
+        switch (item.kind) {
+            .Function => |*func| {
+                var locals = std.StringHashMap(hir.LocalId).init(crate.allocator());
+                defer locals.deinit();
+
+                var next_local: hir.LocalId = 0;
+                if (func.body) |body_id| {
+                    try resolveExpr(crate, body_id, &module_symbols, &locals, &next_local, diagnostics);
+                }
+            },
+            else => {},
+        }
+    }
 }
 
-test "name resolution placeholder does not panic" {
+fn insertGlobal(
+    module_symbols: *std.StringHashMap(hir.DefId),
+    name: []const u8,
+    def_id: hir.DefId,
+    span: hir.Span,
+    diagnostics: *diag.Diagnostics,
+) Error!void {
+    if (try module_symbols.fetchPut(name, def_id)) |existing| {
+        const message = std.fmt.allocPrint(
+            diagnostics.allocator,
+            "duplicate definition of `{s}`; previously defined with def_id {d}",
+            .{ name, existing.value },
+        ) catch name;
+        diagnostics.reportError(span, message);
+        if (message.ptr != name.ptr) diagnostics.allocator.free(message);
+        return;
+    }
+
+    try module_symbols.put(name, def_id);
+}
+
+fn bindPattern(
+    pat: *hir.Pattern,
+    locals: *std.StringHashMap(hir.LocalId),
+    next_local: *hir.LocalId,
+    diagnostics: *diag.Diagnostics,
+) Error!void {
+    switch (pat.kind) {
+        .Identifier => |name| {
+            if (try locals.fetchPut(name, next_local.*)) |existing| {
+                const message = std.fmt.allocPrint(
+                    diagnostics.allocator,
+                    "duplicate local binding `{s}` previously defined as local {d}",
+                    .{ name, existing.value },
+                ) catch name;
+                diagnostics.reportError(pat.span, message);
+                if (message.ptr != name.ptr) diagnostics.allocator.free(message);
+            } else {
+                pat.id = next_local.*;
+                next_local.* += 1;
+            }
+        },
+        .Wildcard => {
+            pat.id = next_local.*;
+            next_local.* += 1;
+        },
+    }
+}
+
+fn resolveStmt(
+    crate: *hir.Crate,
+    stmt_id: hir.StmtId,
+    module_symbols: *std.StringHashMap(hir.DefId),
+    locals: *std.StringHashMap(hir.LocalId),
+    next_local: *hir.LocalId,
+    diagnostics: *diag.Diagnostics,
+) Error!void {
+    const stmt = &crate.stmts.items[stmt_id];
+    switch (stmt.kind) {
+        .Let => |*let_stmt| {
+            if (let_stmt.value) |expr_id| {
+                try resolveExpr(crate, expr_id, module_symbols, locals, next_local, diagnostics);
+            }
+            try bindPattern(&let_stmt.pat, locals, next_local, diagnostics);
+        },
+        .Expr => |expr_id| try resolveExpr(crate, expr_id, module_symbols, locals, next_local, diagnostics),
+        .Unknown => {},
+    }
+}
+
+fn resolveExpr(
+    crate: *hir.Crate,
+    expr_id: hir.ExprId,
+    module_symbols: *std.StringHashMap(hir.DefId),
+    locals: *std.StringHashMap(hir.LocalId),
+    next_local: *hir.LocalId,
+    diagnostics: *diag.Diagnostics,
+) Error!void {
+    const expr = &crate.exprs.items[expr_id];
+    switch (expr.kind) {
+        .UnresolvedIdent => |name| {
+            if (locals.get(name)) |local_id| {
+                expr.kind = .{ .LocalRef = local_id };
+                return;
+            }
+            if (module_symbols.get(name)) |def_id| {
+                expr.kind = .{ .GlobalRef = def_id };
+                return;
+            }
+
+            const message = std.fmt.allocPrint(
+                diagnostics.allocator,
+                "unresolved identifier `{s}`",
+                .{name},
+            ) catch name;
+            diagnostics.reportError(expr.span, message);
+            if (message.ptr != name.ptr) diagnostics.allocator.free(message);
+        },
+        .Block => |block| {
+            for (block.stmts) |stmt_id| {
+                try resolveStmt(crate, stmt_id, module_symbols, locals, next_local, diagnostics);
+            }
+            if (block.tail) |tail| try resolveExpr(crate, tail, module_symbols, locals, next_local, diagnostics);
+        },
+        else => {},
+    }
+}
+
+test "name resolution resolves globals and locals" {
     const allocator = std.testing.allocator;
     var diagnostics = diag.Diagnostics.init(allocator);
     defer diagnostics.deinit();
@@ -17,6 +150,61 @@ test "name resolution placeholder does not panic" {
     var crate = hir.Crate.init(allocator);
     defer crate.deinit();
 
+    const span = hir.emptySpan(0);
+
+    // Prepare expressions for `foo`'s body: reference to `bar` and an unresolved name.
+    const bar_ref_id: hir.ExprId = @intCast(crate.exprs.items.len);
+    try crate.exprs.append(crate.allocator(), .{
+        .id = bar_ref_id,
+        .kind = .{ .UnresolvedIdent = "bar" },
+        .ty = 0,
+        .span = span,
+    });
+
+    const missing_ref_id: hir.ExprId = @intCast(crate.exprs.items.len);
+    try crate.exprs.append(crate.allocator(), .{
+        .id = missing_ref_id,
+        .kind = .{ .UnresolvedIdent = "missing" },
+        .ty = 0,
+        .span = span,
+    });
+
+    const stmt_ids = try crate.allocator().alloc(hir.StmtId, 2);
+    stmt_ids[0] = @intCast(crate.stmts.items.len);
+    try crate.stmts.append(crate.allocator(), .{ .id = stmt_ids[0], .kind = .{ .Expr = bar_ref_id }, .span = span });
+    stmt_ids[1] = @intCast(crate.stmts.items.len);
+    try crate.stmts.append(crate.allocator(), .{ .id = stmt_ids[1], .kind = .{ .Expr = missing_ref_id }, .span = span });
+
+    const block_expr_id: hir.ExprId = @intCast(crate.exprs.items.len);
+    try crate.exprs.append(crate.allocator(), .{
+        .id = block_expr_id,
+        .kind = .{ .Block = .{ .stmts = stmt_ids, .tail = null } },
+        .ty = 0,
+        .span = span,
+    });
+
+    const foo_def: hir.DefId = 0;
+    const bar_def: hir.DefId = 1;
+    try crate.items.append(crate.allocator(), .{ .id = foo_def, .kind = .{ .Function = .{
+        .def_id = foo_def,
+        .name = "foo",
+        .params = &[_]hir.LocalId{},
+        .return_type = null,
+        .body = block_expr_id,
+        .span = span,
+    } }, .span = span });
+
+    try crate.items.append(crate.allocator(), .{ .id = bar_def, .kind = .{ .Function = .{
+        .def_id = bar_def,
+        .name = "bar",
+        .params = &[_]hir.LocalId{},
+        .return_type = null,
+        .body = null,
+        .span = span,
+    } }, .span = span });
+
     try resolve(&crate, &diagnostics);
-    try std.testing.expect(!diagnostics.hasErrors());
+
+    try std.testing.expectEqual(@as(hir.DefId, bar_def), crate.exprs.items[bar_ref_id].kind.GlobalRef);
+    try std.testing.expect(diagnostics.hasErrors());
 }
