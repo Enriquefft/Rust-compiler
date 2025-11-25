@@ -4,6 +4,7 @@ const source_map = @import("diag/source_map.zig");
 const lexer = @import("frontend/lexer.zig");
 const parser = @import("frontend/parser.zig");
 const ast = @import("frontend/ast.zig");
+const hir = @import("hir/hir.zig");
 
 pub const CompileStatus = enum {
     success,
@@ -16,11 +17,13 @@ pub const CompileResult = struct {
     status: CompileStatus,
     ast_arena: std.heap.ArenaAllocator,
     ast: ast.Crate,
+    hir: hir.Crate,
 
     pub fn deinit(self: *CompileResult) void {
         self.diagnostics.deinit();
         self.source_map.deinit();
         self.ast_arena.deinit();
+        self.hir.deinit();
     }
 };
 
@@ -47,8 +50,10 @@ pub fn compileFile(options: CompileOptions) !CompileResult {
     var ast_arena = std.heap.ArenaAllocator.init(options.allocator);
     const crate = parser.parseCrate(ast_arena.allocator(), tokens, &diagnostics);
 
+    var hir_crate = try hir.lowerFromAst(options.allocator, crate, &diagnostics);
+
     // TODO: Frontend parsing to AST per Architecture.md.
-    // TODO: Lowering to HIR and semantic analysis.
+    // TODO: Semantic analysis (name resolution, type checking) on HIR.
     // TODO: MIR construction and optimization passes.
     // TODO: Backend code generation and emission.
 
@@ -62,10 +67,18 @@ pub fn compileFile(options: CompileOptions) !CompileResult {
         diagnostics.deinit();
         sm.deinit();
         ast_arena.deinit();
+        hir_crate.deinit();
         std.process.exit(1);
     }
 
-    return .{ .diagnostics = diagnostics, .source_map = sm, .status = status, .ast_arena = ast_arena, .ast = crate };
+    return .{
+        .diagnostics = diagnostics,
+        .source_map = sm,
+        .status = status,
+        .ast_arena = ast_arena,
+        .ast = crate,
+        .hir = hir_crate,
+    };
 }
 
 test "compileFile succeeds on tokenizable source" {

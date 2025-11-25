@@ -708,6 +708,12 @@ const Parser = struct {
     }
 
     fn synchronize(self: *Parser) void {
+        if (self.tokens.len == 0) return;
+
+        if (self.pos == 0) {
+            _ = self.advance();
+        }
+
         while (!self.isAtEnd()) {
             if (self.previous().kind == .Semicolon) return;
             switch (self.peekKind()) {
@@ -764,7 +770,8 @@ const Parser = struct {
     }
 
     fn advance(self: *Parser) Token {
-        if (!self.isAtEnd()) self.pos += 1;
+        if (self.isAtEnd()) return self.sentinelToken();
+        self.pos += 1;
         return self.tokens[self.pos - 1];
     }
 
@@ -773,7 +780,7 @@ const Parser = struct {
     }
 
     fn peek(self: *Parser) Token {
-        if (self.isAtEnd()) return self.tokens[self.tokens.len - 1];
+        if (self.isAtEnd()) return self.sentinelToken();
         return self.tokens[self.pos];
     }
 
@@ -782,7 +789,13 @@ const Parser = struct {
     }
 
     fn previous(self: *Parser) Token {
+        if (self.pos == 0) return self.sentinelToken();
         return self.tokens[self.pos - 1];
+    }
+
+    fn sentinelToken(self: *Parser) Token {
+        if (self.tokens.len > 0) return self.tokens[self.tokens.len - 1];
+        return .{ .kind = .Semicolon, .lexeme = "", .span = .{ .file_id = 0, .start = 0, .end = 0 } };
     }
 };
 
