@@ -12,6 +12,8 @@ test "all modules" {
     _ = @import("hir/hir.zig");
     _ = @import("hir/name_res.zig");
     _ = @import("hir/typecheck.zig");
+    _ = @import("mir/mir.zig");
+    _ = @import("mir/lower.zig");
     _ = @import("parser_tests.zig");
     _ = @import("main.zig");
 }

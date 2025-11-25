@@ -5,6 +5,8 @@ const lexer = @import("frontend/lexer.zig");
 const parser = @import("frontend/parser.zig");
 const ast = @import("frontend/ast.zig");
 const hir = @import("hir/hir.zig");
+const mir = @import("mir/mir.zig");
+const mir_lower = @import("mir/lower.zig");
 
 pub const CompileStatus = enum {
     success,
@@ -18,12 +20,14 @@ pub const CompileResult = struct {
     ast_arena: std.heap.ArenaAllocator,
     ast: ast.Crate,
     hir: hir.Crate,
+    mir: mir.MirCrate,
 
     pub fn deinit(self: *CompileResult) void {
         self.diagnostics.deinit();
         self.source_map.deinit();
         self.ast_arena.deinit();
         self.hir.deinit();
+        self.mir.deinit();
     }
 };
 
@@ -51,6 +55,7 @@ pub fn compileFile(options: CompileOptions) !CompileResult {
     const crate = parser.parseCrate(ast_arena.allocator(), tokens, &diagnostics);
 
     var hir_crate = try hir.lowerFromAst(options.allocator, crate, &diagnostics);
+    var mir_crate: mir.MirCrate = undefined;
 
     if (!diagnostics.hasErrors()) {
         try hir.performNameResolution(&hir_crate, &diagnostics);
@@ -60,8 +65,13 @@ pub fn compileFile(options: CompileOptions) !CompileResult {
         try hir.performTypeCheck(&hir_crate, &diagnostics);
     }
 
-    // TODO: MIR construction and optimization passes.
-    // TODO: Backend code generation and emission.
+    if (!diagnostics.hasErrors()) {
+        mir_crate = try mir_lower.lowerFromHir(options.allocator, &hir_crate, &diagnostics);
+    } else {
+        mir_crate = mir.MirCrate.init(options.allocator);
+    }
+
+    // TODO: MIR optimization passes and backend code generation.
 
     const status: CompileStatus = if (diagnostics.hasErrors()) .errors else .success;
 
@@ -74,6 +84,7 @@ pub fn compileFile(options: CompileOptions) !CompileResult {
         sm.deinit();
         ast_arena.deinit();
         hir_crate.deinit();
+        mir_crate.deinit();
         std.process.exit(1);
     }
 
@@ -84,6 +95,7 @@ pub fn compileFile(options: CompileOptions) !CompileResult {
         .ast_arena = ast_arena,
         .ast = crate,
         .hir = hir_crate,
+        .mir = mir_crate,
     };
 }
 
@@ -100,6 +112,7 @@ test "compileFile succeeds on tokenizable source" {
 
     try std.testing.expectEqual(CompileStatus.success, result.status);
     try std.testing.expect(!result.diagnostics.hasErrors());
+    try std.testing.expect(result.mir.fns.items.len > 0);
 }
 
 test "compileFile records diagnostics on lexer errors" {
