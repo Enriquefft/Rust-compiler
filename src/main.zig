@@ -10,8 +10,7 @@ pub fn main() !void {
     _ = args.next(); // executable name
     const maybe_path = args.next();
     if (maybe_path == null) {
-        const stderr = std.io.getStdErr().writer();
-        try stderr.print("usage: {s} <file>\n", .{"rust-compiler"});
+        std.debug.print("usage: {s} <file>\n", .{"rust-compiler"});
         return;
     }
 
