@@ -58,6 +58,7 @@ const FunctionBuilder = struct {
     locals: std.ArrayListUnmanaged(mir.MirType) = .{},
     blocks: std.ArrayListUnmanaged(BlockState) = .{},
     current_block: mir.BlockId = 0,
+    next_temp: mir.TempId = 0,
 
     const BlockState = struct {
         insts: std.ArrayListUnmanaged(mir.Inst) = .{},
@@ -71,6 +72,16 @@ const FunctionBuilder = struct {
         return id;
     }
 
+    fn newBlock(self: *FunctionBuilder) LowerError!mir.BlockId {
+        const id: mir.BlockId = @intCast(self.blocks.items.len);
+        try self.blocks.append(self.allocator, .{});
+        return id;
+    }
+
+    fn switchTo(self: *FunctionBuilder, id: mir.BlockId) void {
+        self.current_block = id;
+    }
+
     fn setTerm(self: *FunctionBuilder, term: mir.TermKind) void {
         self.blocks.items[self.current_block].term = term;
     }
@@ -82,6 +93,12 @@ const FunctionBuilder = struct {
             return .{ .Temp = tmp };
         }
         return null;
+    }
+
+    fn newTemp(self: *FunctionBuilder) mir.TempId {
+        const tmp = self.next_temp;
+        self.next_temp += 1;
+        return tmp;
     }
 
     fn ensureLocal(self: *FunctionBuilder, local: hir.LocalId, ty_id: ?hir.TypeId, span: hir.Span) LowerError!void {
@@ -121,6 +138,127 @@ const FunctionBuilder = struct {
                     last = try self.lowerExpr(tail);
                 }
                 return last;
+            },
+            .Binary => |bin| {
+                const lhs = try self.lowerExpr(bin.lhs);
+                const rhs = try self.lowerExpr(bin.rhs);
+                if (lhs == null or rhs == null) return null;
+                const lhs_op = lhs.?;
+                const rhs_op = rhs.?;
+                switch (bin.op) {
+                    .LogicalAnd, .LogicalOr => return try self.lowerLogical(bin.op, lhs_op, bin.rhs, expr.ty, expr.span),
+                    .Eq, .Ne, .Lt, .Le, .Gt, .Ge => {
+                        const tmp = self.newTemp();
+                        _ = try self.emitInst(.{ .ty = .Bool, .dest = tmp, .kind = .{ .Cmp = .{ .op = mapCmp(bin.op), .lhs = lhs_op, .rhs = rhs_op } } });
+                        return .{ .Temp = tmp };
+                    },
+                    .Add, .Sub, .Mul, .Div, .Mod => {
+                        const tmp = self.newTemp();
+                        _ = try self.emitInst(.{ .ty = mapType(self.hir_crate, expr.ty, expr.span, self.diagnostics), .dest = tmp, .kind = .{ .Bin = .{ .op = mapBin(bin.op), .lhs = lhs_op, .rhs = rhs_op } } });
+                        return .{ .Temp = tmp };
+                    },
+                }
+            },
+            .Unary => |un| {
+                const operand = try self.lowerExpr(un.expr);
+                if (operand) |op| {
+                    const tmp = self.newTemp();
+                    _ = try self.emitInst(.{ .ty = mapType(self.hir_crate, expr.ty, expr.span, self.diagnostics), .dest = tmp, .kind = .{ .Unary = .{ .op = mapUnary(un.op), .operand = op } } });
+                    return .{ .Temp = tmp };
+                }
+                return null;
+            },
+            .Call => |call| {
+                const callee_expr = self.hir_crate.exprs.items[call.callee];
+                if (callee_expr.kind != .GlobalRef) {
+                    self.diagnostics.reportError(expr.span, "only direct function calls are supported in MIR lowering");
+                    return null;
+                }
+                var args = std.ArrayListUnmanaged(mir.Operand){};
+                defer args.deinit(self.allocator);
+                for (call.args) |arg_id| {
+                    if (try self.lowerExpr(arg_id)) |arg_op| {
+                        try args.append(self.allocator, arg_op);
+                    }
+                }
+                const tmp = self.newTemp();
+                _ = try self.emitInst(.{ .ty = mapType(self.hir_crate, expr.ty, expr.span, self.diagnostics), .dest = tmp, .kind = .{ .Call = .{ .fn_id = callee_expr.kind.GlobalRef, .args = try args.toOwnedSlice(self.allocator) } } });
+                return .{ .Temp = tmp };
+            },
+            .Assignment => |assign| {
+                const value_op = try self.lowerExpr(assign.value);
+                const target_expr = self.hir_crate.exprs.items[assign.target];
+                if (target_expr.kind == .LocalRef) {
+                    const local = target_expr.kind.LocalRef;
+                    try self.ensureLocal(local, target_expr.ty, expr.span);
+                    if (value_op) |val| {
+                        _ = try self.emitInst(.{ .ty = mapType(self.hir_crate, target_expr.ty, expr.span, self.diagnostics), .dest = null, .kind = .{ .StoreLocal = .{ .local = local, .src = val } } });
+                    }
+                } else {
+                    self.diagnostics.reportError(expr.span, "assignment target not supported in MIR lowering");
+                }
+                return null;
+            },
+            .Return => |ret| {
+                const value = if (ret) |val_id| try self.lowerExpr(val_id) else null;
+                self.setTerm(.{ .Ret = value });
+                const cont = self.newBlock() catch return null;
+                self.switchTo(cont);
+                return null;
+            },
+            .If => |iff| {
+                const cond = try self.lowerExpr(iff.cond) orelse return null;
+                const then_block = try self.newBlock();
+                const else_block = try self.newBlock();
+                const join_block = try self.newBlock();
+                self.setTerm(.{ .If = .{ .cond = cond, .then_block = then_block, .else_block = else_block } });
+
+                self.switchTo(then_block);
+                const then_val = try self.lowerExpr(iff.then_branch);
+                var result_tmp: ?mir.TempId = null;
+                if (then_val) |tv| {
+                    result_tmp = self.newTemp();
+                    _ = try self.emitInst(.{ .ty = mapType(self.hir_crate, expr.ty, expr.span, self.diagnostics), .dest = result_tmp, .kind = .{ .Copy = .{ .src = tv } } });
+                }
+                self.setTerm(.{ .Goto = join_block });
+
+                self.switchTo(else_block);
+                const else_val = if (iff.else_branch) |else_id| try self.lowerExpr(else_id) else null;
+                if (else_val) |ev| {
+                    if (result_tmp == null) result_tmp = self.newTemp();
+                    _ = try self.emitInst(.{ .ty = mapType(self.hir_crate, expr.ty, expr.span, self.diagnostics), .dest = result_tmp, .kind = .{ .Copy = .{ .src = ev } } });
+                }
+                self.setTerm(.{ .Goto = join_block });
+
+                self.switchTo(join_block);
+                if (result_tmp) |tmp| return .{ .Temp = tmp };
+                return null;
+            },
+            .While => |while_expr| {
+                const cond_block = try self.newBlock();
+                const body_block = try self.newBlock();
+                const exit_block = try self.newBlock();
+                self.setTerm(.{ .Goto = cond_block });
+
+                self.switchTo(cond_block);
+                const cond = try self.lowerExpr(while_expr.cond);
+                if (cond == null) return null;
+                self.setTerm(.{ .If = .{ .cond = cond.?, .then_block = body_block, .else_block = exit_block } });
+
+                self.switchTo(body_block);
+                _ = try self.lowerExpr(while_expr.body);
+                self.setTerm(.{ .Goto = cond_block });
+
+                self.switchTo(exit_block);
+                return null;
+            },
+            .Cast => |c| {
+                self.diagnostics.reportWarning(expr.span, "casts lowered as no-op in MIR");
+                return try self.lowerExpr(c.expr);
+            },
+            .Range, .Index, .Field, .Array, .StructInit => {
+                self.diagnostics.reportError(expr.span, "expression not yet supported in MIR lowering");
+                return null;
             },
             .GlobalRef => {
                 self.diagnostics.reportError(expr.span, "global references not yet supported in MIR lowering");
@@ -174,6 +312,39 @@ const FunctionBuilder = struct {
         self.mir_fn.blocks = blocks_slice;
         return self.mir_fn;
     }
+
+    fn lowerLogical(
+        self: *FunctionBuilder,
+        op: hir.BinaryOp,
+        lhs: mir.Operand,
+        rhs_id: hir.ExprId,
+        ty: hir.TypeId,
+        span: hir.Span,
+    ) LowerError!?mir.Operand {
+        const rhs_block = try self.newBlock();
+        const short_block = try self.newBlock();
+        const join_block = try self.newBlock();
+        const result_tmp = self.newTemp();
+
+        const then_block = if (op == .LogicalAnd) rhs_block else short_block;
+        const else_block = if (op == .LogicalAnd) short_block else rhs_block;
+
+        self.setTerm(.{ .If = .{ .cond = lhs, .then_block = then_block, .else_block = else_block } });
+
+        self.switchTo(short_block);
+        const short_val: mir.Operand = if (op == .LogicalAnd) .{ .ImmBool = false } else .{ .ImmBool = true };
+        _ = try self.emitInst(.{ .ty = .Bool, .dest = result_tmp, .kind = .{ .Copy = .{ .src = short_val } } });
+        self.setTerm(.{ .Goto = join_block });
+
+        self.switchTo(rhs_block);
+        if (try self.lowerExpr(rhs_id)) |rhs| {
+            _ = try self.emitInst(.{ .ty = mapType(self.hir_crate, ty, span, self.diagnostics), .dest = result_tmp, .kind = .{ .Copy = .{ .src = rhs } } });
+        }
+        self.setTerm(.{ .Goto = join_block });
+
+        self.switchTo(join_block);
+        return .{ .Temp = result_tmp };
+    }
 };
 
 fn mapType(hir_crate: *const hir.Crate, ty_id: ?hir.TypeId, span: hir.Span, diagnostics: *diag.Diagnostics) ?mir.MirType {
@@ -198,14 +369,48 @@ fn mapType(hir_crate: *const hir.Crate, ty_id: ?hir.TypeId, span: hir.Span, diag
             .Char => .Char,
             .String => .String,
             .Str => .Str,
-            .Array, .Pointer, .Ref, .Fn, .Struct, .Path, .Unknown => blk: {
-                diagnostics.reportError(span, "type not supported in MIR lowering");
+            .Array, .Pointer, .Ref, .Fn, .Struct, .Path => blk: {
+                diagnostics.reportWarning(span, "type not supported in MIR lowering");
+                break :blk null;
+            },
+            .Unknown => blk: {
+                diagnostics.reportWarning(span, "missing type information during MIR lowering");
                 break :blk null;
             },
         };
     }
     diagnostics.reportWarning(span, "missing type information during MIR lowering");
     return null;
+}
+
+fn mapBin(op: hir.BinaryOp) mir.BinOp {
+    return switch (op) {
+        .Add => .Add,
+        .Sub => .Sub,
+        .Mul => .Mul,
+        .Div => .Div,
+        .Mod => .Mod,
+        .LogicalAnd, .LogicalOr, .Eq, .Ne, .Lt, .Le, .Gt, .Ge => .Add,
+    };
+}
+
+fn mapCmp(op: hir.BinaryOp) mir.CmpOp {
+    return switch (op) {
+        .Eq => .Eq,
+        .Ne => .Ne,
+        .Lt => .Lt,
+        .Le => .Le,
+        .Gt => .Gt,
+        .Ge => .Ge,
+        .LogicalAnd, .LogicalOr, .Add, .Sub, .Mul, .Div, .Mod => .Eq,
+    };
+}
+
+fn mapUnary(op: hir.UnaryOp) mir.UnaryOp {
+    return switch (op) {
+        .Not => .Not,
+        .Neg => .Neg,
+    };
 }
 
 test "lower function with simple block" {
@@ -247,6 +452,51 @@ test "lower function with simple block" {
     try std.testing.expectEqual(@as(usize, 1), mir_fn.blocks.len);
     try std.testing.expectEqual(@as(usize, 1), mir_fn.locals.len);
     try std.testing.expectEqual(mir.MirType.I64, mir_fn.locals[0]);
+}
+
+fn buildBlockWithTail(crate: *hir.Crate, stmts: []const hir.StmtId, tail: hir.ExprId, ty: hir.TypeId, span: hir.Span) !hir.ExprId {
+    const block_expr_id: hir.ExprId = @intCast(crate.exprs.items.len);
+    const stmts_copy = try crate.allocator().alloc(hir.StmtId, stmts.len);
+    std.mem.copyForwards(hir.StmtId, stmts_copy, stmts);
+    try crate.exprs.append(crate.allocator(), .{ .id = block_expr_id, .kind = .{ .Block = .{ .stmts = stmts_copy, .tail = tail } }, .ty = ty, .span = span });
+    return block_expr_id;
+}
+
+test "lower if expression creates branch blocks" {
+    const allocator = std.testing.allocator;
+    var diagnostics = diag.Diagnostics.init(allocator);
+    defer diagnostics.deinit();
+
+    var crate = hir.Crate.init(allocator);
+    defer crate.deinit();
+
+    const span = hir.emptySpan(0);
+    const bool_ty = ensureType(&crate, .Bool);
+    const i32_ty = ensureType(&crate, .{ .PrimInt = .I32 });
+
+    const cond_id: hir.ExprId = @intCast(crate.exprs.items.len);
+    try crate.exprs.append(crate.allocator(), .{ .id = cond_id, .kind = .{ .ConstBool = true }, .ty = bool_ty, .span = span });
+
+    const then_tail: hir.ExprId = @intCast(crate.exprs.items.len);
+    try crate.exprs.append(crate.allocator(), .{ .id = then_tail, .kind = .{ .ConstInt = 1 }, .ty = i32_ty, .span = span });
+    const then_block = try buildBlockWithTail(&crate, &.{}, then_tail, i32_ty, span);
+
+    const else_tail: hir.ExprId = @intCast(crate.exprs.items.len);
+    try crate.exprs.append(crate.allocator(), .{ .id = else_tail, .kind = .{ .ConstInt = 2 }, .ty = i32_ty, .span = span });
+    const else_block = try buildBlockWithTail(&crate, &.{}, else_tail, i32_ty, span);
+
+    const if_id: hir.ExprId = @intCast(crate.exprs.items.len);
+    try crate.exprs.append(crate.allocator(), .{ .id = if_id, .kind = .{ .If = .{ .cond = cond_id, .then_branch = then_block, .else_branch = else_block } }, .ty = i32_ty, .span = span });
+
+    try crate.items.append(crate.allocator(), .{ .id = 0, .kind = .{ .Function = .{ .def_id = 0, .name = "main", .params = &[_]hir.LocalId{}, .return_type = i32_ty, .body = if_id, .span = span } }, .span = span });
+
+    var mir_crate = try lowerFromHir(allocator, &crate, &diagnostics);
+    defer mir_crate.deinit();
+
+    try std.testing.expect(!diagnostics.hasErrors());
+    const mir_fn = mir_crate.fns.items[0];
+    try std.testing.expectEqual(@as(usize, 4), mir_fn.blocks.len);
+    try std.testing.expect(mir_fn.blocks[0].term == .If);
 }
 
 fn ensureType(crate: *hir.Crate, kind: hir.Type.Kind) hir.TypeId {

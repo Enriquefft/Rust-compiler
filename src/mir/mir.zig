@@ -29,6 +29,7 @@ pub const Operand = union(enum) {
 
 pub const BinOp = enum { Add, Sub, Mul, Div, Mod, And, Or, Xor };
 pub const CmpOp = enum { Eq, Ne, Lt, Le, Gt, Ge };
+pub const UnaryOp = enum { Not, Neg };
 
 pub const TermKind = union(enum) {
     Goto: BlockId,
@@ -41,6 +42,7 @@ pub const InstKind = union(enum) {
 
     Bin: struct { op: BinOp, lhs: Operand, rhs: Operand },
     Cmp: struct { op: CmpOp, lhs: Operand, rhs: Operand },
+    Unary: struct { op: UnaryOp, operand: Operand },
 
     LoadLocal: struct { local: LocalId },
     StoreLocal: struct { local: LocalId, src: Operand },

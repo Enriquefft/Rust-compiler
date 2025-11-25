@@ -117,6 +117,13 @@ fn checkExpr(
             diagnostics.reportError(span, "identifier was not resolved before type checking");
             expr.ty = try ensureType(crate, .Unknown);
         },
+        .Cast => |c| {
+            expr.ty = c.ty;
+        },
+        .Binary, .Unary, .Call, .Assignment, .Return, .If, .While, .Range, .Index, .Field, .Array, .StructInit => {
+            diagnostics.reportWarning(span, "type checking not implemented for this expression yet");
+            expr.ty = try ensureType(crate, .Unknown);
+        },
         .Unknown => {
             expr.ty = try ensureType(crate, .Unknown);
         },

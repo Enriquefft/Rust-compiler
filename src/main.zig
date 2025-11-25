@@ -8,19 +8,39 @@ pub fn main() !void {
 
     var args = std.process.args();
     _ = args.next(); // executable name
-    const maybe_path = args.next();
-    if (maybe_path == null) {
-        std.debug.print("usage: {s} <file>\n", .{"rust-compiler"});
+
+    var visualize_tokens = false;
+    var visualize_ast = false;
+    var path: ?[]const u8 = null;
+
+    while (args.next()) |arg| {
+        if (std.mem.eql(u8, arg, "--print-tokens")) {
+            visualize_tokens = true;
+        } else if (std.mem.eql(u8, arg, "--print-ast")) {
+            visualize_ast = true;
+        } else if (std.mem.startsWith(u8, arg, "-")) {
+            printUsage();
+            return;
+        } else if (path == null) {
+            path = arg;
+        } else {
+            printUsage();
+            return;
+        }
+    }
+
+    if (path == null) {
+        printUsage();
         return;
     }
 
-    const path = maybe_path.?;
-
     var result = try driver.compileFile(.{
         .allocator = allocator,
-        .input_path = path,
+        .input_path = path.?,
         .emit_diagnostics = true,
         .exit_on_error = true,
+        .visualize_tokens = visualize_tokens,
+        .visualize_ast = visualize_ast,
     });
     defer result.deinit();
 
@@ -32,4 +52,8 @@ pub fn main() !void {
 
 test "Run all tests" {
     _ = @import("all_tests.zig");
+}
+
+fn printUsage() void {
+    std.debug.print("usage: {s} [--print-tokens] [--print-ast] <file>\n", .{"rust-compiler"});
 }

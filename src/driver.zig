@@ -4,6 +4,8 @@ const source_map = @import("diag/source_map.zig");
 const lexer = @import("frontend/lexer.zig");
 const parser = @import("frontend/parser.zig");
 const ast = @import("frontend/ast.zig");
+const tokens = @import("frontend/tokens.zig");
+const ast_printer = @import("frontend/ast_printer.zig");
 const hir = @import("hir/hir.zig");
 const mir = @import("mir/mir.zig");
 const mir_lower = @import("mir/lower.zig");
@@ -37,6 +39,8 @@ pub const CompileOptions = struct {
     emit_diagnostics: bool = true,
     exit_on_error: bool = true,
     source_override: ?[]const u8 = null,
+    visualize_tokens: bool = false,
+    visualize_ast: bool = false,
 };
 
 pub fn compileFile(options: CompileOptions) !CompileResult {
@@ -48,11 +52,19 @@ pub fn compileFile(options: CompileOptions) !CompileResult {
 
     const file_id = try sm.addFile(options.input_path, contents);
 
-    const tokens = try lexer.lex(options.allocator, file_id, contents, &diagnostics);
-    defer options.allocator.free(tokens);
+    const token_slice = try lexer.lex(options.allocator, file_id, contents, &diagnostics);
+    defer options.allocator.free(token_slice);
+
+    if (options.visualize_tokens) {
+        printTokens(token_slice);
+    }
 
     var ast_arena = std.heap.ArenaAllocator.init(options.allocator);
-    const crate = parser.parseCrate(ast_arena.allocator(), tokens, &diagnostics);
+    const crate = parser.parseCrate(ast_arena.allocator(), token_slice, &diagnostics);
+
+    if (options.visualize_ast) {
+        try ast_printer.printCrateTree(options.allocator, crate);
+    }
 
     var hir_crate = try hir.lowerFromAst(options.allocator, crate, &diagnostics);
     var mir_crate: mir.MirCrate = undefined;
@@ -97,6 +109,19 @@ pub fn compileFile(options: CompileOptions) !CompileResult {
         .hir = hir_crate,
         .mir = mir_crate,
     };
+}
+
+fn printTokens(tokens_slice: []const tokens.Token) void {
+    std.debug.print("Tokens ({}):\n", .{tokens_slice.len});
+    for (tokens_slice, 0..) |token, idx| {
+        std.debug.print("  [{d:0>3}] {s} -> '{s}' [{d}-{d}]\n", .{
+            idx,
+            @tagName(token.kind),
+            token.lexeme,
+            token.span.start,
+            token.span.end,
+        });
+    }
 }
 
 test "compileFile succeeds on tokenizable source" {
