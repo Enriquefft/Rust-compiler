@@ -201,6 +201,7 @@ fn checkExpr(
                 if (callee_ty < crate.types.items.len) {
                     switch (crate.types.items[callee_ty].kind) {
                         .Fn => |fn_ty| {
+                            std.debug.print("Function call detected with callee type {any}\n", .{ fn_ty });
                             param_types = fn_ty.params;
                             ret_ty = fn_ty.ret;
                         },
@@ -209,6 +210,7 @@ fn checkExpr(
                 }
 
                 if (param_types.len != call.args.len) {
+                    std.debug.print("Expected {d} args, got {d}\n", .{ param_types.len, call.args.len });
                     diagnostics.reportError(span, "argument count does not match function type");
                 }
 
