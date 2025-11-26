@@ -39,9 +39,15 @@ pub const CompileResult = struct {
     }
 };
 
+pub const OptLevel = enum { none, basic };
+pub const Emit = enum { assembly, object };
+
 pub const CompileOptions = struct {
     allocator: std.mem.Allocator,
     input_path: []const u8,
+    output_path: []const u8,
+    opt_level: OptLevel = .basic,
+    emit: Emit = .assembly,
     emit_diagnostics: bool = true,
     exit_on_error: bool = true,
     source_override: ?[]const u8 = null,
@@ -89,13 +95,22 @@ pub fn compileFile(options: CompileOptions) !CompileResult {
         mir_crate = mir.MirCrate.init(options.allocator);
     }
 
-    if (!diagnostics.hasErrors()) {
+    if (!diagnostics.hasErrors() and options.opt_level == .basic) {
         try mir_passes.runAll(options.allocator, &mir_crate, &diagnostics);
     }
 
     var backend_artifact: ?backend.Artifact = null;
     if (!diagnostics.hasErrors()) {
         backend_artifact = try backend.codegen(&mir_crate, options.allocator, &diagnostics);
+    }
+
+    if (!diagnostics.hasErrors()) {
+        if (backend_artifact) |artifact| {
+            switch (options.emit) {
+                .assembly => try writeArtifact(options.output_path, artifact.assembly),
+                .object => diagnostics.reportError(.{ .file_id = file_id, .start = 0, .end = 0 }, "object emission is not implemented yet"),
+            }
+        }
     }
 
     const status: CompileStatus = if (diagnostics.hasErrors()) .errors else .success;
@@ -128,6 +143,12 @@ pub fn compileFile(options: CompileOptions) !CompileResult {
     };
 }
 
+fn writeArtifact(path: []const u8, contents: []const u8) !void {
+    var file = try std.fs.cwd().createFile(path, .{ .truncate = true });
+    defer file.close();
+    try file.writeAll(contents);
+}
+
 fn printTokens(tokens_slice: []const tokens.Token) void {
     std.debug.print("Tokens ({}):\n", .{tokens_slice.len});
     for (tokens_slice, 0..) |token, idx| {
@@ -143,14 +164,23 @@ fn printTokens(tokens_slice: []const tokens.Token) void {
 
 test "compileFile succeeds on tokenizable source" {
     const allocator = std.testing.allocator;
+    const out_path = "test_output.s";
+    std.fs.cwd().deleteFile(out_path) catch {};
+
     var result = try compileFile(.{
         .allocator = allocator,
         .input_path = "test.rs",
+        .output_path = out_path,
+        .opt_level = .basic,
+        .emit = .assembly,
         .emit_diagnostics = false,
         .exit_on_error = false,
         .source_override = "fn main() {}",
     });
-    defer result.deinit();
+    defer {
+        result.deinit();
+        std.fs.cwd().deleteFile(out_path) catch {};
+    }
 
     try std.testing.expectEqual(CompileStatus.success, result.status);
     try std.testing.expect(!result.diagnostics.hasErrors());
@@ -162,15 +192,102 @@ test "compileFile succeeds on tokenizable source" {
 
 test "compileFile records diagnostics on lexer errors" {
     const allocator = std.testing.allocator;
+    const out_path = "lex_error.s";
+    std.fs.cwd().deleteFile(out_path) catch {};
+
     var result = try compileFile(.{
         .allocator = allocator,
         .input_path = "test.rs",
+        .output_path = out_path,
+        .opt_level = .basic,
+        .emit = .assembly,
         .emit_diagnostics = false,
         .exit_on_error = false,
         .source_override = "\"unterminated",
     });
-    defer result.deinit();
+    defer {
+        result.deinit();
+        std.fs.cwd().deleteFile(out_path) catch {};
+    }
 
     try std.testing.expectEqual(CompileStatus.errors, result.status);
     try std.testing.expect(result.diagnostics.hasErrors());
+}
+
+test "compileFile respects opt level none" {
+    const allocator = std.testing.allocator;
+    const out_path = "opt_none.s";
+    std.fs.cwd().deleteFile(out_path) catch {};
+
+    var result = try compileFile(.{
+        .allocator = allocator,
+        .input_path = "test.rs",
+        .output_path = out_path,
+        .opt_level = .none,
+        .emit = .assembly,
+        .emit_diagnostics = false,
+        .exit_on_error = false,
+        .source_override = "fn main() { 2 + 3; }",
+    });
+    defer {
+        result.deinit();
+        std.fs.cwd().deleteFile(out_path) catch {};
+    }
+
+    try std.testing.expectEqual(CompileStatus.success, result.status);
+    const func = result.mir.fns.items[0];
+    try std.testing.expect(func.blocks[0].insts.len > 0);
+}
+
+test "compileFile applies basic optimizations" {
+    const allocator = std.testing.allocator;
+    const out_path = "opt_basic.s";
+    std.fs.cwd().deleteFile(out_path) catch {};
+
+    var result = try compileFile(.{
+        .allocator = allocator,
+        .input_path = "test.rs",
+        .output_path = out_path,
+        .opt_level = .basic,
+        .emit = .assembly,
+        .emit_diagnostics = false,
+        .exit_on_error = false,
+        .source_override = "fn main() { 2 + 3; }",
+    });
+    defer {
+        result.deinit();
+        std.fs.cwd().deleteFile(out_path) catch {};
+    }
+
+    try std.testing.expectEqual(CompileStatus.success, result.status);
+    const func = result.mir.fns.items[0];
+    try std.testing.expectEqual(@as(usize, 0), func.blocks[0].insts.len);
+}
+
+test "compileFile writes backend artifact to file" {
+    const allocator = std.testing.allocator;
+    const out_path = "emitted_output.s";
+    std.fs.cwd().deleteFile(out_path) catch {};
+
+    var result = try compileFile(.{
+        .allocator = allocator,
+        .input_path = "test.rs",
+        .output_path = out_path,
+        .opt_level = .basic,
+        .emit = .assembly,
+        .emit_diagnostics = false,
+        .exit_on_error = false,
+        .source_override = "fn main() {}",
+    });
+    defer {
+        std.fs.cwd().deleteFile(out_path) catch {};
+        result.deinit();
+    }
+
+    try std.testing.expectEqual(CompileStatus.success, result.status);
+    const artifact = result.backend_artifact.?;
+
+    const contents = try std.fs.cwd().readFileAlloc(allocator, out_path, std.math.maxInt(usize));
+    defer allocator.free(contents);
+    try std.testing.expectEqualSlices(u8, artifact.assembly, contents);
 }
