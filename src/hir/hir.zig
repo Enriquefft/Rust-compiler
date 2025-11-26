@@ -153,6 +153,7 @@ pub const Function = struct {
     def_id: DefId,
     name: []const u8,
     params: []LocalId,
+    param_types: []TypeId,
     return_type: ?TypeId,
     body: ?ExprId,
     span: Span,
@@ -254,13 +255,17 @@ fn lowerFn(
     const owned_name = try internName(crate, name_table, fn_data.name, diagnostics);
     var params_buffer = std.ArrayListUnmanaged(LocalId){};
     defer params_buffer.deinit(crate.allocator());
+    var param_types = std.ArrayListUnmanaged(TypeId){};
+    defer param_types.deinit(crate.allocator());
 
     for (fn_data.params) |param| {
         const local = try lowerPattern(crate, param.pattern, diagnostics);
-        if (param.ty) |param_ty| {
-            _ = try lowerType(crate, param_ty, diagnostics, next_type_id);
-        }
+        const ty_id = if (param.ty) |param_ty|
+            try lowerType(crate, param_ty, diagnostics, next_type_id)
+        else
+            try appendUnknownType(crate, next_type_id);
         try params_buffer.append(crate.allocator(), local);
+        try param_types.append(crate.allocator(), ty_id);
     }
 
     const return_ty = if (fn_data.return_type) |ret_ty|
@@ -274,6 +279,7 @@ fn lowerFn(
         .def_id = def_id,
         .name = owned_name,
         .params = try params_buffer.toOwnedSlice(crate.allocator()),
+        .param_types = try param_types.toOwnedSlice(crate.allocator()),
         .return_type = return_ty,
         .body = body_expr,
         .span = fn_data.span,
@@ -725,7 +731,6 @@ fn lowerBlock(crate: *Crate, block: ast.Block, diagnostics: *diag.Diagnostics, n
 }
 
 fn lowerStmt(crate: *Crate, stmt: ast.Stmt, diagnostics: *diag.Diagnostics, next_type_id: *TypeId) LowerError!StmtId {
-    const id: StmtId = @intCast(crate.stmts.items.len);
     const kind: Stmt.Kind = switch (stmt.tag) {
         .Let => blk: {
             const let_data = stmt.data.Let;
@@ -760,6 +765,7 @@ fn lowerStmt(crate: *Crate, stmt: ast.Stmt, diagnostics: *diag.Diagnostics, next
         .Empty => .Unknown,
     };
 
+    const id: StmtId = @intCast(crate.stmts.items.len);
     try crate.stmts.append(crate.allocator(), .{ .id = id, .kind = kind, .span = stmt.span });
     return id;
 }

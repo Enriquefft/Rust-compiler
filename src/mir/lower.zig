@@ -41,6 +41,11 @@ fn lowerFunction(crate: *mir.MirCrate, func: hir.Function, hir_crate: *const hir
         try builder.ensureLocal(param, null, func.span);
     }
 
+    for (func.params, 0..) |param, idx| {
+        const ty = if (idx < func.param_types.len) func.param_types[idx] else null;
+        _ = try builder.emitInst(.{ .ty = mapType(hir_crate, ty, func.span, diagnostics), .dest = null, .kind = .{ .StoreLocal = .{ .local = param, .src = .{ .Param = @intCast(idx) } } } });
+    }
+
     if (func.body) |body_id| {
         const result = try builder.lowerExpr(body_id);
         builder.setTerm(.{ .Ret = result });
@@ -215,7 +220,20 @@ const FunctionBuilder = struct {
                     const local = target_expr.kind.LocalRef;
                     try self.ensureLocal(local, target_expr.ty, expr.span);
                     if (value_op) |val| {
-                        _ = try self.emitInst(.{ .ty = mapType(self.hir_crate, target_expr.ty, expr.span, self.diagnostics), .dest = null, .kind = .{ .StoreLocal = .{ .local = local, .src = val } } });
+                        var final_val = val;
+                        if (assign.op != .Assign) {
+                            const loaded_tmp = self.newTemp();
+                            const mir_ty = mapType(self.hir_crate, target_expr.ty, expr.span, self.diagnostics);
+                            _ = try self.emitInst(.{ .ty = mir_ty, .dest = loaded_tmp, .kind = .{ .LoadLocal = .{ .local = local } } });
+
+                            if (mapAssignBin(assign.op)) |bin_op| {
+                                const bin_tmp = self.newTemp();
+                                _ = try self.emitInst(.{ .ty = mir_ty, .dest = bin_tmp, .kind = .{ .Bin = .{ .op = bin_op, .lhs = .{ .Temp = loaded_tmp }, .rhs = val } } });
+                                final_val = .{ .Temp = bin_tmp };
+                            }
+                        }
+
+                        _ = try self.emitInst(.{ .ty = mapType(self.hir_crate, target_expr.ty, expr.span, self.diagnostics), .dest = null, .kind = .{ .StoreLocal = .{ .local = local, .src = final_val } } });
                     }
                 } else {
                     self.diagnostics.reportError(expr.span, "assignment target not supported in MIR lowering");
@@ -275,6 +293,52 @@ const FunctionBuilder = struct {
                 self.switchTo(exit_block);
                 return null;
             },
+            .For => |for_expr| {
+                const iter_expr = self.hir_crate.exprs.items[for_expr.iter];
+                if (iter_expr.kind != .Range) {
+                    self.diagnostics.reportError(expr.span, "only range-based for loops are supported");
+                    return null;
+                }
+
+                const start_op = try self.lowerExpr(iter_expr.kind.Range.start) orelse return null;
+                const end_op = try self.lowerExpr(iter_expr.kind.Range.end) orelse return null;
+
+                const mir_ty = mapType(self.hir_crate, iter_expr.ty, expr.span, self.diagnostics);
+                try self.ensureLocal(for_expr.pat.id, iter_expr.ty, expr.span);
+                _ = try self.emitInst(.{ .ty = mir_ty, .dest = null, .kind = .{ .StoreLocal = .{ .local = for_expr.pat.id, .src = start_op } } });
+
+                const cond_block = try self.newBlock();
+                const body_block = try self.newBlock();
+                const exit_block = try self.newBlock();
+                self.setTerm(.{ .Goto = cond_block });
+
+                self.switchTo(cond_block);
+                const cur_tmp = self.newTemp();
+                _ = try self.emitInst(.{ .ty = mir_ty, .dest = cur_tmp, .kind = .{ .LoadLocal = .{ .local = for_expr.pat.id } } });
+                const cmp_tmp = self.newTemp();
+                const cmp_op = if (iter_expr.kind.Range.inclusive) mir.CmpOp.Le else mir.CmpOp.Lt;
+                _ = try self.emitInst(.{
+                    .ty = .Bool,
+                    .dest = cmp_tmp,
+                    .kind = .{ .Cmp = .{ .op = cmp_op, .lhs = .{ .Temp = cur_tmp }, .rhs = end_op } },
+                });
+                self.setTerm(.{ .If = .{ .cond = .{ .Temp = cmp_tmp }, .then_block = body_block, .else_block = exit_block } });
+
+                self.switchTo(body_block);
+                _ = try self.lowerExpr(for_expr.body);
+
+                const incr_tmp = self.newTemp();
+                _ = try self.emitInst(.{
+                    .ty = mir_ty,
+                    .dest = incr_tmp,
+                    .kind = .{ .Bin = .{ .op = .Add, .lhs = .{ .Local = for_expr.pat.id }, .rhs = .{ .ImmInt = 1 } } },
+                });
+                _ = try self.emitInst(.{ .ty = mir_ty, .dest = null, .kind = .{ .StoreLocal = .{ .local = for_expr.pat.id, .src = .{ .Temp = incr_tmp } } } });
+                self.setTerm(.{ .Goto = cond_block });
+
+                self.switchTo(exit_block);
+                return null;
+            },
             .Cast => |c| {
                 self.diagnostics.reportWarning(expr.span, "casts lowered as no-op in MIR");
                 return try self.lowerExpr(c.expr);
@@ -327,7 +391,7 @@ const FunctionBuilder = struct {
                 _ = try self.emitInst(.{ .ty = mapType(self.hir_crate, expr.ty, expr.span, self.diagnostics), .dest = tmp, .kind = .{ .StructInit = .{ .fields = try fields.toOwnedSlice(self.allocator) } } });
                 return .{ .Temp = tmp };
             },
-            .Path, .MethodCall, .For, .Lambda, .UnresolvedIdent, .Unknown => {
+            .Path, .MethodCall, .Lambda, .UnresolvedIdent, .Unknown => {
                 self.diagnostics.reportError(expr.span, "expression could not be lowered to MIR");
                 return null;
             },
@@ -568,6 +632,16 @@ fn mapBin(op: hir.BinaryOp) mir.BinOp {
         .Div => .Div,
         .Mod => .Mod,
         .LogicalAnd, .LogicalOr, .Eq, .Ne, .Lt, .Le, .Gt, .Ge => .Add,
+    };
+}
+
+fn mapAssignBin(op: hir.AssignOp) ?mir.BinOp {
+    return switch (op) {
+        .Assign => null,
+        .AddAssign => .Add,
+        .SubAssign => .Sub,
+        .MulAssign => .Mul,
+        .DivAssign => .Div,
     };
 }
 

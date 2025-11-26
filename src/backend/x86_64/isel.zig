@@ -160,6 +160,7 @@ fn lowerInst(
                 const rhs = try lowerOperand(ctx, payload.rhs, vreg_count);
                 try insts.append(ctx.allocator, .{ .Cmp = .{ .lhs = lhs, .rhs = rhs } });
                 try insts.append(ctx.allocator, .{ .Setcc = .{ .cond = mapCond(payload.op), .dst = .{ .VReg = dst } } });
+                try insts.append(ctx.allocator, .{ .Bin = .{ .op = .and_, .dst = .{ .VReg = dst }, .lhs = .{ .VReg = dst }, .rhs = .{ .Imm = 1 } } });
             }
         },
         .Unary => |payload| {
@@ -328,6 +329,12 @@ fn lowerSimpleOperand(ctx: *LowerContext, op: mir.Operand, vreg_count: ?*machine
     return switch (op) {
         .Temp => |tmp| .{ .VReg = destRegister(tmp, vreg_count) },
         .Local => |local| localMem(local),
+        .Param => |idx| blk: {
+            const arg_registers = [_]machine.PhysReg{ .rdi, .rsi, .rdx, .rcx, .r8, .r9 };
+            if (idx < arg_registers.len) break :blk .{ .Phys = arg_registers[idx] };
+            ctx.diagnostics.reportError(zero_span, "parameter index exceeds supported register set");
+            return error.Unsupported;
+        },
         .ImmInt => |v| .{ .Imm = v },
         .ImmBool => |v| .{ .Imm = if (v) 1 else 0 },
         .ImmFloat => |v| .{ .Imm = @bitCast(v) },

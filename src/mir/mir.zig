@@ -25,6 +25,7 @@ pub const MirType = enum {
 pub const Operand = union(enum) {
     Temp: TempId,
     Local: LocalId,
+    Param: u32,
     ImmInt: i64,
     ImmFloat: f64,
     ImmBool: bool,

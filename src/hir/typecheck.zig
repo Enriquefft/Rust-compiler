@@ -19,6 +19,14 @@ fn typecheckFunction(crate: *hir.Crate, func: *hir.Function, diagnostics: *diag.
     var locals = std.AutoHashMap(hir.LocalId, hir.TypeId).init(crate.allocator());
     defer locals.deinit();
 
+    for (func.params, 0..) |local_id, idx| {
+        const ty = if (idx < func.param_types.len)
+            func.param_types[idx]
+        else
+            try ensureType(crate, .Unknown);
+        try locals.put(local_id, ty);
+    }
+
     if (func.body) |body_id| {
         const body_ty = try checkExpr(crate, body_id, diagnostics, &locals);
         if (func.return_type) |ret_ty| {
@@ -86,11 +94,8 @@ fn checkExpr(
                 const item = crate.items.items[def_id];
                 switch (item.kind) {
                     .Function => |fn_item| {
-                        if (fn_item.return_type) |ret| {
-                            expr.ty = ret;
-                        } else {
-                            expr.ty = try ensureType(crate, .Unknown);
-                        }
+                        const ret_ty = fn_item.return_type orelse try ensureType(crate, .Unknown);
+                        expr.ty = try ensureType(crate, .{ .Fn = .{ .params = fn_item.param_types, .ret = ret_ty } });
                     },
                     .Struct => {
                         expr.ty = try ensureType(crate, .{ .Struct = .{ .def_id = def_id, .type_args = &[_]hir.TypeId{} } });
@@ -265,8 +270,11 @@ fn checkExpr(
         },
         .For => |for_expr| {
             const iter_ty = try checkExpr(crate, for_expr.iter, diagnostics, locals);
-            _ = iter_ty;
-            _ = try ensurePatternBinding(crate, for_expr.pat.id, locals);
+            const pat_ty = try ensurePatternBinding(crate, for_expr.pat.id, locals);
+            if (!isUnknown(crate, pat_ty) and !typesCompatible(crate, pat_ty, iter_ty)) {
+                diagnostics.reportError(span, "for pattern type does not match iterator");
+            }
+            try locals.put(for_expr.pat.id, iter_ty);
             _ = try checkExpr(crate, for_expr.body, diagnostics, locals);
             expr.ty = try ensureType(crate, .Unknown);
         },
@@ -419,6 +427,10 @@ fn ensureType(crate: *hir.Crate, kind: hir.Type.Kind) Error!hir.TypeId {
     return id;
 }
 
+fn isUnknown(crate: *hir.Crate, ty: hir.TypeId) bool {
+    return ty >= crate.types.items.len or crate.types.items[ty].kind == .Unknown;
+}
+
 fn typesEqual(crate: *hir.Crate, lhs: hir.TypeId, rhs: hir.TypeId) bool {
     if (lhs == rhs) return true;
     if (lhs >= crate.types.items.len or rhs >= crate.types.items.len) return false;
@@ -543,7 +555,7 @@ test "typechecker assigns literal types and detects mismatches" {
     const block_expr_id: hir.ExprId = @intCast(crate.exprs.items.len);
     try crate.exprs.append(crate.allocator(), .{ .id = block_expr_id, .kind = .{ .Block = .{ .stmts = block_stmts, .tail = null } }, .ty = 0, .span = span });
 
-    try crate.items.append(crate.allocator(), .{ .id = 0, .kind = .{ .Function = .{ .def_id = 0, .name = "main", .params = &[_]hir.LocalId{}, .return_type = bool_ty, .body = block_expr_id, .span = span } }, .span = span });
+    try crate.items.append(crate.allocator(), .{ .id = 0, .kind = .{ .Function = .{ .def_id = 0, .name = "main", .params = &[_]hir.LocalId{}, .param_types = &[_]hir.TypeId{}, .return_type = bool_ty, .body = block_expr_id, .span = span } }, .span = span });
 
     try typecheck(&crate, &diagnostics);
 

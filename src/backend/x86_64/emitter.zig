@@ -105,7 +105,15 @@ fn emitInst(writer: anytype, inst: machine.InstKind, fn_name: []const u8) !void 
         },
         .Setcc => |payload| {
             try writer.print("    set{s} ", .{condSuffix(payload.cond)});
-            try writeOperand(writer, payload.dst);
+            switch (payload.dst) {
+                .Phys => |reg| try writer.writeAll(physByteName(reg)),
+                .Mem => |mem| {
+                    try writer.writeAll("byte ptr ");
+                    try writeMem(writer, mem);
+                },
+                .VReg => |id| try writer.print("v{d}", .{id}),
+                else => unreachable,
+            }
             try writer.writeByte('\n');
         },
         .Test => |payload| {
@@ -193,6 +201,23 @@ fn physName(reg: machine.PhysReg) []const u8 {
         .r11 => "r11",
         .rbp => "rbp",
         .rsp => "rsp",
+    };
+}
+
+fn physByteName(reg: machine.PhysReg) []const u8 {
+    return switch (reg) {
+        .rax => "al",
+        .rbx => "bl",
+        .rcx => "cl",
+        .rdx => "dl",
+        .rsi => "sil",
+        .rdi => "dil",
+        .r8 => "r8b",
+        .r9 => "r9b",
+        .r10 => "r10b",
+        .r11 => "r11b",
+        .rbp => "bpl",
+        .rsp => "spl",
     };
 }
 

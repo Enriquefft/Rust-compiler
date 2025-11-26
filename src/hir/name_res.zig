@@ -64,7 +64,7 @@ fn ensureBuiltinPrintln(crate: *hir.Crate) Error!Builtin {
     const id: hir.DefId = @intCast(crate.items.items.len);
     const name = try crate.allocator().dupe(u8, "println");
     const span = hir.emptySpan(0);
-    const func: hir.Function = .{ .def_id = id, .name = name, .params = &[_]hir.LocalId{}, .return_type = null, .body = null, .span = span };
+    const func: hir.Function = .{ .def_id = id, .name = name, .params = &[_]hir.LocalId{}, .param_types = &[_]hir.TypeId{}, .return_type = null, .body = null, .span = span };
     try crate.items.append(crate.allocator(), .{ .id = id, .kind = .{ .Function = func }, .span = span });
     return .{ .name = name, .def_id = id };
 }
@@ -134,7 +134,9 @@ fn resolveStmt(
             }
             try bindPattern(&let_stmt.pat, locals, next_local, diagnostics);
         },
-        .Expr => |expr_id| try resolveExpr(crate, expr_id, module_symbols, locals, next_local, diagnostics),
+        .Expr => |expr_id| {
+            try resolveExpr(crate, expr_id, module_symbols, locals, next_local, diagnostics);
+        },
         .Unknown => {},
     }
 }
@@ -313,6 +315,7 @@ test "name resolution resolves globals and locals" {
         .def_id = foo_def,
         .name = "foo",
         .params = &[_]hir.LocalId{},
+        .param_types = &[_]hir.TypeId{},
         .return_type = null,
         .body = block_expr_id,
         .span = span,
@@ -322,6 +325,7 @@ test "name resolution resolves globals and locals" {
         .def_id = bar_def,
         .name = "bar",
         .params = &[_]hir.LocalId{},
+        .param_types = &[_]hir.TypeId{},
         .return_type = null,
         .body = null,
         .span = span,
@@ -353,6 +357,8 @@ test "name resolution binds function parameters" {
 
     try crate.patterns.append(crate.allocator(), .{ .id = 0, .kind = .{ .Identifier = "a" }, .span = span });
 
+    try crate.types.append(crate.allocator(), .{ .id = 0, .kind = .Unknown });
+
     const block_expr_id: hir.ExprId = @intCast(crate.exprs.items.len);
     try crate.exprs.append(crate.allocator(), .{
         .id = block_expr_id,
@@ -363,11 +369,14 @@ test "name resolution binds function parameters" {
 
     const params = try crate.allocator().alloc(hir.LocalId, 1);
     params[0] = 0;
+    const param_types = try crate.allocator().alloc(hir.TypeId, 1);
+    param_types[0] = 0;
 
     try crate.items.append(crate.allocator(), .{ .id = 0, .kind = .{ .Function = .{
         .def_id = 0,
         .name = "with_param",
         .params = params,
+        .param_types = param_types,
         .return_type = null,
         .body = block_expr_id,
         .span = span,
