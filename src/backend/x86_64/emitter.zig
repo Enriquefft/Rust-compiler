@@ -233,7 +233,8 @@ test "emitter streams operands directly to writer" {
         "    mov rax, 42\n" ++
         "    cmp [rbp-16], 0\n" ++
         "    add v1, [rbp+8]\n" ++
-        "    leave\n    ret\n\n";
+        "    leave\n    ret\n\n" ++
+        ".section .note.GNU-stack,\"\",@progbits\n";
 
     try std.testing.expectEqualStrings(expected, assembly);
 }
@@ -289,7 +290,8 @@ test "emitter emits rodata and extern call for printf" {
         "    lea rdi, [rip + .Lstr0]\n" ++
         "    mov rax, 0\n" ++
         "    call printf\n" ++
-        "    leave\n    ret\n\n";
+        "    leave\n    ret\n\n" ++
+        ".section .note.GNU-stack,\"\",@progbits\n";
 
     try std.testing.expectEqualStrings(expected, assembly);
 }
