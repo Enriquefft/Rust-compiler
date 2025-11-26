@@ -22,7 +22,7 @@ fn typecheckFunction(crate: *hir.Crate, func: *hir.Function, diagnostics: *diag.
     if (func.body) |body_id| {
         const body_ty = try checkExpr(crate, body_id, diagnostics, &locals);
         if (func.return_type) |ret_ty| {
-            if (!typesEqual(crate, ret_ty, body_ty)) {
+            if (!typesCompatible(crate, ret_ty, body_ty)) {
                 diagnostics.reportError(func.span, "function return type does not match body");
             }
         } else {
@@ -132,13 +132,13 @@ fn checkExpr(
                     expr.ty = try ensureType(crate, .Bool);
                 },
                 .Eq, .Ne, .Lt, .Le, .Gt, .Ge => {
-                    if (!typesEqual(crate, lhs_ty, rhs_ty)) {
+                    if (!typesCompatible(crate, lhs_ty, rhs_ty)) {
                         diagnostics.reportError(span, "comparison operands must have the same type");
                     }
                     expr.ty = try ensureType(crate, .Bool);
                 },
                 .Add, .Sub, .Mul, .Div, .Mod => {
-                    if (!typesEqual(crate, lhs_ty, rhs_ty)) {
+                    if (!typesCompatible(crate, lhs_ty, rhs_ty)) {
                         diagnostics.reportError(span, "arithmetic operands must have the same type");
                         expr.ty = try ensureType(crate, .Unknown);
                     } else if (!isNumeric(crate, lhs_ty)) {
@@ -190,7 +190,7 @@ fn checkExpr(
 
                 for (call.args, 0..) |arg_id, idx| {
                     const arg_ty = try checkExpr(crate, arg_id, diagnostics, locals);
-                    if (idx < param_types.len and !typesEqual(crate, arg_ty, param_types[idx])) {
+                    if (idx < param_types.len and !typesCompatible(crate, arg_ty, param_types[idx])) {
                         diagnostics.reportError(span, "argument type does not match parameter");
                     }
                 }
@@ -201,7 +201,7 @@ fn checkExpr(
             const target_ty = try checkExpr(crate, assign.target, diagnostics, locals);
             const value_ty = try checkExpr(crate, assign.value, diagnostics, locals);
 
-            if (!typesEqual(crate, target_ty, value_ty)) {
+            if (!typesCompatible(crate, target_ty, value_ty)) {
                 diagnostics.reportError(span, "assignment types do not match");
             }
 
@@ -221,7 +221,7 @@ fn checkExpr(
             const then_ty = try checkExpr(crate, ifs.then_branch, diagnostics, locals);
             if (ifs.else_branch) |else_id| {
                 const else_ty = try checkExpr(crate, else_id, diagnostics, locals);
-                if (typesEqual(crate, then_ty, else_ty)) {
+                if (typesCompatible(crate, then_ty, else_ty)) {
                     expr.ty = then_ty;
                 } else {
                     diagnostics.reportError(span, "if branches must have the same type");
@@ -240,7 +240,7 @@ fn checkExpr(
         .Range => |range| {
             const start_ty = try checkExpr(crate, range.start, diagnostics, locals);
             const end_ty = try checkExpr(crate, range.end, diagnostics, locals);
-            if (!typesEqual(crate, start_ty, end_ty)) {
+            if (!typesCompatible(crate, start_ty, end_ty)) {
                 diagnostics.reportError(span, "range bounds must have the same type");
                 expr.ty = try ensureType(crate, .Unknown);
             } else {
@@ -267,7 +267,7 @@ fn checkExpr(
             for (elements) |elem_id| {
                 const ty = try checkExpr(crate, elem_id, diagnostics, locals);
                 if (element_ty) |existing| {
-                    if (!typesEqual(crate, existing, ty)) {
+                    if (!typesCompatible(crate, existing, ty)) {
                         diagnostics.reportError(span, "array elements must have the same type");
                     }
                 } else {
@@ -290,7 +290,7 @@ fn checkExpr(
                     const value_ty = try checkExpr(crate, field_init.value, diagnostics, locals);
                     const expected_ty = findFieldType(struct_item, field_init.name);
                     if (expected_ty) |ty| {
-                        if (!typesEqual(crate, ty, value_ty)) {
+                        if (!typesCompatible(crate, ty, value_ty)) {
                             diagnostics.reportError(span, "struct field type mismatch");
                         }
                     } else {
@@ -326,7 +326,7 @@ fn checkStmt(
             if (let_stmt.value) |value_id| {
                 const value_ty = try checkExpr(crate, value_id, diagnostics, locals);
                 if (declared_ty) |*ty_id| {
-                    if (!typesEqual(crate, ty_id.*, value_ty)) {
+                    if (!typesCompatible(crate, ty_id.*, value_ty)) {
                         diagnostics.reportError(stmt.span, "mismatched types in let binding");
                     }
                 } else {
@@ -361,6 +361,20 @@ fn typesEqual(crate: *hir.Crate, lhs: hir.TypeId, rhs: hir.TypeId) bool {
     if (lhs == rhs) return true;
     if (lhs >= crate.types.items.len or rhs >= crate.types.items.len) return false;
     return std.meta.eql(crate.types.items[lhs].kind, crate.types.items[rhs].kind);
+}
+
+fn typesCompatible(crate: *hir.Crate, lhs: hir.TypeId, rhs: hir.TypeId) bool {
+    if (typesEqual(crate, lhs, rhs)) return true;
+    if (lhs >= crate.types.items.len or rhs >= crate.types.items.len) return false;
+
+    const lhs_kind = crate.types.items[lhs].kind;
+    const rhs_kind = crate.types.items[rhs].kind;
+
+    return switch (lhs_kind) {
+        .PrimInt => rhs_kind == .PrimInt,
+        .PrimFloat => rhs_kind == .PrimFloat,
+        else => false,
+    };
 }
 
 fn isBool(crate: *hir.Crate, ty: hir.TypeId) bool {
