@@ -572,17 +572,7 @@ const Parser = struct {
         var expr = self.parsePrimary() orelse return null;
         while (true) {
             if (self.match(.LParen)) {
-                var args = std.ArrayListUnmanaged(ast.Expr){};
-                if (!self.check(.RParen)) {
-                    while (true) {
-                        const arg = self.parseExpr() orelse break;
-                        args.append(self.arena, arg.*) catch {};
-                        if (!self.match(.Comma)) break;
-                    }
-                }
-                const rparen = self.expectConsume(.RParen, "expected ')' after call") orelse return null;
-                const span = Span{ .file_id = expr.span.file_id, .start = expr.span.start, .end = rparen.span.end };
-                expr = self.allocExpr(.{ .tag = .Call, .span = span, .data = .{ .Call = .{ .callee = expr, .args = args.toOwnedSlice(self.arena) catch @panic("out of memory") } } });
+                expr = self.finishCall(expr, "expected ')' after call") orelse return null;
                 continue;
             }
             if (self.match(.LBracket)) {
@@ -599,14 +589,31 @@ const Parser = struct {
                 continue;
             }
             if (self.match(.Bang)) {
-                // Macro call: treat as call with no args for now.
-                const span = Span{ .file_id = expr.span.file_id, .start = expr.span.start, .end = self.previous().span.end };
-                expr = self.allocExpr(.{ .tag = .Call, .span = span, .data = .{ .Call = .{ .callee = expr, .args = &[_]ast.Expr{} } } });
+                const bang = self.previous();
+                if (!self.match(.LParen)) {
+                    self.reportError(bang.span, "expected '(' after macro invocation");
+                    return null;
+                }
+                expr = self.finishCall(expr, "expected ')' after macro invocation") orelse return null;
                 continue;
             }
             break;
         }
         return expr;
+    }
+
+    fn finishCall(self: *Parser, callee: *ast.Expr, close_message: []const u8) ?*ast.Expr {
+        var args = std.ArrayListUnmanaged(ast.Expr){};
+        if (!self.check(.RParen)) {
+            while (true) {
+                const arg = self.parseExpr() orelse break;
+                args.append(self.arena, arg.*) catch {};
+                if (!self.match(.Comma)) break;
+            }
+        }
+        const rparen = self.expectConsume(.RParen, close_message) orelse return null;
+        const span = Span{ .file_id = callee.span.file_id, .start = callee.span.start, .end = rparen.span.end };
+        return self.allocExpr(.{ .tag = .Call, .span = span, .data = .{ .Call = .{ .callee = callee, .args = args.toOwnedSlice(self.arena) catch @panic("out of memory") } } });
     }
 
     fn parsePrimary(self: *Parser) ?*ast.Expr {
@@ -869,4 +876,36 @@ test "report error on missing semicolon" {
         fixture.arena.deinit();
     }
     try std.testing.expect(fixture.diagnostics.hasErrors());
+}
+
+test "parse macro calls with arguments" {
+    var fixture = try expectNoErrors("fn main() { println!(\"hello\"); println!(\"{} {}\", 1, 2); }");
+    defer {
+        fixture.diagnostics.deinit();
+        fixture.arena.deinit();
+    }
+
+    const stmts = fixture.crate.items[0].data.Fn.body.stmts;
+    try std.testing.expectEqual(@as(usize, 2), stmts.len);
+
+    const first_expr_stmt = stmts[0].data.Expr.expr;
+    try std.testing.expectEqual(ast.Expr.Tag.Call, first_expr_stmt.tag);
+    try std.testing.expectEqual(@as(usize, 1), first_expr_stmt.data.Call.args.len);
+    try std.testing.expectEqual(ast.Expr.Tag.Path, first_expr_stmt.data.Call.callee.*.tag);
+
+    const second_expr_stmt = stmts[1].data.Expr.expr;
+    try std.testing.expectEqual(ast.Expr.Tag.Call, second_expr_stmt.tag);
+    try std.testing.expectEqual(@as(usize, 3), second_expr_stmt.data.Call.args.len);
+    try std.testing.expectEqual(ast.Expr.Tag.Path, second_expr_stmt.data.Call.callee.*.tag);
+}
+
+test "diagnose macro invocation without parentheses" {
+    var fixture = try parseSource("fn main() { println! \"oops\"; }");
+    defer {
+        fixture.diagnostics.deinit();
+        fixture.arena.deinit();
+    }
+
+    try std.testing.expect(fixture.diagnostics.hasErrors());
+    try std.testing.expectEqualStrings("expected '(' after macro invocation", fixture.diagnostics.entries.items[0].message);
 }
