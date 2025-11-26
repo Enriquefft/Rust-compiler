@@ -6,6 +6,7 @@ pub fn emitAssembly(allocator: std.mem.Allocator, mc: *const machine.MachineCrat
     defer buffer.deinit(allocator);
 
     var writer = buffer.writer(allocator);
+    try writer.writeAll("; x86_64 assembly\n");
 
     for (mc.fns) |func| {
         try writer.print("global {s}\n{s}:\n", .{ func.name, func.name });
