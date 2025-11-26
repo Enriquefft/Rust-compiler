@@ -19,7 +19,10 @@ main:
 .Lmain_0:
     mov qword ptr [rbp-8], 6
     mov rax, [rbp-8]
-    idiv rax, 2
+    cqo
+    mov r11, 2
+    idiv r11
+    mov rax, rdx
     cmp rax, 0
     sete bl
     and rbx, 1
@@ -47,7 +50,11 @@ main:
     jmp .Lmain_6
 .Lmain_5:
     mov rdi, [rbp-32]
-    idiv rdi, 2
+    mov rax, rdi
+    cqo
+    mov r11, 2
+    idiv r11
+    mov rdi, rdx
     cmp rdi, 0
     sete r8b
     and r8, 1
@@ -79,7 +86,7 @@ main:
 .Lmain_9:
     mov r11, [rbp-32]
     mov [rbp-96], r11
-    add [rbp-96], 1
+    add qword ptr [rbp-96], 1
     mov r11, [rbp-96]
     mov [rbp-32], r11
     jmp .Lmain_4
