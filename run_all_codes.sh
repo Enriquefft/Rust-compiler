@@ -1,9 +1,6 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-# Run compilation and execution for all Rust subset samples in the codes/ directory.
-# Generates a Markdown report summarizing compile and run results.
-
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 codes_dir="$repo_root/codes"
 report_path="$repo_root/report.md"
@@ -13,7 +10,6 @@ if [ ! -d "$codes_dir" ]; then
     exit 1
 fi
 
-# Ensure zig is available before starting work.
 if ! command -v zig >/dev/null 2>&1; then
     echo "zig is required to build the compiler" >&2
     exit 1
@@ -32,43 +28,39 @@ if [ ! -x "$compiler_bin" ]; then
 fi
 
 tmp_dir="$(mktemp -d)"
-cleanup() {
-    rm -rf "$tmp_dir"
-}
+cleanup() { rm -rf "$tmp_dir"; }
 trap cleanup EXIT
 
-# Global counters
 success_compile=0
 success_run=0
 failed_both=0
 
 printf "# Codes compilation report\n\n" > "$report_path"
-printf "Generated: %s\\n\\n" "$(date --iso-8601=seconds)" >> "$report_path"
+printf "Generated: %s\n\n" "$(date --iso-8601=seconds)" >> "$report_path"
 
 status_line() {
     local label="$1"
     local status="$2"
     if [ "$status" -eq 0 ]; then
-        printf -- "- %s: success\\n" "$label" >> "$report_path"
+        printf -- "- %s: success\n" "$label" >> "$report_path"
     else
-        printf -- "- %s: failed\\n" "$label" >> "$report_path"
+        printf -- "- %s: failed\n" "$label" >> "$report_path"
     fi
 }
 
 compile_and_run() {
     local source_path="$1"
-    local base
-    base="$(basename -- "$source_path")"
+    local base; base="$(basename -- "$source_path")"
     local stem="${base%.rs}"
     local asm_path="$tmp_dir/${stem}.s"
 
-    echo "Processing ${base}..."
+    printf "Processing %s..." "$base"
+
     printf "## %s\n\n" "$base" >> "$report_path"
 
-    local compile_output
-    local compile_status=0
-    local run_output=""
-    local run_status=1  # default to failure; only set to 0 on successful run
+    local compile_output compile_status run_output run_status
+    compile_status=0
+    run_status=1
 
     if command -v timeout >/dev/null 2>&1; then
         if compile_output=$(timeout 30s "$compiler_bin" --emit=asm -o "$asm_path" "$source_path" 2>&1); then
@@ -85,10 +77,6 @@ compile_and_run() {
     fi
 
     status_line "Compile" "$compile_status"
-    if [ "$compile_status" -eq 124 ]; then
-        printf "Compilation terminated after timeout (30s).\n\n" >> "$report_path"
-    fi
-
     printf "#### Compile output\n\n``````\n%s\n``````\n\n" "$compile_output" >> "$report_path"
 
     if [ "$compile_status" -ne 0 ]; then
@@ -109,21 +97,23 @@ compile_and_run() {
         fi
 
         status_line "Run" "$run_status"
-        if [ "$run_status" -eq 124 ]; then
-            printf "Run terminated after timeout (10s).\n\n" >> "$report_path"
-        fi
         printf "#### Run output\n\n``````\n%s\n``````\n\n" "$run_output" >> "$report_path"
     fi
 
-    # Update global counters
     if [ "$compile_status" -eq 0 ]; then
         success_compile=$((success_compile + 1))
     fi
 
+    # Terminal annotation logic
     if [ "$compile_status" -eq 0 ] && [ "$run_status" -eq 0 ]; then
         success_run=$((success_run + 1))
+        echo " ✔️"
+    elif [ "$compile_status" -eq 0 ] && [ "$run_status" -ne 0 ]; then
+        failed_both=$((failed_both + 1))
+        echo " ⚠️"
     else
         failed_both=$((failed_both + 1))
+        echo " ❌"
     fi
 }
 
@@ -138,11 +128,9 @@ for code_path in "${code_files[@]}"; do
     compile_and_run "$code_path"
 done
 
-# Summary
 printf "## Summary\n\n" >> "$report_path"
 printf "- Successful compilations: %d\n" "$success_compile" >> "$report_path"
 printf "- Successful executions: %d\n" "$success_run" >> "$report_path"
 printf "- Failed overall (compile or run): %d\n" "$failed_both" >> "$report_path"
 
 echo "Report written to $report_path"
-echo "Summary: $success_compile successful compilations, $success_run successful executions, $failed_both failed overall."
