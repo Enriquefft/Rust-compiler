@@ -89,11 +89,69 @@ fn emitInst(writer: anytype, inst: machine.InstKind, fn_name: []const u8) !void 
             }
         },
         .Bin => |payload| {
-            try writer.print("    {s} ", .{binMnemonic(payload.op)});
-            try writeOperand(writer, payload.dst);
-            try writer.writeAll(", ");
-            try writeOperand(writer, payload.rhs);
-            try writer.writeByte('\n');
+            if (payload.op == .idiv or payload.op == .imod) {
+                // x86-64 idiv is a unary instruction that divides rdx:rax by the operand.
+                // Quotient goes to rax, remainder goes to rdx.
+                // The Bin instruction has dst containing the current dividend value.
+                // We need to:
+                // 1. Move dividend (dst) to rax if not already there
+                // 2. Sign-extend rax into rdx using cqo
+                // 3. Execute idiv with the divisor (rhs)
+                // 4. Move result (rax for idiv, rdx for imod) to dst if needed
+
+                // Move dividend to rax if not already there
+                if (payload.dst != .Phys or payload.dst.Phys != .rax) {
+                    try writer.writeAll("    mov rax, ");
+                    try writeOperand(writer, payload.dst);
+                    try writer.writeByte('\n');
+                }
+
+                // Sign-extend rax into rdx
+                try writer.writeAll("    cqo\n");
+
+                // For idiv, the divisor cannot be an immediate - must be in register or memory
+                if (payload.rhs == .Imm) {
+                    try writer.writeAll("    mov r11, ");
+                    try writeOperand(writer, payload.rhs);
+                    try writer.writeAll("\n    idiv r11\n");
+                } else {
+                    try writer.writeAll("    idiv ");
+                    try writeOperand(writer, payload.rhs);
+                    try writer.writeByte('\n');
+                }
+
+                // Move result to destination
+                if (payload.op == .imod) {
+                    // Remainder is in rdx
+                    if (payload.dst != .Phys or payload.dst.Phys != .rdx) {
+                        try writer.writeAll("    mov ");
+                        try writeOperand(writer, payload.dst);
+                        try writer.writeAll(", rdx\n");
+                    }
+                } else {
+                    // Quotient is in rax
+                    if (payload.dst != .Phys or payload.dst.Phys != .rax) {
+                        try writer.writeAll("    mov ");
+                        try writeOperand(writer, payload.dst);
+                        try writer.writeAll(", rax\n");
+                    }
+                }
+            } else {
+                // Handle memory + immediate case: need size qualifier
+                if (payload.dst == .Mem and payload.rhs == .Imm) {
+                    try writer.print("    {s} qword ptr ", .{binMnemonic(payload.op)});
+                    try writeMem(writer, payload.dst.Mem);
+                    try writer.writeAll(", ");
+                    try writeOperand(writer, payload.rhs);
+                    try writer.writeByte('\n');
+                } else {
+                    try writer.print("    {s} ", .{binMnemonic(payload.op)});
+                    try writeOperand(writer, payload.dst);
+                    try writer.writeAll(", ");
+                    try writeOperand(writer, payload.rhs);
+                    try writer.writeByte('\n');
+                }
+            }
         },
         .Unary => |payload| {
             try writer.print("    {s} ", .{unaryMnemonic(payload.op)});
@@ -147,7 +205,7 @@ fn binMnemonic(op: machine.BinOpcode) []const u8 {
         .sub => "sub",
         .imul => "imul",
         .idiv => "idiv",
-        .imod => "idiv", // remainder requires idiv; follow-up lowering can insert moves
+        .imod => "idiv", // remainder is obtained via idiv; result handling is in emitter
         .and_ => "and",
         .or_ => "or",
         .xor_ => "xor",
@@ -285,7 +343,7 @@ test "emitter emits rodata and extern call for printf" {
     var insts = try std.testing.allocator.alloc(machine.InstKind, 3);
     insts[0] = .{ .Mov = .{ .dst = .{ .Phys = .rdi }, .src = .{ .Label = data[0].label } } };
     insts[1] = .{ .Mov = .{ .dst = .{ .Phys = .rax }, .src = .{ .Imm = 0 } } };
-    insts[2] = .{ .Call = "printf" };
+    insts[2] = .{ .Call = .{ .Direct = "printf" } };
 
     var blocks = try std.testing.allocator.alloc(machine.MachineBlock, 1);
     blocks[0] = .{ .id = 0, .insts = insts };
