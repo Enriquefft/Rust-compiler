@@ -47,6 +47,8 @@ pub fn emitAssembly(allocator: std.mem.Allocator, mc: *const machine.MachineCrat
         try writer.writeAll("    leave\n    ret\n\n");
     }
 
+    try writer.writeAll(".section .note.GNU-stack,\"\",@progbits\n");
+
     return try buffer.toOwnedSlice(allocator);
 }
 
@@ -68,6 +70,12 @@ fn emitInst(writer: anytype, inst: machine.InstKind, fn_name: []const u8) !void 
                 try writer.writeAll("    lea ");
                 try writeOperand(writer, payload.dst);
                 try writer.print(", [rip + {s}]\n", .{payload.src.Label});
+            } else if (payload.dst == .Mem and payload.src == .Imm) {
+                try writer.writeAll("    mov qword ptr ");
+                try writeMem(writer, payload.dst.Mem);
+                try writer.writeAll(", ");
+                try writeOperand(writer, payload.src);
+                try writer.writeByte('\n');
             } else {
                 try writer.writeAll("    mov ");
                 try writeOperand(writer, payload.dst);
@@ -151,20 +159,24 @@ fn writeOperand(writer: anytype, op: machine.MOperand) !void {
         .Imm => |val| try writer.print("{d}", .{val}),
         .Label => |label| try writer.writeAll(label),
         .Mem => |mem| {
-            try writer.writeByte('[');
-            try writer.writeAll(physName(mem.base));
-            if (mem.offset != 0) {
-                const sign: u8 = if (mem.offset < 0) '-' else '+';
-                try writer.writeByte(sign);
-                const magnitude: i32 = if (mem.offset < 0) -mem.offset else mem.offset;
-                try writer.print("{d}", .{magnitude});
-            } else {
-                try writer.writeAll("+0");
-            }
-            try writer.writeByte(']');
+            try writeMem(writer, mem);
         },
         .VReg => |id| try writer.print("v{d}", .{id}),
     }
+}
+
+fn writeMem(writer: anytype, mem: machine.MemRef) !void {
+    try writer.writeByte('[');
+    try writer.writeAll(physName(mem.base));
+    if (mem.offset != 0) {
+        const sign: u8 = if (mem.offset < 0) '-' else '+';
+        try writer.writeByte(sign);
+        const magnitude: i32 = if (mem.offset < 0) -mem.offset else mem.offset;
+        try writer.print("{d}", .{magnitude});
+    } else {
+        try writer.writeAll("+0");
+    }
+    try writer.writeByte(']');
 }
 
 fn physName(reg: machine.PhysReg) []const u8 {

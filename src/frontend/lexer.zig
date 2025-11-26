@@ -586,6 +586,27 @@ test "lex samples from codes inputs" {
                 .RBrace,
             },
         },
+    .{
+            .file_name = "macros_test1.rs",
+            .expected_kinds = &[_]TokenKind{
+                .KwFn,
+                .Identifier,
+                .LParen,
+                .RParen,
+                .LBrace,
+                // println!("Hello, World!");
+                .Identifier,
+                .Bang,
+                .LParen,
+                .StringLit,
+                .RParen,
+                .Semicolon,
+
+                .RBrace,
+            }
+
+
+        },
     };
 
     for (fixtures) |fixture| {
