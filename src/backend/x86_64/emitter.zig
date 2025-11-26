@@ -8,6 +8,27 @@ pub fn emitAssembly(allocator: std.mem.Allocator, mc: *const machine.MachineCrat
     var writer = buffer.writer(allocator);
     try writer.writeAll("; x86_64 assembly\n");
 
+    if (mc.externs.len > 0) {
+        for (mc.externs) |name| {
+            try writer.print("extern {s}\n", .{name});
+        }
+        try writer.writeByte('\n');
+    }
+
+    if (mc.rodata.len > 0) {
+        try writer.writeAll("section .rodata\n");
+        for (mc.rodata) |item| {
+            try writer.print("{s}:\n    db ", .{item.label});
+            for (item.bytes, 0..) |byte, idx| {
+                if (idx != 0) try writer.writeAll(", ");
+                try writer.print("{d}", .{byte});
+            }
+            if (item.bytes.len > 0) try writer.writeAll(", ");
+            try writer.writeAll("0\n");
+        }
+        try writer.writeByte('\n');
+    }
+
     for (mc.fns) |func| {
         try writer.print("global {s}\n{s}:\n", .{ func.name, func.name });
         try emitPrologue(&writer, func.stack_size);
@@ -114,6 +135,7 @@ fn writeOperand(writer: anytype, op: machine.MOperand) !void {
     switch (op) {
         .Phys => |reg| try writer.writeAll(physName(reg)),
         .Imm => |val| try writer.print("{d}", .{val}),
+        .Label => |label| try writer.writeAll(label),
         .Mem => |mem| {
             try writer.writeByte('[');
             try writer.writeAll(physName(mem.base));
@@ -165,7 +187,10 @@ test "emitter streams operands directly to writer" {
         .vreg_count = 2,
     };
 
-    var mc = machine.MachineCrate{ .allocator = std.testing.allocator, .fns = funcs };
+    const empty_data = try std.testing.allocator.alloc(machine.DataItem, 0);
+    const empty_externs = try std.testing.allocator.alloc([]const u8, 0);
+
+    var mc = machine.MachineCrate{ .allocator = std.testing.allocator, .fns = funcs, .rodata = empty_data, .externs = empty_externs };
     defer mc.deinit();
 
     const assembly = try emitAssembly(std.testing.allocator, &mc);
@@ -180,6 +205,60 @@ test "emitter streams operands directly to writer" {
         "    mov rax, 42\n" ++
         "    cmp [rbp-16], 0\n" ++
         "    add v1, [rbp+8]\n" ++
+        "    leave\n    ret\n\n";
+
+    try std.testing.expectEqualStrings(expected, assembly);
+}
+
+test "emitter emits rodata and extern call for printf" {
+    var data = try std.testing.allocator.alloc(machine.DataItem, 1);
+    data[0] = .{
+        .label = try std.testing.allocator.dupe(u8, ".Lstr0"),
+        .bytes = try std.testing.allocator.dupe(u8, "hello\n"),
+    };
+
+    var insts = try std.testing.allocator.alloc(machine.InstKind, 3);
+    insts[0] = .{ .Mov = .{ .dst = .{ .Phys = .rdi }, .src = .{ .Label = data[0].label } } };
+    insts[1] = .{ .Mov = .{ .dst = .{ .Phys = .rax }, .src = .{ .Imm = 0 } } };
+    insts[2] = .{ .Call = "printf" };
+
+    var blocks = try std.testing.allocator.alloc(machine.MachineBlock, 1);
+    blocks[0] = .{ .id = 0, .insts = insts };
+
+    var funcs = try std.testing.allocator.alloc(machine.MachineFn, 1);
+    funcs[0] = .{
+        .name = "println",
+        .blocks = blocks,
+        .stack_size = 0,
+        .vreg_count = 0,
+    };
+
+    var externs = try std.testing.allocator.alloc([]const u8, 1);
+    externs[0] = try std.testing.allocator.dupe(u8, "printf");
+
+    var mc = machine.MachineCrate{
+        .allocator = std.testing.allocator,
+        .fns = funcs,
+        .rodata = data,
+        .externs = externs,
+    };
+    defer mc.deinit();
+
+    const assembly = try emitAssembly(std.testing.allocator, &mc);
+    defer std.testing.allocator.free(assembly);
+
+    const expected = "; x86_64 assembly\n" ++
+        "extern printf\n\n" ++
+        "section .rodata\n" ++
+        ".Lstr0:\n" ++
+        "    db 104, 101, 108, 108, 111, 10, 0\n\n" ++
+        "global println\n" ++
+        "println:\n" ++
+        "    push rbp\n    mov rbp, rsp\n" ++
+        ".Lprintln_0:\n" ++
+        "    mov rdi, .Lstr0\n" ++
+        "    mov rax, 0\n" ++
+        "    call printf\n" ++
         "    leave\n    ret\n\n";
 
     try std.testing.expectEqualStrings(expected, assembly);
