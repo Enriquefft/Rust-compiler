@@ -9,11 +9,13 @@ test "all modules" {
     _ = @import("frontend/tokens.zig");
     _ = @import("diag/diagnostics.zig");
     _ = @import("diag/source_map.zig");
+    _ = @import("backend/backend.zig");
     _ = @import("hir/hir.zig");
     _ = @import("hir/name_res.zig");
     _ = @import("hir/typecheck.zig");
     _ = @import("mir/mir.zig");
     _ = @import("mir/lower.zig");
+    _ = @import("mir/passes/passes.zig");
     _ = @import("parser_tests.zig");
     _ = @import("main.zig");
 }

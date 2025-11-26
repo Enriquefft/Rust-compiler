@@ -9,6 +9,8 @@ const ast_printer = @import("frontend/ast_printer.zig");
 const hir = @import("hir/hir.zig");
 const mir = @import("mir/mir.zig");
 const mir_lower = @import("mir/lower.zig");
+const mir_passes = @import("mir/passes/passes.zig");
+const backend = @import("backend/backend.zig");
 
 pub const CompileStatus = enum {
     success,
@@ -23,6 +25,7 @@ pub const CompileResult = struct {
     ast: ast.Crate,
     hir: hir.Crate,
     mir: mir.MirCrate,
+    backend_artifact: ?backend.Artifact = null,
 
     pub fn deinit(self: *CompileResult) void {
         self.diagnostics.deinit();
@@ -30,6 +33,9 @@ pub const CompileResult = struct {
         self.ast_arena.deinit();
         self.hir.deinit();
         self.mir.deinit();
+        if (self.backend_artifact) |*artifact| {
+            artifact.deinit();
+        }
     }
 };
 
@@ -83,7 +89,14 @@ pub fn compileFile(options: CompileOptions) !CompileResult {
         mir_crate = mir.MirCrate.init(options.allocator);
     }
 
-    // TODO: MIR optimization passes and backend code generation.
+    if (!diagnostics.hasErrors()) {
+        try mir_passes.runAll(options.allocator, &mir_crate, &diagnostics);
+    }
+
+    var backend_artifact: ?backend.Artifact = null;
+    if (!diagnostics.hasErrors()) {
+        backend_artifact = try backend.codegen(&mir_crate, options.allocator, &diagnostics);
+    }
 
     const status: CompileStatus = if (diagnostics.hasErrors()) .errors else .success;
 
@@ -92,6 +105,9 @@ pub fn compileFile(options: CompileOptions) !CompileResult {
     }
 
     if (status == .errors and options.exit_on_error) {
+        if (backend_artifact) |*artifact| {
+            artifact.deinit();
+        }
         diagnostics.deinit();
         sm.deinit();
         ast_arena.deinit();
@@ -108,6 +124,7 @@ pub fn compileFile(options: CompileOptions) !CompileResult {
         .ast = crate,
         .hir = hir_crate,
         .mir = mir_crate,
+        .backend_artifact = backend_artifact,
     };
 }
 
@@ -138,6 +155,9 @@ test "compileFile succeeds on tokenizable source" {
     try std.testing.expectEqual(CompileStatus.success, result.status);
     try std.testing.expect(!result.diagnostics.hasErrors());
     try std.testing.expect(result.mir.fns.items.len > 0);
+    try std.testing.expect(result.backend_artifact != null);
+    const artifact = result.backend_artifact.?;
+    try std.testing.expect(artifact.assembly.len > 0);
 }
 
 test "compileFile records diagnostics on lexer errors" {
