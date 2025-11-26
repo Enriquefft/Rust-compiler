@@ -138,7 +138,54 @@ fn resolveExpr(
             }
             if (block.tail) |tail| try resolveExpr(crate, tail, module_symbols, locals, next_local, diagnostics);
         },
-        else => {},
+        .Binary => |binary| {
+            try resolveExpr(crate, binary.lhs, module_symbols, locals, next_local, diagnostics);
+            try resolveExpr(crate, binary.rhs, module_symbols, locals, next_local, diagnostics);
+        },
+        .Unary => |unary| try resolveExpr(crate, unary.expr, module_symbols, locals, next_local, diagnostics),
+        .Call => |call| {
+            try resolveExpr(crate, call.callee, module_symbols, locals, next_local, diagnostics);
+            for (call.args) |arg| {
+                try resolveExpr(crate, arg, module_symbols, locals, next_local, diagnostics);
+            }
+        },
+        .Assignment => |assign| {
+            try resolveExpr(crate, assign.target, module_symbols, locals, next_local, diagnostics);
+            try resolveExpr(crate, assign.value, module_symbols, locals, next_local, diagnostics);
+        },
+        .Return => |maybe_val| if (maybe_val) |val| try resolveExpr(crate, val, module_symbols, locals, next_local, diagnostics),
+        .If => |if_expr| {
+            try resolveExpr(crate, if_expr.cond, module_symbols, locals, next_local, diagnostics);
+            try resolveExpr(crate, if_expr.then_branch, module_symbols, locals, next_local, diagnostics);
+            if (if_expr.else_branch) |else_branch| {
+                try resolveExpr(crate, else_branch, module_symbols, locals, next_local, diagnostics);
+            }
+        },
+        .While => |while_expr| {
+            try resolveExpr(crate, while_expr.cond, module_symbols, locals, next_local, diagnostics);
+            try resolveExpr(crate, while_expr.body, module_symbols, locals, next_local, diagnostics);
+        },
+        .Range => |range| {
+            try resolveExpr(crate, range.start, module_symbols, locals, next_local, diagnostics);
+            try resolveExpr(crate, range.end, module_symbols, locals, next_local, diagnostics);
+        },
+        .Cast => |cast| try resolveExpr(crate, cast.expr, module_symbols, locals, next_local, diagnostics),
+        .Index => |index| {
+            try resolveExpr(crate, index.target, module_symbols, locals, next_local, diagnostics);
+            try resolveExpr(crate, index.index, module_symbols, locals, next_local, diagnostics);
+        },
+        .Field => |field| try resolveExpr(crate, field.target, module_symbols, locals, next_local, diagnostics),
+        .Array => |elements| {
+            for (elements) |elem| {
+                try resolveExpr(crate, elem, module_symbols, locals, next_local, diagnostics);
+            }
+        },
+        .StructInit => |init| {
+            for (init.fields) |field| {
+                try resolveExpr(crate, field.value, module_symbols, locals, next_local, diagnostics);
+            }
+        },
+        .LocalRef, .GlobalRef, .ConstInt, .ConstFloat, .ConstBool, .ConstChar, .ConstString, .Unknown => {},
     }
 }
 
