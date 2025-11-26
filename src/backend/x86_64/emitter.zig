@@ -66,7 +66,11 @@ fn emitPrologue(writer: anytype, stack_size: usize) !void {
 fn emitInst(writer: anytype, inst: machine.InstKind, fn_name: []const u8) !void {
     switch (inst) {
         .Mov => |payload| {
-            if (payload.src == .Label) {
+            if (payload.src == .Label and payload.dst == .Mem) {
+                try writer.writeAll("    mov qword ptr ");
+                try writeMem(writer, payload.dst.Mem);
+                try writer.print(", OFFSET FLAT:{s}\n", .{payload.src.Label});
+            } else if (payload.src == .Label) {
                 try writer.writeAll("    lea ");
                 try writeOperand(writer, payload.dst);
                 try writer.print(", [rip + {s}]\n", .{payload.src.Label});
@@ -125,7 +129,14 @@ fn emitInst(writer: anytype, inst: machine.InstKind, fn_name: []const u8) !void 
         },
         .Jmp => |target| try writer.print("    jmp .L{s}_{d}\n", .{ fn_name, target }),
         .Jcc => |payload| try writer.print("    j{s} .L{s}_{d}\n", .{ condSuffix(payload.cond), fn_name, payload.target }),
-        .Call => |name| try writer.print("    call {s}\n", .{name}),
+        .Call => |target| switch (target) {
+            .Direct => |name| try writer.print("    call {s}\n", .{name}),
+            .Indirect => |op| {
+                try writer.writeAll("    call ");
+                try writeOperand(writer, op);
+                try writer.writeByte('\n');
+            },
+        },
         .Ret => |_| {},
     }
 }

@@ -1,73 +1,42 @@
 # Codes compilation report
 
-Generated: 2025-11-26T14:15:44-05:00
+Generated: 2025-11-26T17:29:58-05:00
 
 ## closures_test1.rs
 
-- Compile: failed
+- Compile: success
 #### Compile output
 
 
-error: /home/hybridz/Projects/Rust-compiler/codes/closures_test1.rs:2:46-2:50: argument count does not match function type
-fn apply(f: fn(i32) -> i32, x: i32) -> i32 { f(x) }
-                                             ^^^^
-error: /home/hybridz/Projects/Rust-compiler/codes/closures_test1.rs:2:1-2:52: function return type does not match body
-fn apply(f: fn(i32) -> i32, x: i32) -> i32 { f(x) }
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-error: /home/hybridz/Projects/Rust-compiler/codes/closures_test1.rs:5:28-5:33: arithmetic operands must have the same type
-    let add_one = |n: i32| n + 1;
-                           ^^^^^
-error: /home/hybridz/Projects/Rust-compiler/codes/closures_test1.rs:6:52-6:57: arithmetic operands must have the same type
-    let double_then_add = |n: i32| { let doubled = n * 2; doubled + 3 };
-                                                   ^^^^^
-error: /home/hybridz/Projects/Rust-compiler/codes/closures_test1.rs:6:59-6:70: arithmetic operands must have the same type
-    let double_then_add = |n: i32| { let doubled = n * 2; doubled + 3 };
-                                                          ^^^^^^^^^^^
-error: /home/hybridz/Projects/Rust-compiler/codes/closures_test1.rs:7:23-7:40: argument type does not match parameter
-    println!("{} {}", apply(add_one, 5), double_then_add(4));
-                      ^^^^^^^^^^^^^^^^^
-error: /home/hybridz/Projects/Rust-compiler/codes/closures_test1.rs:7:42-7:60: argument type does not match parameter
-    println!("{} {}", apply(add_one, 5), double_then_add(4));
-                                         ^^^^^^^^^^^^^^^^^^
+Function call detected with callee type .{ .params = { 1 }, .ret = 2 }
+Function call detected with callee type .{ .params = { 0, 3 }, .ret = 4 }
+Function call detected with callee type .{ .params = { 14 }, .ret = 14 }
 
 
+- Run: success
 #### Run output
 
-Skipped because compilation failed.
+
+6 11
+
 
 ## closures_test2.rs
 
-- Compile: failed
+- Compile: success
 #### Compile output
 
 
-error: /home/hybridz/Projects/Rust-compiler/codes/closures_test2.rs:3:5-3:12: argument count does not match function type
-    f(x, y)
-    ^^^^^^^
-error: /home/hybridz/Projects/Rust-compiler/codes/closures_test2.rs:2:1-4:2: function return type does not match body
-fn operate(f: fn(i32, i32) -> i32, x: i32, y: i32) -> i32 {
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    f(x, y)
-^^^^^^^^^^^
-}
-^
-error: /home/hybridz/Projects/Rust-compiler/codes/closures_test2.rs:7:32-7:37: arithmetic operands must be numeric
-    let sum = |a: i32, b: i32| a + b;
-                               ^^^^^
-error: /home/hybridz/Projects/Rust-compiler/codes/closures_test2.rs:8:38-8:43: arithmetic operands must be numeric
-    let product = |a: i32, b: i32| { a * b };
-                                     ^^^^^
-error: /home/hybridz/Projects/Rust-compiler/codes/closures_test2.rs:9:23-9:41: argument type does not match parameter
-    println!("{} {}", operate(sum, 2, 4), operate(product, 3, 5));
-                      ^^^^^^^^^^^^^^^^^^
-error: /home/hybridz/Projects/Rust-compiler/codes/closures_test2.rs:9:43-9:65: argument type does not match parameter
-    println!("{} {}", operate(sum, 2, 4), operate(product, 3, 5));
-                                          ^^^^^^^^^^^^^^^^^^^^^^
+Function call detected with callee type .{ .params = { 1, 2 }, .ret = 3 }
+Function call detected with callee type .{ .params = { 0, 4, 5 }, .ret = 6 }
+Function call detected with callee type .{ .params = { 0, 4, 5 }, .ret = 6 }
 
 
+- Run: success
 #### Run output
 
-Skipped because compilation failed.
+
+6 15
+
 
 ## conditionals_and_ranges_test1.rs
 
@@ -82,15 +51,10 @@ Skipped because compilation failed.
 #### Run output
 
 
-/tmp/tmp.6gPpFt05sp/conditionals_and_ranges_test1.s:22:5: error: invalid operand for instruction
-    idiv rax, 2
-    ^
-/tmp/tmp.6gPpFt05sp/conditionals_and_ranges_test1.s:50:5: error: invalid operand for instruction
-    idiv rdi, 2
-    ^
-/tmp/tmp.6gPpFt05sp/conditionals_and_ranges_test1.s:75:9: error: ambiguous operand size for instruction 'add'
-    add [rbp-40], 1
-        ^~~~~~~
+/tmp/tmp.zAGhZzhAGo/conditionals_and_ranges_test1.s: Assembler messages:
+/tmp/tmp.zAGhZzhAGo/conditionals_and_ranges_test1.s:22: Error: operand type mismatch for `idiv'
+/tmp/tmp.zAGhZzhAGo/conditionals_and_ranges_test1.s:50: Error: operand type mismatch for `idiv'
+/tmp/tmp.zAGhZzhAGo/conditionals_and_ranges_test1.s:82: Error: ambiguous operand size for `add'
 
 
 ## conditionals_and_ranges_test2.rs
@@ -129,7 +93,7 @@ Skipped because compilation failed.
 #### Compile output
 
 
-
+Function call detected with callee type .{ .params = { 0 }, .ret = 1 }
 
 
 - Run: success
@@ -190,19 +154,15 @@ Skipped because compilation failed.
 #### Compile output
 
 
+Function call detected with callee type .{ .params = { 0 }, .ret = 1 }
+Function call detected with callee type .{ .params = { 0 }, .ret = 1 }
 
 
-
-- Run: failed
+- Run: success
 #### Run output
 
 
-/tmp/tmp.6gPpFt05sp/core_language_test2.s:38:16: error: Expected 'PTR' or 'ptr' token!
-    call double
-               ^
-/tmp/tmp.6gPpFt05sp/core_language_test2.s:42:16: error: Expected 'PTR' or 'ptr' token!
-    call double
-               ^
+8 14
 
 
 ## dynamic_data_test1.rs
@@ -274,18 +234,8 @@ Skipped because compilation failed.
 #### Compile output
 
 
-error: /home/hybridz/Projects/Rust-compiler/codes/functions_and_methods_test1.rs:3:46-3:52: cannot dereference non-pointer type
-fn scale(value: &i32, factor: &i32) -> i32 { *value * *factor }
-                                             ^^^^^^
-error: /home/hybridz/Projects/Rust-compiler/codes/functions_and_methods_test1.rs:3:55-3:62: cannot dereference non-pointer type
-fn scale(value: &i32, factor: &i32) -> i32 { *value * *factor }
-                                                      ^^^^^^^
-error: /home/hybridz/Projects/Rust-compiler/codes/functions_and_methods_test1.rs:3:46-3:62: arithmetic operands must be numeric
-fn scale(value: &i32, factor: &i32) -> i32 { *value * *factor }
-                                             ^^^^^^^^^^^^^^^^
-error: /home/hybridz/Projects/Rust-compiler/codes/functions_and_methods_test1.rs:3:1-3:64: function return type does not match body
-fn scale(value: &i32, factor: &i32) -> i32 { *value * *factor }
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Function call detected with callee type .{ .params = { 0, 1 }, .ret = 2 }
+Function call detected with callee type .{ .params = { 7, 9 }, .ret = 11 }
 error: /home/hybridz/Projects/Rust-compiler/codes/functions_and_methods_test1.rs:8:27-8:48: argument type does not match parameter
     let total = add(base, scale(&base, &factor));
                           ^^^^^^^^^^^^^^^^^^^^^
@@ -415,7 +365,7 @@ hello
 #### Compile output
 
 
-
+Function call detected with callee type .{ .params = { 0, 1 }, .ret = 2 }
 
 
 - Run: success
@@ -447,7 +397,7 @@ hello from println!
 #### Compile output
 
 
-
+Function call detected with callee type .{ .params = { 0, 1 }, .ret = 2 }
 
 
 - Run: success

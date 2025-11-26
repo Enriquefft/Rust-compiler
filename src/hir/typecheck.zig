@@ -201,23 +201,38 @@ fn checkExpr(
                 if (callee_ty < crate.types.items.len) {
                     switch (crate.types.items[callee_ty].kind) {
                         .Fn => |fn_ty| {
-                            std.debug.print("Function call detected with callee type {any}\n", .{ fn_ty });
-                            param_types = fn_ty.params;
+                            std.debug.print("Function call detected with callee type {any}\n", .{fn_ty});
+                            if (fn_ty.params.len == 0 and call.args.len > 0) {
+                                const inferred = try crate.allocator().alloc(hir.TypeId, call.args.len);
+                                for (inferred) |*slot| {
+                                    slot.* = try ensureType(crate, .Unknown);
+                                }
+                                param_types = inferred;
+                            } else {
+                                param_types = fn_ty.params;
+                            }
                             ret_ty = fn_ty.ret;
                         },
                         else => {},
                     }
                 }
 
-                if (param_types.len != call.args.len) {
+                if (param_types.len != 0 and param_types.len != call.args.len) {
                     std.debug.print("Expected {d} args, got {d}\n", .{ param_types.len, call.args.len });
                     diagnostics.reportError(span, "argument count does not match function type");
                 }
 
                 for (call.args, 0..) |arg_id, idx| {
                     const arg_ty = try checkExpr(crate, arg_id, diagnostics, locals);
-                    if (idx < param_types.len and !typesCompatible(crate, arg_ty, param_types[idx])) {
-                        diagnostics.reportError(span, "argument type does not match parameter");
+                    if (idx < param_types.len) {
+                        const expected = param_types[idx];
+                        const expected_kind = if (expected < crate.types.items.len)
+                            crate.types.items[expected].kind
+                        else
+                            .Unknown;
+                        if (expected_kind != .Fn and !typesCompatible(crate, arg_ty, expected)) {
+                            diagnostics.reportError(span, "argument type does not match parameter");
+                        }
                     }
                 }
                 expr.ty = ret_ty;
@@ -353,7 +368,8 @@ fn checkExpr(
 
             var param_types = try crate.allocator().alloc(hir.TypeId, lambda.params.len);
             for (lambda.params, 0..) |param, idx| {
-                const ty_id = try ensureType(crate, .Unknown);
+                const annotated = if (idx < lambda.param_types.len) lambda.param_types[idx] else null;
+                const ty_id = annotated orelse try ensureType(crate, .Unknown);
                 param_types[idx] = ty_id;
                 try lambda_locals.put(param.id, ty_id);
             }
@@ -443,12 +459,18 @@ fn typesCompatible(crate: *hir.Crate, lhs: hir.TypeId, rhs: hir.TypeId) bool {
     if (typesEqual(crate, lhs, rhs)) return true;
     if (lhs >= crate.types.items.len or rhs >= crate.types.items.len) return false;
 
+    if (isUnknown(crate, lhs) or isUnknown(crate, rhs)) return true;
+
     const lhs_kind = crate.types.items[lhs].kind;
     const rhs_kind = crate.types.items[rhs].kind;
 
     return switch (lhs_kind) {
         .PrimInt => rhs_kind == .PrimInt,
         .PrimFloat => rhs_kind == .PrimFloat,
+        .Fn => switch (rhs_kind) {
+            .Fn => true,
+            else => false,
+        },
         else => false,
     };
 }

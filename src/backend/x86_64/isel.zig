@@ -186,9 +186,12 @@ fn lowerInst(
             try insts.append(ctx.allocator, .{ .Mov = .{ .dst = mem, .src = src } });
         },
         .Call => |payload| {
-            const target_name = resolveCallTarget(payload.target, ctx.mir_crate, ctx.diagnostics) catch |err| return err;
+            const target = resolveCallTarget(ctx, payload.target, vreg_count) catch |err| return err;
 
-            const is_varargs = std.mem.eql(u8, target_name, "printf");
+            const is_varargs = switch (target) {
+                .Direct => |name| std.mem.eql(u8, name, "printf"),
+                .Indirect => false,
+            };
             if (is_varargs) ctx.uses_printf = true;
 
             const arg_registers = [_]machine.PhysReg{ .rdi, .rsi, .rdx, .rcx, .r8, .r9 };
@@ -202,7 +205,10 @@ fn lowerInst(
                 try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .Phys = .rax }, .src = .{ .Imm = 0 } } });
             }
 
-            try insts.append(ctx.allocator, .{ .Call = target_name });
+            try insts.append(ctx.allocator, .{ .Call = switch (target) {
+                .Direct => |name| .{ .Direct = name },
+                .Indirect => |op| .{ .Indirect = op },
+            } });
 
             if (dest_vreg) |dst| {
                 try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .VReg = dst }, .src = .{ .Phys = .rax } } });
@@ -339,7 +345,14 @@ fn lowerSimpleOperand(ctx: *LowerContext, op: mir.Operand, vreg_count: ?*machine
         .ImmBool => |v| .{ .Imm = if (v) 1 else 0 },
         .ImmFloat => |v| .{ .Imm = @bitCast(v) },
         .ImmString => |s| .{ .Label = try ctx.data.internString(s) },
-        .Global => |id| .{ .Imm = @intCast(id) },
+        .Global => |id| blk: {
+            if (id >= ctx.mir_crate.fns.items.len) {
+                ctx.diagnostics.reportError(zero_span, "operand refers to unknown function id");
+                return error.Unsupported;
+            }
+            break :blk .{ .Label = ctx.mir_crate.fns.items[id].name };
+        },
+        .Symbol => |name| .{ .Label = name },
         else => {
             ctx.diagnostics.reportError(zero_span, "unsupported operand kind for x86_64 lowering");
             return error.Unsupported;
@@ -347,20 +360,19 @@ fn lowerSimpleOperand(ctx: *LowerContext, op: mir.Operand, vreg_count: ?*machine
     };
 }
 
-fn resolveCallTarget(target: mir.Operand, mir_crate: *const mir.MirCrate, diagnostics: *diag.Diagnostics) LowerError![]const u8 {
+const CallTarget = union(enum) { Direct: []const u8, Indirect: machine.MOperand };
+
+fn resolveCallTarget(ctx: *LowerContext, target: mir.Operand, vreg_count: *machine.VReg) LowerError!CallTarget {
     return switch (target) {
         .Global => |id| blk: {
-            if (id >= mir_crate.fns.items.len) {
-                diagnostics.reportError(zero_span, "call target refers to unknown function id");
+            if (id >= ctx.mir_crate.fns.items.len) {
+                ctx.diagnostics.reportError(zero_span, "call target refers to unknown function id");
                 return error.Unsupported;
             }
-            break :blk mir_crate.fns.items[id].name;
+            break :blk .{ .Direct = ctx.mir_crate.fns.items[id].name };
         },
-        .Symbol => |name| name,
-        else => {
-            diagnostics.reportError(zero_span, "only direct function calls are supported in x86_64 lowering");
-            return error.Unsupported;
-        },
+        .Symbol => |name| .{ .Direct = name },
+        else => .{ .Indirect = try lowerOperand(ctx, target, vreg_count) },
     };
 }
 

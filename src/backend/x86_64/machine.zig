@@ -52,7 +52,7 @@ pub const InstKind = union(enum) {
     Test: struct { operand: MOperand },
     Jmp: u32,
     Jcc: struct { cond: Condition, target: u32 },
-    Call: []const u8,
+    Call: union(enum) { Direct: []const u8, Indirect: MOperand },
     Ret: ?MOperand,
 };
 

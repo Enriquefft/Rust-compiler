@@ -115,7 +115,17 @@ fn rewriteOperands(
             const op = try materializeRead(payload.operand, map, available, spill_scratch, phys_used, spill_slots, diagnostics);
             try rewritten.append(allocator, .{ .Test = .{ .operand = op } });
         },
-        .Jmp, .Jcc, .Call, .Ret => try rewritten.append(allocator, inst.*),
+        .Call => |*payload| {
+            try spillMappedRegisters(map, rewritten, allocator, spill_slots);
+            switch (payload.*) {
+                .Direct => try rewritten.append(allocator, inst.*),
+                .Indirect => |op| {
+                    const lowered = try materializeRead(op, map, available, spill_scratch, phys_used, spill_slots, diagnostics);
+                    try rewritten.append(allocator, .{ .Call = .{ .Indirect = lowered } });
+                },
+            }
+        },
+        .Jmp, .Jcc, .Ret => try rewritten.append(allocator, inst.*),
     }
 }
 
@@ -147,6 +157,26 @@ fn assign(
     const loc = Location{ .spill = offset };
     try map.put(vreg, loc);
     return loc;
+}
+
+fn spillMappedRegisters(
+    map: *std.AutoHashMap(machine.VReg, Location),
+    rewritten: *std.ArrayListUnmanaged(machine.InstKind),
+    allocator: std.mem.Allocator,
+    spill_slots: *usize,
+) AllocError!void {
+    var it = map.iterator();
+    while (it.next()) |entry| {
+        switch (entry.value_ptr.*) {
+            .phys => |reg| {
+                spill_slots.* += 1;
+                const offset: i32 = -@as(i32, @intCast(spill_slots.*)) * @as(i32, @intCast(@sizeOf(i64)));
+                entry.value_ptr.* = .{ .spill = offset };
+                try rewritten.append(allocator, .{ .Mov = .{ .dst = .{ .Mem = .{ .base = .rbp, .offset = offset } }, .src = .{ .Phys = reg } } });
+            },
+            .spill => {},
+        }
+    }
 }
 
 fn materializeRead(

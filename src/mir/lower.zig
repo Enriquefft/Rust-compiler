@@ -25,6 +25,7 @@ pub fn lowerFromHir(allocator: std.mem.Allocator, hir_crate: *const hir.Crate, d
 fn lowerFunction(crate: *mir.MirCrate, func: hir.Function, hir_crate: *const hir.Crate, diagnostics: *diag.Diagnostics) LowerError!mir.MirFn {
     var builder = FunctionBuilder{
         .allocator = crate.allocator(),
+        .crate = crate,
         .hir_crate = hir_crate,
         .diagnostics = diagnostics,
         .mir_fn = mir.MirFn{
@@ -58,6 +59,7 @@ fn lowerFunction(crate: *mir.MirCrate, func: hir.Function, hir_crate: *const hir
 
 const FunctionBuilder = struct {
     allocator: std.mem.Allocator,
+    crate: *mir.MirCrate,
     hir_crate: *const hir.Crate,
     diagnostics: *diag.Diagnostics,
     mir_fn: mir.MirFn,
@@ -198,10 +200,6 @@ const FunctionBuilder = struct {
                     self.diagnostics.reportError(expr.span, "missing callee while lowering call");
                     return null;
                 };
-                if (callee_op != .Global) {
-                    self.diagnostics.reportError(expr.span, "only direct function calls are supported in MIR lowering");
-                    return null;
-                }
                 var args = std.ArrayListUnmanaged(mir.Operand){};
                 defer args.deinit(self.allocator);
                 for (call.args) |arg_id| {
@@ -391,7 +389,32 @@ const FunctionBuilder = struct {
                 _ = try self.emitInst(.{ .ty = mapType(self.hir_crate, expr.ty, expr.span, self.diagnostics), .dest = tmp, .kind = .{ .StructInit = .{ .fields = try fields.toOwnedSlice(self.allocator) } } });
                 return .{ .Temp = tmp };
             },
-            .Path, .MethodCall, .Lambda, .UnresolvedIdent, .Unknown => {
+            .Lambda => |lambda| {
+                const fn_id: mir.Operand = blk: {
+                    const fn_index: mir.LocalId = @intCast(self.crate.fns.items.len);
+                    const name = try std.fmt.allocPrint(self.allocator, "lambda${d}", .{fn_index});
+                    var params = try self.allocator.alloc(hir.LocalId, lambda.params.len);
+                    for (lambda.params, 0..) |param, idx| {
+                        params[idx] = param.id;
+                    }
+
+                    const fn_def: hir.Function = .{
+                        .def_id = 0,
+                        .name = name,
+                        .params = params,
+                        .param_types = lambda.param_types,
+                        .return_type = self.hir_crate.exprs.items[lambda.body].ty,
+                        .body = lambda.body,
+                        .span = expr.span,
+                    };
+                    const lowered = try lowerFunction(self.crate, fn_def, self.hir_crate, self.diagnostics);
+                    try self.crate.fns.append(self.crate.allocator(), lowered);
+                    break :blk .{ .Global = fn_index };
+                };
+
+                return fn_id;
+            },
+            .Path, .MethodCall, .UnresolvedIdent, .Unknown => {
                 self.diagnostics.reportError(expr.span, "expression could not be lowered to MIR");
                 return null;
             },
@@ -608,9 +631,9 @@ fn mapType(hir_crate: *const hir.Crate, ty_id: ?hir.TypeId, span: hir.Span, diag
             .String => .String,
             .Str => .Str,
             .Array => .Array,
-            .Pointer, .Ref => .Pointer,
+            .Pointer, .Ref, .Fn => .Pointer,
             .Struct => .Struct,
-            .Fn, .Path => blk: {
+            .Path => blk: {
                 diagnostics.reportWarning(span, "type not supported in MIR lowering");
                 break :blk null;
             },
@@ -693,7 +716,7 @@ test "lower function with simple block" {
 
     try crate.patterns.append(crate.allocator(), .{ .id = 0, .kind = .{ .Identifier = "x" }, .span = span });
 
-    try crate.items.append(crate.allocator(), .{ .id = 0, .kind = .{ .Function = .{ .def_id = 0, .name = "main", .params = &[_]hir.LocalId{}, .param_types = &[_]hir.TypeId{},.return_type = i64_ty, .body = block_expr_id, .span = span } }, .span = span });
+    try crate.items.append(crate.allocator(), .{ .id = 0, .kind = .{ .Function = .{ .def_id = 0, .name = "main", .params = &[_]hir.LocalId{}, .param_types = &[_]hir.TypeId{}, .return_type = i64_ty, .body = block_expr_id, .span = span } }, .span = span });
 
     var mir_crate = try lowerFromHir(allocator, &crate, &diagnostics);
     defer mir_crate.deinit();
@@ -735,7 +758,7 @@ test "lower char and string literals" {
 
     try crate.patterns.append(crate.allocator(), .{ .id = 0, .kind = .{ .Identifier = "c" }, .span = span });
 
-    try crate.items.append(crate.allocator(), .{ .id = 0, .kind = .{ .Function = .{ .def_id = 0, .name = "main", .params = &[_]hir.LocalId{}, .param_types = &[_]hir.TypeId{},.return_type = string_ty, .body = block_expr_id, .span = span } }, .span = span });
+    try crate.items.append(crate.allocator(), .{ .id = 0, .kind = .{ .Function = .{ .def_id = 0, .name = "main", .params = &[_]hir.LocalId{}, .param_types = &[_]hir.TypeId{}, .return_type = string_ty, .body = block_expr_id, .span = span } }, .span = span });
 
     var mir_crate = try lowerFromHir(allocator, &crate, &diagnostics);
     defer mir_crate.deinit();
@@ -784,7 +807,7 @@ test "lower if expression creates branch blocks" {
     const if_id: hir.ExprId = @intCast(crate.exprs.items.len);
     try crate.exprs.append(crate.allocator(), .{ .id = if_id, .kind = .{ .If = .{ .cond = cond_id, .then_branch = then_block, .else_branch = else_block } }, .ty = i32_ty, .span = span });
 
-    try crate.items.append(crate.allocator(), .{ .id = 0, .kind = .{ .Function = .{ .def_id = 0, .name = "main", .params = &[_]hir.LocalId{}, .param_types = &[_]hir.TypeId{},.return_type = i32_ty, .body = if_id, .span = span } }, .span = span });
+    try crate.items.append(crate.allocator(), .{ .id = 0, .kind = .{ .Function = .{ .def_id = 0, .name = "main", .params = &[_]hir.LocalId{}, .param_types = &[_]hir.TypeId{}, .return_type = i32_ty, .body = if_id, .span = span } }, .span = span });
 
     var mir_crate = try lowerFromHir(allocator, &crate, &diagnostics);
     defer mir_crate.deinit();
@@ -812,7 +835,7 @@ test "lower range and aggregate expressions" {
 
     const helper_const_id: hir.ExprId = @intCast(crate.exprs.items.len);
     try crate.exprs.append(crate.allocator(), .{ .id = helper_const_id, .kind = .{ .ConstInt = 7 }, .ty = i32_ty, .span = span });
-    try crate.items.append(crate.allocator(), .{ .id = 0, .kind = .{ .Function = .{ .def_id = 1, .name = "helper", .params = &[_]hir.LocalId{}, .param_types = &[_]hir.TypeId{},.return_type = i32_ty, .body = helper_const_id, .span = span } }, .span = span });
+    try crate.items.append(crate.allocator(), .{ .id = 0, .kind = .{ .Function = .{ .def_id = 1, .name = "helper", .params = &[_]hir.LocalId{}, .param_types = &[_]hir.TypeId{}, .return_type = i32_ty, .body = helper_const_id, .span = span } }, .span = span });
 
     const one_id: hir.ExprId = @intCast(crate.exprs.items.len);
     try crate.exprs.append(crate.allocator(), .{ .id = one_id, .kind = .{ .ConstInt = 1 }, .ty = i32_ty, .span = span });

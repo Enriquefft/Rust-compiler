@@ -14,13 +14,13 @@
 
         stdenv = pkgs.llvmPackages_latest.stdenv;
 
-        packages = with pkgs;
-          [
+        packages = with pkgs; [
 
-            zig
-            lldb
+          zig
+          lldb
+          gcc
 
-          ];
+        ];
       };
     };
 

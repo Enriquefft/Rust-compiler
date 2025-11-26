@@ -14,7 +14,9 @@ if [ ! -f "$asm_path" ]; then
     exit 1
 fi
 
-cc_bin="${CC:-clang}"
+CC=gcc
+
+cc_bin="${CC:-gcc}"
 asm_abs=$(realpath "$asm_path")
 tmp_dir=$(mktemp -d)
 trap 'rm -rf "$tmp_dir"' EXIT

@@ -75,7 +75,7 @@ pub const Expr = struct {
         Field: struct { target: ExprId, name: []const u8 },
         Array: []ExprId,
         StructInit: StructInit,
-        Lambda: struct { params: []Pattern, body: ExprId },
+        Lambda: struct { params: []Pattern, param_types: []TypeId, body: ExprId },
         Block: struct { stmts: []StmtId, tail: ?ExprId },
         Unknown,
     };
@@ -363,6 +363,12 @@ fn lowerType(crate: *Crate, ty: ast.Type, diagnostics: *diag.Diagnostics, next_t
     const id = next_type_id.*;
     next_type_id.* += 1;
 
+    if (crate.types.items.len != id) {
+        std.debug.panic("type id mismatch: expected {d}, have {d}", .{ id, crate.types.items.len });
+    }
+
+    try crate.types.append(crate.allocator(), .{ .id = id, .kind = .Unknown });
+
     const kind: Type.Kind = switch (ty.tag) {
         .Primitive => switch (ty.data.Primitive) {
             .u32 => .{ .PrimInt = .U32 },
@@ -414,8 +420,7 @@ fn lowerType(crate: *Crate, ty: ast.Type, diagnostics: *diag.Diagnostics, next_t
             break :blk .{ .Path = .{ .segments = segments, .args = try args.toOwnedSlice(crate.allocator()) } };
         },
     };
-
-    try crate.types.append(crate.allocator(), .{ .id = id, .kind = kind });
+    crate.types.items[id].kind = kind;
     return id;
 }
 
@@ -657,12 +662,16 @@ fn lowerExpr(crate: *Crate, expr: ast.Expr, diagnostics: *diag.Diagnostics, next
         .Lambda => {
             var params = std.ArrayListUnmanaged(Pattern){};
             defer params.deinit(crate.allocator());
+            var param_types = std.ArrayListUnmanaged(TypeId){};
+            defer param_types.deinit(crate.allocator());
             for (expr.data.Lambda.params) |param| {
                 const pat_id = try lowerPattern(crate, param.pattern, diagnostics);
-                if (param.ty) |param_ty| {
-                    _ = try lowerType(crate, param_ty, diagnostics, next_type_id);
-                }
+                const ty_id = if (param.ty) |param_ty|
+                    try lowerType(crate, param_ty, diagnostics, next_type_id)
+                else
+                    try appendUnknownType(crate, next_type_id);
                 try params.append(crate.allocator(), crate.patterns.items[pat_id]);
+                try param_types.append(crate.allocator(), ty_id);
             }
 
             const body_expr = switch (expr.data.Lambda.body) {
@@ -673,7 +682,11 @@ fn lowerExpr(crate: *Crate, expr: ast.Expr, diagnostics: *diag.Diagnostics, next
             const id: ExprId = @intCast(crate.exprs.items.len);
             try crate.exprs.append(crate.allocator(), .{
                 .id = id,
-                .kind = .{ .Lambda = .{ .params = try params.toOwnedSlice(crate.allocator()), .body = body_expr } },
+                .kind = .{ .Lambda = .{
+                    .params = try params.toOwnedSlice(crate.allocator()),
+                    .param_types = try param_types.toOwnedSlice(crate.allocator()),
+                    .body = body_expr,
+                } },
                 .ty = try appendUnknownType(crate, next_type_id),
                 .span = expr.span,
             });
