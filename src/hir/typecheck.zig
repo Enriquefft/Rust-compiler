@@ -168,28 +168,34 @@ fn checkExpr(
             var param_types: []hir.TypeId = &[_]hir.TypeId{};
             var ret_ty: hir.TypeId = try ensureType(crate, .Unknown);
 
-            if (callee_ty < crate.types.items.len) {
-                switch (crate.types.items[callee_ty].kind) {
-                    .Fn => |fn_ty| {
-                        param_types = fn_ty.params;
-                        ret_ty = fn_ty.ret;
-                    },
-                    else => {},
+            if (isBuiltinPrintln(crate, call.callee)) {
+                for (call.args) |arg_id| {
+                    _ = try checkExpr(crate, arg_id, diagnostics, locals);
                 }
-            }
-
-            if (param_types.len != call.args.len) {
-                diagnostics.reportError(span, "argument count does not match function type");
-            }
-
-            for (call.args, 0..) |arg_id, idx| {
-                const arg_ty = try checkExpr(crate, arg_id, diagnostics, locals);
-                if (idx < param_types.len and !typesEqual(crate, arg_ty, param_types[idx])) {
-                    diagnostics.reportError(span, "argument type does not match parameter");
+                expr.ty = ret_ty;
+            } else {
+                if (callee_ty < crate.types.items.len) {
+                    switch (crate.types.items[callee_ty].kind) {
+                        .Fn => |fn_ty| {
+                            param_types = fn_ty.params;
+                            ret_ty = fn_ty.ret;
+                        },
+                        else => {},
+                    }
                 }
-            }
 
-            expr.ty = ret_ty;
+                if (param_types.len != call.args.len) {
+                    diagnostics.reportError(span, "argument count does not match function type");
+                }
+
+                for (call.args, 0..) |arg_id, idx| {
+                    const arg_ty = try checkExpr(crate, arg_id, diagnostics, locals);
+                    if (idx < param_types.len and !typesEqual(crate, arg_ty, param_types[idx])) {
+                        diagnostics.reportError(span, "argument type does not match parameter");
+                    }
+                }
+                expr.ty = ret_ty;
+            }
         },
         .Assignment => |assign| {
             const target_ty = try checkExpr(crate, assign.target, diagnostics, locals);
@@ -425,6 +431,16 @@ fn resolveFieldType(crate: *hir.Crate, ty: hir.TypeId, name: []const u8, span: h
             return ensureType(crate, .Unknown);
         },
     }
+}
+
+fn isBuiltinPrintln(crate: *hir.Crate, callee_id: hir.ExprId) bool {
+    if (callee_id >= crate.exprs.items.len) return false;
+    const expr = crate.exprs.items[callee_id];
+    if (expr.kind != .GlobalRef) return false;
+    const def_id = expr.kind.GlobalRef;
+    if (def_id >= crate.items.items.len) return false;
+    const item = crate.items.items[def_id];
+    return item.kind == .Function and std.mem.eql(u8, item.kind.Function.name, "println");
 }
 
 test "typechecker assigns literal types and detects mismatches" {

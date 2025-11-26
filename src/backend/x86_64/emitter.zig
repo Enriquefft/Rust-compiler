@@ -6,19 +6,19 @@ pub fn emitAssembly(allocator: std.mem.Allocator, mc: *const machine.MachineCrat
     defer buffer.deinit(allocator);
 
     var writer = buffer.writer(allocator);
-    try writer.writeAll("; x86_64 assembly\n");
+    try writer.writeAll("# x86_64 assembly\n.intel_syntax noprefix\n");
 
     if (mc.externs.len > 0) {
         for (mc.externs) |name| {
-            try writer.print("extern {s}\n", .{name});
+            try writer.print(".extern {s}\n", .{name});
         }
         try writer.writeByte('\n');
     }
 
     if (mc.rodata.len > 0) {
-        try writer.writeAll("section .rodata\n");
+        try writer.writeAll(".section .rodata\n");
         for (mc.rodata) |item| {
-            try writer.print("{s}:\n    db ", .{item.label});
+            try writer.print("{s}:\n    .byte ", .{item.label});
             for (item.bytes, 0..) |byte, idx| {
                 if (idx != 0) try writer.writeAll(", ");
                 try writer.print("{d}", .{byte});
@@ -29,8 +29,12 @@ pub fn emitAssembly(allocator: std.mem.Allocator, mc: *const machine.MachineCrat
         try writer.writeByte('\n');
     }
 
+    if (mc.fns.len > 0) {
+        try writer.writeAll(".text\n");
+    }
+
     for (mc.fns) |func| {
-        try writer.print("global {s}\n{s}:\n", .{ func.name, func.name });
+        try writer.print(".globl {s}\n{s}:\n", .{ func.name, func.name });
         try emitPrologue(&writer, func.stack_size);
 
         for (func.blocks) |block| {
@@ -48,19 +52,29 @@ pub fn emitAssembly(allocator: std.mem.Allocator, mc: *const machine.MachineCrat
 
 fn emitPrologue(writer: anytype, stack_size: usize) !void {
     try writer.writeAll("    push rbp\n    mov rbp, rsp\n");
-    if (stack_size > 0) {
-        try writer.print("    sub rsp, {d}\n", .{stack_size});
+    const aligned_size = blk: {
+        const pad = (16 - (stack_size % 16)) % 16;
+        break :blk stack_size + pad;
+    };
+    if (aligned_size > 0) {
+        try writer.print("    sub rsp, {d}\n", .{aligned_size});
     }
 }
 
 fn emitInst(writer: anytype, inst: machine.InstKind, fn_name: []const u8) !void {
     switch (inst) {
         .Mov => |payload| {
-            try writer.writeAll("    mov ");
-            try writeOperand(writer, payload.dst);
-            try writer.writeAll(", ");
-            try writeOperand(writer, payload.src);
-            try writer.writeByte('\n');
+            if (payload.src == .Label) {
+                try writer.writeAll("    lea ");
+                try writeOperand(writer, payload.dst);
+                try writer.print(", [rip + {s}]\n", .{payload.src.Label});
+            } else {
+                try writer.writeAll("    mov ");
+                try writeOperand(writer, payload.dst);
+                try writer.writeAll(", ");
+                try writeOperand(writer, payload.src);
+                try writer.writeByte('\n');
+            }
         },
         .Bin => |payload| {
             try writer.print("    {s} ", .{binMnemonic(payload.op)});
@@ -196,8 +210,10 @@ test "emitter streams operands directly to writer" {
     const assembly = try emitAssembly(std.testing.allocator, &mc);
     defer std.testing.allocator.free(assembly);
 
-    const expected = "; x86_64 assembly\n" ++
-        "global emit_operands\n" ++
+    const expected = "# x86_64 assembly\n" ++
+        ".intel_syntax noprefix\n" ++
+        ".text\n" ++
+        ".globl emit_operands\n" ++
         "emit_operands:\n" ++
         "    push rbp\n    mov rbp, rsp\n" ++
         "    sub rsp, 16\n" ++
@@ -247,16 +263,18 @@ test "emitter emits rodata and extern call for printf" {
     const assembly = try emitAssembly(std.testing.allocator, &mc);
     defer std.testing.allocator.free(assembly);
 
-    const expected = "; x86_64 assembly\n" ++
-        "extern printf\n\n" ++
-        "section .rodata\n" ++
+    const expected = "# x86_64 assembly\n" ++
+        ".intel_syntax noprefix\n" ++
+        ".extern printf\n\n" ++
+        ".section .rodata\n" ++
         ".Lstr0:\n" ++
-        "    db 104, 101, 108, 108, 111, 10, 0\n\n" ++
-        "global println\n" ++
+        "    .byte 104, 101, 108, 108, 111, 10, 0\n\n" ++
+        ".text\n" ++
+        ".globl println\n" ++
         "println:\n" ++
         "    push rbp\n    mov rbp, rsp\n" ++
         ".Lprintln_0:\n" ++
-        "    mov rdi, .Lstr0\n" ++
+        "    lea rdi, [rip + .Lstr0]\n" ++
         "    mov rax, 0\n" ++
         "    call printf\n" ++
         "    leave\n    ret\n\n";

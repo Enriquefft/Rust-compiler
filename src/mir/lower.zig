@@ -11,6 +11,7 @@ pub fn lowerFromHir(allocator: std.mem.Allocator, hir_crate: *const hir.Crate, d
     for (hir_crate.items.items) |item| {
         switch (item.kind) {
             .Function => |fn_item| {
+                if (std.mem.eql(u8, fn_item.name, "println") and fn_item.body == null) continue;
                 const lowered = try lowerFunction(&crate, fn_item, hir_crate, diagnostics);
                 try crate.fns.append(crate.allocator(), lowered);
             },
@@ -182,6 +183,9 @@ const FunctionBuilder = struct {
                 return null;
             },
             .Call => |call| {
+                if (self.isBuiltinPrintln(call.callee)) {
+                    return try self.lowerPrintlnMacro(call.args, expr.span);
+                }
                 const callee_op = try self.lowerExpr(call.callee) orelse {
                     self.diagnostics.reportError(expr.span, "missing callee while lowering call");
                     return null;
@@ -363,6 +367,121 @@ const FunctionBuilder = struct {
         self.mir_fn.locals = locals_slice;
         self.mir_fn.blocks = blocks_slice;
         return self.mir_fn;
+    }
+
+    fn isBuiltinPrintln(self: *FunctionBuilder, callee_id: hir.ExprId) bool {
+        if (callee_id >= self.hir_crate.exprs.items.len) return false;
+        const callee = self.hir_crate.exprs.items[callee_id];
+        if (callee.kind != .GlobalRef) return false;
+        const def_id = callee.kind.GlobalRef;
+        if (def_id >= self.hir_crate.items.items.len) return false;
+        const item = self.hir_crate.items.items[def_id];
+        return item.kind == .Function and std.mem.eql(u8, item.kind.Function.name, "println");
+    }
+
+    fn lowerPrintlnMacro(self: *FunctionBuilder, args_ids: []const hir.ExprId, span: hir.Span) LowerError!?mir.Operand {
+        if (args_ids.len == 0) {
+            self.diagnostics.reportError(span, "println! requires a format string");
+            return null;
+        }
+
+        const fmt_expr = self.hir_crate.exprs.items[args_ids[0]];
+        if (fmt_expr.kind != .ConstString) {
+            self.diagnostics.reportError(span, "println! expects a string literal format");
+            return null;
+        }
+
+        var fmt_buf = std.ArrayListUnmanaged(u8){};
+        defer fmt_buf.deinit(self.allocator);
+
+        var args = std.ArrayListUnmanaged(mir.Operand){};
+        defer args.deinit(self.allocator);
+
+        var arg_idx: usize = 1;
+        var i: usize = 0;
+        var raw_fmt = fmt_expr.kind.ConstString;
+        if (raw_fmt.len >= 2 and raw_fmt[0] == '"' and raw_fmt[raw_fmt.len - 1] == '"') {
+            raw_fmt = raw_fmt[1 .. raw_fmt.len - 1];
+        }
+        while (i < raw_fmt.len) : (i += 1) {
+            const ch = raw_fmt[i];
+            if (ch == '{') {
+                if (i + 1 < raw_fmt.len and raw_fmt[i + 1] == '{') {
+                    try fmt_buf.append(self.allocator, '{');
+                    i += 1;
+                    continue;
+                }
+                const end = std.mem.indexOfScalarPos(u8, raw_fmt, i, '}') orelse {
+                    self.diagnostics.reportError(span, "unterminated format placeholder");
+                    return null;
+                };
+                if (arg_idx >= args_ids.len) {
+                    self.diagnostics.reportError(span, "not enough arguments for format string");
+                    return null;
+                }
+
+                const spec = self.printfSpecifier(args_ids[arg_idx], span) orelse return null;
+                try fmt_buf.appendSlice(self.allocator, spec);
+                if (try self.lowerExpr(args_ids[arg_idx])) |arg_op| {
+                    try args.append(self.allocator, arg_op);
+                }
+
+                arg_idx += 1;
+                i = end;
+                continue;
+            } else if (ch == '}' and i + 1 < raw_fmt.len and raw_fmt[i + 1] == '}') {
+                try fmt_buf.append(self.allocator, '}');
+                i += 1;
+                continue;
+            }
+
+            try fmt_buf.append(self.allocator, ch);
+        }
+
+        if (arg_idx != args_ids.len) {
+            self.diagnostics.reportError(span, "too many arguments supplied to println!");
+            return null;
+        }
+
+        if (fmt_buf.items.len == 0 or fmt_buf.items[fmt_buf.items.len - 1] != '\n') {
+            try fmt_buf.append(self.allocator, '\n');
+        }
+
+        const fmt_owned = try fmt_buf.toOwnedSlice(self.allocator);
+
+        const call_args = try self.allocator.alloc(mir.Operand, args.items.len + 1);
+        call_args[0] = .{ .ImmString = fmt_owned };
+        if (args.items.len > 0) {
+            std.mem.copyForwards(mir.Operand, call_args[1..], args.items);
+        }
+
+        _ = try self.emitInst(.{ .ty = .I32, .dest = null, .kind = .{ .Call = .{ .target = .{ .Symbol = "printf" }, .args = call_args } } });
+        return .{ .ImmInt = 0 };
+    }
+
+    fn printfSpecifier(self: *FunctionBuilder, expr_id: hir.ExprId, span: hir.Span) ?[]const u8 {
+        if (expr_id >= self.hir_crate.exprs.items.len) {
+            self.diagnostics.reportError(span, "unknown argument in println!");
+            return null;
+        }
+        const expr = self.hir_crate.exprs.items[expr_id];
+        const ty = mapType(self.hir_crate, expr.ty, span, self.diagnostics) orelse {
+            self.diagnostics.reportError(span, "println! argument has unsupported type");
+            return null;
+        };
+
+        return switch (ty) {
+            .I32, .U32 => "%d",
+            .I64, .U64, .Usize => "%ld",
+            .F32, .F64 => "%f",
+            .Bool => "%d",
+            .Char => "%c",
+            .String, .Str => "%s",
+            else => {
+                self.diagnostics.reportError(span, "println! argument type cannot be formatted");
+                return null;
+            },
+        };
     }
 
     fn lowerLogical(
@@ -719,6 +838,55 @@ test "lower range and aggregate expressions" {
     try std.testing.expect(saw_struct);
     try std.testing.expect(saw_field);
     try std.testing.expect(saw_call);
+}
+
+test "lower println macro into printf call" {
+    const allocator = std.testing.allocator;
+    var diagnostics = diag.Diagnostics.init(allocator);
+    defer diagnostics.deinit();
+
+    var crate = hir.Crate.init(allocator);
+    defer crate.deinit();
+
+    const span = hir.emptySpan(0);
+    const string_ty = ensureType(&crate, .String);
+    const i32_ty = ensureType(&crate, .{ .PrimInt = .I32 });
+
+    const fmt_expr_id: hir.ExprId = @intCast(crate.exprs.items.len);
+    try crate.exprs.append(crate.allocator(), .{ .id = fmt_expr_id, .kind = .{ .ConstString = "value: {}" }, .ty = string_ty, .span = span });
+
+    const arg_expr_id: hir.ExprId = @intCast(crate.exprs.items.len);
+    try crate.exprs.append(crate.allocator(), .{ .id = arg_expr_id, .kind = .{ .ConstInt = 7 }, .ty = i32_ty, .span = span });
+
+    const callee_expr_id: hir.ExprId = @intCast(crate.exprs.items.len);
+    try crate.exprs.append(crate.allocator(), .{ .id = callee_expr_id, .kind = .{ .GlobalRef = 0 }, .ty = string_ty, .span = span });
+
+    const args_slice = try crate.allocator().alloc(hir.ExprId, 2);
+    args_slice[0] = fmt_expr_id;
+    args_slice[1] = arg_expr_id;
+
+    const call_expr_id: hir.ExprId = @intCast(crate.exprs.items.len);
+    try crate.exprs.append(crate.allocator(), .{ .id = call_expr_id, .kind = .{ .Call = .{ .callee = callee_expr_id, .args = args_slice } }, .ty = i32_ty, .span = span });
+
+    const println_fn: hir.Function = .{ .def_id = 0, .name = "println", .params = &[_]hir.LocalId{}, .return_type = null, .body = null, .span = span };
+    try crate.items.append(crate.allocator(), .{ .id = 0, .kind = .{ .Function = println_fn }, .span = span });
+
+    const main_fn: hir.Function = .{ .def_id = 1, .name = "main", .params = &[_]hir.LocalId{}, .return_type = i32_ty, .body = call_expr_id, .span = span };
+    try crate.items.append(crate.allocator(), .{ .id = 1, .kind = .{ .Function = main_fn }, .span = span });
+
+    var mir_crate = try lowerFromHir(allocator, &crate, &diagnostics);
+    defer mir_crate.deinit();
+
+    try std.testing.expect(!diagnostics.hasErrors());
+    try std.testing.expectEqual(@as(usize, 1), mir_crate.fns.items.len);
+    const mir_fn = mir_crate.fns.items[0];
+    try std.testing.expectEqual(@as(usize, 1), mir_fn.blocks.len);
+    try std.testing.expect(mir_fn.blocks[0].insts.len >= 1);
+    try std.testing.expect(mir_fn.blocks[0].insts[0].kind == .Call);
+    try std.testing.expect(mir_fn.blocks[0].insts[0].kind.Call.target == .Symbol);
+    try std.testing.expectEqualStrings("printf", mir_fn.blocks[0].insts[0].kind.Call.target.Symbol);
+    try std.testing.expect(mir_fn.blocks[0].insts[0].kind.Call.args.len >= 1);
+    try std.testing.expect(mir_fn.blocks[0].insts[0].kind.Call.args[0] == .ImmString);
 }
 
 fn ensureType(crate: *hir.Crate, kind: hir.Type.Kind) hir.TypeId {
