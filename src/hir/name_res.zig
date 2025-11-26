@@ -5,13 +5,20 @@ const hir = @import("hir.zig");
 const Error = error{OutOfMemory};
 
 pub fn resolve(crate: *hir.Crate, diagnostics: *diag.Diagnostics) Error!void {
+    const println_def = try ensureBuiltinPrintln(crate);
+
     var module_symbols = std.StringHashMap(hir.DefId).init(crate.allocator());
     defer module_symbols.deinit();
+
+    try module_symbols.put(println_def.name, println_def.def_id);
 
     // Populate the module-level symbol table and catch duplicate items.
     for (crate.items.items) |item| {
         switch (item.kind) {
-            .Function => |func| try insertGlobal(&module_symbols, func.name, func.def_id, item.span, diagnostics),
+            .Function => |func| {
+                if (func.def_id == println_def.def_id and func.body == null) continue;
+                try insertGlobal(&module_symbols, func.name, func.def_id, item.span, diagnostics);
+            },
             .Struct => |structure| try insertGlobal(&module_symbols, structure.name, structure.def_id, item.span, diagnostics),
             .TypeAlias => |alias| try insertGlobal(&module_symbols, alias.name, alias.def_id, item.span, diagnostics),
             else => {},
@@ -32,6 +39,23 @@ pub fn resolve(crate: *hir.Crate, diagnostics: *diag.Diagnostics) Error!void {
             else => {},
         }
     }
+}
+
+const Builtin = struct { name: []const u8, def_id: hir.DefId };
+
+fn ensureBuiltinPrintln(crate: *hir.Crate) Error!Builtin {
+    for (crate.items.items) |item| {
+        if (item.kind == .Function and std.mem.eql(u8, item.kind.Function.name, "println")) {
+            return .{ .name = item.kind.Function.name, .def_id = item.id };
+        }
+    }
+
+    const id: hir.DefId = @intCast(crate.items.items.len);
+    const name = try crate.allocator().dupe(u8, "println");
+    const span = hir.emptySpan(0);
+    const func: hir.Function = .{ .def_id = id, .name = name, .params = &[_]hir.LocalId{}, .return_type = null, .body = null, .span = span };
+    try crate.items.append(crate.allocator(), .{ .id = id, .kind = .{ .Function = func }, .span = span });
+    return .{ .name = name, .def_id = id };
 }
 
 fn insertGlobal(

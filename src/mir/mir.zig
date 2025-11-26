@@ -30,6 +30,7 @@ pub const Operand = union(enum) {
     ImmBool: bool,
     ImmChar: u21,
     ImmString: []const u8,
+    Symbol: []const u8,
     Global: u32,
 };
 

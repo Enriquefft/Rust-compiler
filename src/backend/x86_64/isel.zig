@@ -306,6 +306,8 @@ fn lowerTerm(
             if (maybe_op) |op| {
                 const lowered = lowerSimpleOperand(ctx, op, vreg_count) catch |err| return err;
                 try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .Phys = .rax }, .src = lowered } });
+            } else {
+                try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .Phys = .rax }, .src = .{ .Imm = 0 } } });
             }
             try insts.append(ctx.allocator, .{ .Ret = null });
         },
@@ -347,6 +349,7 @@ fn resolveCallTarget(target: mir.Operand, mir_crate: *const mir.MirCrate, diagno
             }
             break :blk mir_crate.fns.items[id].name;
         },
+        .Symbol => |name| name,
         else => {
             diagnostics.reportError(zero_span, "only direct function calls are supported in x86_64 lowering");
             return error.Unsupported;
