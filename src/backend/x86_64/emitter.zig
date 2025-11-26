@@ -92,8 +92,9 @@ fn emitInst(writer: anytype, inst: machine.InstKind, fn_name: []const u8) !void 
             if (payload.op == .idiv or payload.op == .imod) {
                 // x86-64 idiv is a unary instruction that divides rdx:rax by the operand.
                 // Quotient goes to rax, remainder goes to rdx.
+                // The Bin instruction has dst containing the current dividend value.
                 // We need to:
-                // 1. Move dividend (lhs, which should equal dst) to rax if not already there
+                // 1. Move dividend (dst) to rax if not already there
                 // 2. Sign-extend rax into rdx using cqo
                 // 3. Execute idiv with the divisor (rhs)
                 // 4. Move result (rax for idiv, rdx for imod) to dst if needed
@@ -204,7 +205,7 @@ fn binMnemonic(op: machine.BinOpcode) []const u8 {
         .sub => "sub",
         .imul => "imul",
         .idiv => "idiv",
-        .imod => "idiv", // remainder requires idiv; follow-up lowering can insert moves
+        .imod => "idiv", // remainder is obtained via idiv; result handling is in emitter
         .and_ => "and",
         .or_ => "or",
         .xor_ => "xor",
