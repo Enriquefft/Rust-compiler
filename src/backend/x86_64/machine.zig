@@ -35,6 +35,7 @@ pub const MOperand = union(enum) {
     VReg: VReg,
     Phys: PhysReg,
     Imm: i64,
+    Label: []const u8,
     Mem: MemRef,
 };
 
@@ -74,14 +75,32 @@ pub const MachineFn = struct {
     }
 };
 
+pub const DataItem = struct {
+    label: []const u8,
+    bytes: []const u8,
+};
+
 pub const MachineCrate = struct {
     allocator: std.mem.Allocator,
     fns: []MachineFn,
+    rodata: []DataItem,
+    externs: []const []const u8,
 
     pub fn deinit(self: *MachineCrate) void {
         for (self.fns) |*f| {
             f.deinit(self.allocator);
         }
         self.allocator.free(self.fns);
+
+        for (self.rodata) |item| {
+            self.allocator.free(item.label);
+            self.allocator.free(item.bytes);
+        }
+        self.allocator.free(self.rodata);
+
+        for (self.externs) |name| {
+            self.allocator.free(name);
+        }
+        self.allocator.free(self.externs);
     }
 };
