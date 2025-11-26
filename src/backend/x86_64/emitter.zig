@@ -2,10 +2,10 @@ const std = @import("std");
 const machine = @import("machine.zig");
 
 pub fn emitAssembly(allocator: std.mem.Allocator, mc: *const machine.MachineCrate) ![]u8 {
-    var buffer = std.ArrayList(u8).init(allocator);
-    errdefer buffer.deinit();
+    var buffer = std.ArrayListUnmanaged(u8){};
+    defer buffer.deinit(allocator);
 
-    var writer = buffer.writer();
+    var writer = buffer.writer(allocator);
 
     for (mc.fns) |func| {
         try writer.print("global {s}\n{s}:\n", .{ func.name, func.name });
@@ -21,7 +21,7 @@ pub fn emitAssembly(allocator: std.mem.Allocator, mc: *const machine.MachineCrat
         try writer.writeAll("    leave\n    ret\n\n");
     }
 
-    return try buffer.toOwnedSlice();
+    return try buffer.toOwnedSlice(allocator);
 }
 
 fn emitPrologue(writer: anytype, stack_size: usize) !void {

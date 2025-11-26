@@ -13,7 +13,7 @@ pub fn lowerCrate(allocator: std.mem.Allocator, mir_crate: *const mir.MirCrate, 
     defer fns.deinit(allocator);
 
     for (mir_crate.fns.items) |func| {
-        const lowered = try lowerFn(allocator, func, mir_crate, diagnostics) catch |err| {
+        const lowered = lowerFn(allocator, func, mir_crate, diagnostics) catch |err| {
             switch (err) {
                 error.Unsupported => diagnostics.reportError(zero_span, "unsupported MIR construct in x86_64 lowering"),
                 else => {},
@@ -218,11 +218,7 @@ fn lowerInst(
                     try insts.append(allocator, .{ .Mov = .{ .dst = .{ .VReg = dst }, .src = .{ .Imm = 0 } } });
                 }
             }
-        },
-        else => {
-            diagnostics.reportError(zero_span, "unsupported MIR instruction in x86_64 lowering");
-            return error.Unsupported;
-        },
+        }
     }
 
     return {};
@@ -272,7 +268,7 @@ fn lowerSimpleOperand(op: mir.Operand, vreg_count: ?*machine.VReg, diagnostics: 
         .Local => |local| localMem(local),
         .ImmInt => |v| .{ .Imm = v },
         .ImmBool => |v| .{ .Imm = if (v) 1 else 0 },
-        .ImmFloat => |v| .{ .Imm = @bitCast(i64, v) },
+        .ImmFloat => |v| .{ .Imm = @bitCast(v) },
         .ImmString => |_| .{ .Imm = 0 },
         .Global => |id| .{ .Imm = @intCast(id) },
         else => {

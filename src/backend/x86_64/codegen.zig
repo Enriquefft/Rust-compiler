@@ -12,7 +12,7 @@ pub fn codegen(mir_crate: *const mir.MirCrate, allocator: std.mem.Allocator, dia
     defer machine_crate.deinit();
 
     for (machine_crate.fns) |*func| {
-        try regalloc.allocateRegisters(func, diagnostics);
+        try regalloc.allocateRegisters(func, allocator, diagnostics);
     }
 
     const assembly = try emitter.emitAssembly(allocator, &machine_crate);

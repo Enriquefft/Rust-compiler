@@ -41,7 +41,7 @@ fn ensureKnownType(crate: *hir.Crate, ty: hir.TypeId, span: hir.Span, diagnostic
     if (ty >= crate.types.items.len) {
         diagnostics.reportError(span, "unknown type reference");
         return;
-    }>>
+    }
 
     const kind = crate.types.items[ty].kind;
     if (kind == .Unknown) {
