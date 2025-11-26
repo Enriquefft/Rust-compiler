@@ -37,6 +37,11 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Global counters
+success_compile=0
+success_run=0
+failed_both=0
+
 printf "# Codes compilation report\n\n" > "$report_path"
 printf "Generated: %s\\n\\n" "$(date --iso-8601=seconds)" >> "$report_path"
 
@@ -62,6 +67,9 @@ compile_and_run() {
 
     local compile_output
     local compile_status=0
+    local run_output=""
+    local run_status=1  # default to failure; only set to 0 on successful run
+
     if command -v timeout >/dev/null 2>&1; then
         if compile_output=$(timeout 30s "$compiler_bin" --emit=asm -o "$asm_path" "$source_path" 2>&1); then
             compile_status=0
@@ -85,30 +93,38 @@ compile_and_run() {
 
     if [ "$compile_status" -ne 0 ]; then
         printf "#### Run output\n\nSkipped because compilation failed.\n\n" >> "$report_path"
-        return
-    fi
-
-    local run_output
-    local run_status=0
-    if command -v timeout >/dev/null 2>&1; then
-        if run_output=$(timeout 10s "$repo_root/run_asm.sh" "$asm_path" <<<"" 2>&1); then
-            run_status=0
-        else
-            run_status=$?
-        fi
     else
-        if run_output=$("$repo_root/run_asm.sh" "$asm_path" <<<"" 2>&1); then
-            run_status=0
+        if command -v timeout >/dev/null 2>&1; then
+            if run_output=$(timeout 10s "$repo_root/run_asm.sh" "$asm_path" <<<"" 2>&1); then
+                run_status=0
+            else
+                run_status=$?
+            fi
         else
-            run_status=$?
+            if run_output=$("$repo_root/run_asm.sh" "$asm_path" <<<"" 2>&1); then
+                run_status=0
+            else
+                run_status=$?
+            fi
         fi
+
+        status_line "Run" "$run_status"
+        if [ "$run_status" -eq 124 ]; then
+            printf "Run terminated after timeout (10s).\n\n" >> "$report_path"
+        fi
+        printf "#### Run output\n\n``````\n%s\n``````\n\n" "$run_output" >> "$report_path"
     fi
 
-    status_line "Run" "$run_status"
-    if [ "$run_status" -eq 124 ]; then
-        printf "Run terminated after timeout (10s).\n\n" >> "$report_path"
+    # Update global counters
+    if [ "$compile_status" -eq 0 ]; then
+        success_compile=$((success_compile + 1))
     fi
-    printf "#### Run output\n\n``````\n%s\n``````\n\n" "$run_output" >> "$report_path"
+
+    if [ "$compile_status" -eq 0 ] && [ "$run_status" -eq 0 ]; then
+        success_run=$((success_run + 1))
+    else
+        failed_both=$((failed_both + 1))
+    fi
 }
 
 shopt -s nullglob
@@ -122,4 +138,11 @@ for code_path in "${code_files[@]}"; do
     compile_and_run "$code_path"
 done
 
+# Summary
+printf "## Summary\n\n" >> "$report_path"
+printf "- Successful compilations: %d\n" "$success_compile" >> "$report_path"
+printf "- Successful executions: %d\n" "$success_run" >> "$report_path"
+printf "- Failed overall (compile or run): %d\n" "$failed_both" >> "$report_path"
+
 echo "Report written to $report_path"
+echo "Summary: $success_compile successful compilations, $success_run successful executions, $failed_both failed overall."
