@@ -156,10 +156,10 @@ test "emitAll formats single-line span with caret" {
 
     diags.reportError(.{ .file_id = file_id, .start = 4, .end = 9 }, "unused variable");
 
-    var buffer = try std.ArrayList(u8).initCapacity(allocator, 0);
-    defer buffer.deinit(allocator);
+    var buffer = std.ArrayList(u8).init(allocator);
+    defer buffer.deinit();
 
-    try diags.emitAllToWriter(&sm, buffer.writer(allocator));
+    try diags.emitAllToWriter(&sm, buffer.writer());
 
     const expected = "error: test.rs:1:5-1:10: unused variable\n" ++
         "let x = 1;\n" ++
@@ -182,10 +182,10 @@ test "emitAll formats multi-line span with carets per line" {
 
     diags.reportError(.{ .file_id = file_id, .start = 1, .end = 6 }, "spanning lines");
 
-    var buffer = try std.ArrayList(u8).initCapacity(allocator, 0);
-    defer buffer.deinit(allocator);
+    var buffer = std.ArrayList(u8).init(allocator);
+    defer buffer.deinit();
 
-    try diags.emitAllToWriter(&sm, buffer.writer(allocator));
+    try diags.emitAllToWriter(&sm, buffer.writer());
 
     const expected = "error: test.rs:1:2-2:3: spanning lines\n" ++
         "aaa\n" ++
