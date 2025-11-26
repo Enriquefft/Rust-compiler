@@ -50,11 +50,11 @@ pub const Diagnostics = struct {
 
     /// Emit diagnostics to stderr with line and column information.
     pub fn emitAll(self: *Diagnostics, source_map_ref: *source_map.SourceMap) !void {
-        var out_buffer = try std.ArrayList(u8).initCapacity(self.allocator, 0);
-        defer out_buffer.deinit(self.allocator);
+        var out_buffer = std.ArrayList(u8).init(self.allocator);
+        defer out_buffer.deinit();
 
-        try self.emitAllToWriter(source_map_ref, out_buffer.writer(self.allocator));
-        try std.fs.File.stderr().writeAll(out_buffer.items);
+        try self.emitAllToWriter(source_map_ref, out_buffer.writer());
+        try std.io.getStdErr().writeAll(out_buffer.items);
     }
 
     pub fn emitAllToWriter(self: *Diagnostics, source_map_ref: *source_map.SourceMap, writer: anytype) !void {
