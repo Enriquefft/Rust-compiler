@@ -176,9 +176,12 @@ const FunctionBuilder = struct {
             .Unary => |un| {
                 const operand = try self.lowerExpr(un.expr);
                 if (operand) |op| {
-                    const tmp = self.newTemp();
-                    _ = try self.emitInst(.{ .ty = mapType(self.hir_crate, expr.ty, expr.span, self.diagnostics), .dest = tmp, .kind = .{ .Unary = .{ .op = mapUnary(un.op), .operand = op } } });
-                    return .{ .Temp = tmp };
+                    if (mapUnary(un.op)) |mir_op| {
+                        const tmp = self.newTemp();
+                        _ = try self.emitInst(.{ .ty = mapType(self.hir_crate, expr.ty, expr.span, self.diagnostics), .dest = tmp, .kind = .{ .Unary = .{ .op = mir_op, .operand = op } } });
+                        return .{ .Temp = tmp };
+                    }
+                    self.diagnostics.reportError(expr.span, "unary operator not supported in MIR lowering");
                 }
                 return null;
             },
@@ -324,7 +327,7 @@ const FunctionBuilder = struct {
                 _ = try self.emitInst(.{ .ty = mapType(self.hir_crate, expr.ty, expr.span, self.diagnostics), .dest = tmp, .kind = .{ .StructInit = .{ .fields = try fields.toOwnedSlice(self.allocator) } } });
                 return .{ .Temp = tmp };
             },
-            .UnresolvedIdent, .Unknown => {
+            .Path, .MethodCall, .For, .Lambda, .UnresolvedIdent, .Unknown => {
                 self.diagnostics.reportError(expr.span, "expression could not be lowered to MIR");
                 return null;
             },
@@ -580,10 +583,11 @@ fn mapCmp(op: hir.BinaryOp) mir.CmpOp {
     };
 }
 
-fn mapUnary(op: hir.UnaryOp) mir.UnaryOp {
+fn mapUnary(op: hir.UnaryOp) ?mir.UnaryOp {
     return switch (op) {
         .Not => .Not,
         .Neg => .Neg,
+        .Deref, .Ref, .RefMut => null,
     };
 }
 

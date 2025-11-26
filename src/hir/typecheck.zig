@@ -161,6 +161,25 @@ fn checkExpr(
                     if (!isNumeric(crate, operand_ty)) diagnostics.reportError(span, "unary `-` expects a numeric operand");
                     expr.ty = operand_ty;
                 },
+                .Deref => {
+                    if (operand_ty >= crate.types.items.len) {
+                        diagnostics.reportError(span, "unknown operand type for deref");
+                        expr.ty = try ensureType(crate, .Unknown);
+                    } else {
+                        expr.ty = switch (crate.types.items[operand_ty].kind) {
+                            .Pointer => |ptr| ptr.inner,
+                            .Ref => |r| r.inner,
+                            else => blk: {
+                                diagnostics.reportError(span, "cannot dereference non-pointer type");
+                                break :blk try ensureType(crate, .Unknown);
+                            },
+                        };
+                    }
+                },
+                .Ref, .RefMut => {
+                    const inner = operand_ty;
+                    expr.ty = try ensureType(crate, .{ .Ref = .{ .mutable = un.op == .RefMut, .inner = inner } });
+                },
             }
         },
         .Call => |call| {
@@ -196,6 +215,13 @@ fn checkExpr(
                 }
                 expr.ty = ret_ty;
             }
+        },
+        .MethodCall => |call| {
+            _ = try checkExpr(crate, call.target, diagnostics, locals);
+            for (call.args) |arg_id| {
+                _ = try checkExpr(crate, arg_id, diagnostics, locals);
+            }
+            expr.ty = try ensureType(crate, .Unknown);
         },
         .Assignment => |assign| {
             const target_ty = try checkExpr(crate, assign.target, diagnostics, locals);
@@ -235,6 +261,13 @@ fn checkExpr(
             const cond_ty = try checkExpr(crate, wh.cond, diagnostics, locals);
             if (!isBool(crate, cond_ty)) diagnostics.reportError(span, "while condition must be boolean");
             _ = try checkExpr(crate, wh.body, diagnostics, locals);
+            expr.ty = try ensureType(crate, .Unknown);
+        },
+        .For => |for_expr| {
+            const iter_ty = try checkExpr(crate, for_expr.iter, diagnostics, locals);
+            _ = iter_ty;
+            _ = try ensurePatternBinding(crate, for_expr.pat.id, locals);
+            _ = try checkExpr(crate, for_expr.body, diagnostics, locals);
             expr.ty = try ensureType(crate, .Unknown);
         },
         .Range => |range| {
@@ -304,6 +337,28 @@ fn checkExpr(
                 expr.ty = try ensureType(crate, .Unknown);
             }
         },
+        .Lambda => |lambda| {
+            var lambda_locals = std.AutoHashMap(hir.LocalId, hir.TypeId).init(diagnostics.allocator);
+            defer lambda_locals.deinit();
+
+            var param_types = try crate.allocator().alloc(hir.TypeId, lambda.params.len);
+            for (lambda.params, 0..) |param, idx| {
+                const ty_id = try ensureType(crate, .Unknown);
+                param_types[idx] = ty_id;
+                try lambda_locals.put(param.id, ty_id);
+            }
+
+            var outer_iter = locals.iterator();
+            while (outer_iter.next()) |entry| {
+                try lambda_locals.put(entry.key_ptr.*, entry.value_ptr.*);
+            }
+
+            const body_ty = try checkExpr(crate, lambda.body, diagnostics, &lambda_locals);
+            expr.ty = try ensureType(crate, .{ .Fn = .{ .params = param_types, .ret = body_ty } });
+        },
+        .Path => {
+            expr.ty = try ensureType(crate, .Unknown);
+        },
         .Unknown => {
             expr.ty = try ensureType(crate, .Unknown);
         },
@@ -345,6 +400,13 @@ fn checkStmt(
         },
         .Unknown => {},
     }
+}
+
+fn ensurePatternBinding(crate: *hir.Crate, local_id: hir.LocalId, locals: *std.AutoHashMap(hir.LocalId, hir.TypeId)) Error!hir.TypeId {
+    if (locals.get(local_id)) |ty| return ty;
+    const ty = try ensureType(crate, .Unknown);
+    try locals.put(local_id, ty);
+    return ty;
 }
 
 fn ensureType(crate: *hir.Crate, kind: hir.Type.Kind) Error!hir.TypeId {

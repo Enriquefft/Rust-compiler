@@ -59,19 +59,23 @@ pub const Expr = struct {
         ConstChar: u21,
         ConstString: []const u8,
         UnresolvedIdent: []const u8,
+        Path: struct { segments: [][]const u8, args: []TypeId },
         Binary: struct { op: BinaryOp, lhs: ExprId, rhs: ExprId },
         Unary: struct { op: UnaryOp, expr: ExprId },
         Call: struct { callee: ExprId, args: []ExprId },
+        MethodCall: struct { target: ExprId, name: []const u8, args: []ExprId },
         Assignment: struct { target: ExprId, op: AssignOp, value: ExprId },
         Return: ?ExprId,
         If: struct { cond: ExprId, then_branch: ExprId, else_branch: ?ExprId },
         While: struct { cond: ExprId, body: ExprId },
+        For: struct { pat: Pattern, iter: ExprId, body: ExprId },
         Range: struct { inclusive: bool, start: ExprId, end: ExprId },
         Cast: struct { expr: ExprId, ty: TypeId },
         Index: struct { target: ExprId, index: ExprId },
         Field: struct { target: ExprId, name: []const u8 },
         Array: []ExprId,
         StructInit: StructInit,
+        Lambda: struct { params: []Pattern, body: ExprId },
         Block: struct { stmts: []StmtId, tail: ?ExprId },
         Unknown,
     };
@@ -106,6 +110,9 @@ pub const BinaryOp = enum {
 pub const UnaryOp = enum {
     Not,
     Neg,
+    Deref,
+    Ref,
+    RefMut,
 };
 
 pub const AssignOp = enum {
@@ -467,10 +474,9 @@ fn lowerExpr(crate: *Crate, expr: ast.Expr, diagnostics: *diag.Diagnostics, next
             const op = switch (expr.data.Unary.op) {
                 .Not => UnaryOp.Not,
                 .Neg => UnaryOp.Neg,
-                .Deref, .Ref, .RefMut => blk: {
-                    diagnostics.reportError(expr.span, "addressing operators not supported in HIR lowering yet");
-                    break :blk UnaryOp.Not;
-                },
+                .Deref => UnaryOp.Deref,
+                .Ref => UnaryOp.Ref,
+                .RefMut => UnaryOp.RefMut,
             };
             const id: ExprId = @intCast(crate.exprs.items.len);
             try crate.exprs.append(crate.allocator(), .{
@@ -613,24 +619,58 @@ fn lowerExpr(crate: *Crate, expr: ast.Expr, diagnostics: *diag.Diagnostics, next
             return id;
         },
         .For => {
-            diagnostics.reportError(expr.span, "for expressions are not supported in HIR lowering");
-            const ty = try appendUnknownType(crate, next_type_id);
+            const pat_id = try lowerPattern(crate, expr.data.For.pattern, diagnostics);
+            const iter = try lowerExpr(crate, expr.data.For.iterator.*, diagnostics, next_type_id);
+            const body = try lowerBlock(crate, expr.data.For.body, diagnostics, next_type_id);
             const id: ExprId = @intCast(crate.exprs.items.len);
-            try crate.exprs.append(crate.allocator(), .{ .id = id, .kind = .Unknown, .ty = ty, .span = expr.span });
+            try crate.exprs.append(crate.allocator(), .{
+                .id = id,
+                .kind = .{ .For = .{ .pat = crate.patterns.items[pat_id], .iter = iter, .body = body } },
+                .ty = try appendUnknownType(crate, next_type_id),
+                .span = expr.span,
+            });
             return id;
         },
         .MethodCall => {
-            diagnostics.reportError(expr.span, "method calls not yet supported in HIR lowering");
-            const ty = try appendUnknownType(crate, next_type_id);
+            const target = try lowerExpr(crate, expr.data.MethodCall.target.*, diagnostics, next_type_id);
+            var args = std.ArrayListUnmanaged(ExprId){};
+            defer args.deinit(crate.allocator());
+            for (expr.data.MethodCall.args) |arg| {
+                try args.append(crate.allocator(), try lowerExpr(crate, arg, diagnostics, next_type_id));
+            }
+            const name = try crate.allocator().dupe(u8, expr.data.MethodCall.method.name);
             const id: ExprId = @intCast(crate.exprs.items.len);
-            try crate.exprs.append(crate.allocator(), .{ .id = id, .kind = .Unknown, .ty = ty, .span = expr.span });
+            try crate.exprs.append(crate.allocator(), .{
+                .id = id,
+                .kind = .{ .MethodCall = .{ .target = target, .name = name, .args = try args.toOwnedSlice(crate.allocator()) } },
+                .ty = try appendUnknownType(crate, next_type_id),
+                .span = expr.span,
+            });
             return id;
         },
         .Lambda => {
-            diagnostics.reportError(expr.span, "closures are not supported in HIR lowering");
-            const ty = try appendUnknownType(crate, next_type_id);
+            var params = std.ArrayListUnmanaged(Pattern){};
+            defer params.deinit(crate.allocator());
+            for (expr.data.Lambda.params) |param| {
+                const pat_id = try lowerPattern(crate, param.pattern, diagnostics);
+                if (param.ty) |param_ty| {
+                    _ = try lowerType(crate, param_ty, diagnostics, next_type_id);
+                }
+                try params.append(crate.allocator(), crate.patterns.items[pat_id]);
+            }
+
+            const body_expr = switch (expr.data.Lambda.body) {
+                .Expr => |e| try lowerExpr(crate, e.*, diagnostics, next_type_id),
+                .Block => |b| try lowerBlock(crate, b, diagnostics, next_type_id),
+            };
+
             const id: ExprId = @intCast(crate.exprs.items.len);
-            try crate.exprs.append(crate.allocator(), .{ .id = id, .kind = .Unknown, .ty = ty, .span = expr.span });
+            try crate.exprs.append(crate.allocator(), .{
+                .id = id,
+                .kind = .{ .Lambda = .{ .params = try params.toOwnedSlice(crate.allocator()), .body = body_expr } },
+                .ty = try appendUnknownType(crate, next_type_id),
+                .span = expr.span,
+            });
             return id;
         },
         .Paren => return try lowerExpr(crate, expr.data.Paren.*, diagnostics, next_type_id),
@@ -638,15 +678,24 @@ fn lowerExpr(crate: *Crate, expr: ast.Expr, diagnostics: *diag.Diagnostics, next
             return try lowerBlock(crate, expr.data.Block, diagnostics, next_type_id);
         },
         .Path => {
-            if (expr.data.Path.segments.len == 1) {
-                const name = expr.data.Path.segments[0].name;
-                const id: ExprId = @intCast(crate.exprs.items.len);
-                try crate.exprs.append(crate.allocator(), .{ .id = id, .kind = .{ .UnresolvedIdent = name }, .ty = try appendUnknownType(crate, next_type_id), .span = expr.span });
-                return id;
+            var segments = try crate.allocator().alloc([]const u8, expr.data.Path.segments.len);
+            for (expr.data.Path.segments, 0..) |seg, idx| {
+                segments[idx] = try crate.allocator().dupe(u8, seg.name);
             }
-            diagnostics.reportError(expr.span, "complex paths not yet supported in HIR lowering");
+
+            var args = std.ArrayListUnmanaged(TypeId){};
+            defer args.deinit(crate.allocator());
+            for (expr.data.Path.generic_args) |arg_ty| {
+                try args.append(crate.allocator(), try lowerType(crate, arg_ty, diagnostics, next_type_id));
+            }
+
             const id: ExprId = @intCast(crate.exprs.items.len);
-            try crate.exprs.append(crate.allocator(), .{ .id = id, .kind = .Unknown, .ty = try appendUnknownType(crate, next_type_id), .span = expr.span });
+            try crate.exprs.append(crate.allocator(), .{
+                .id = id,
+                .kind = .{ .Path = .{ .segments = segments, .args = try args.toOwnedSlice(crate.allocator()) } },
+                .ty = try appendUnknownType(crate, next_type_id),
+                .span = expr.span,
+            });
             return id;
         },
     }
@@ -705,8 +754,7 @@ fn lowerStmt(crate: *Crate, stmt: ast.Stmt, diagnostics: *diag.Diagnostics, next
             break :blk .{ .Expr = try lowerExpr(crate, expr_node, diagnostics, next_type_id) };
         },
         .For => blk: {
-            diagnostics.reportError(stmt.span, "for loops are not supported in HIR lowering yet");
-            const expr_node = ast.Expr{ .tag = .Range, .span = stmt.span, .data = .{ .Range = .{ .inclusive = true, .start = stmt.data.For.iterator, .end = stmt.data.For.iterator } } };
+            const expr_node = ast.Expr{ .tag = .For, .span = stmt.span, .data = .{ .For = stmt.data.For } };
             break :blk .{ .Expr = try lowerExpr(crate, expr_node, diagnostics, next_type_id) };
         },
         .Empty => .Unknown,

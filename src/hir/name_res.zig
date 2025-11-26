@@ -32,6 +32,17 @@ pub fn resolve(crate: *hir.Crate, diagnostics: *diag.Diagnostics) Error!void {
                 defer locals.deinit();
 
                 var next_local: hir.LocalId = 0;
+                for (func.params, 0..) |param_pat_id, idx| {
+                    if (param_pat_id >= crate.patterns.items.len) {
+                        diagnostics.reportError(func.span, "function parameter references missing pattern");
+                        continue;
+                    }
+
+                    const pat = &crate.patterns.items[param_pat_id];
+                    try bindPattern(pat, &locals, &next_local, diagnostics);
+                    func.params[idx] = pat.id;
+                }
+
                 if (func.body) |body_id| {
                     try resolveExpr(crate, body_id, &module_symbols, &locals, &next_local, diagnostics);
                 }
@@ -136,7 +147,7 @@ fn resolveExpr(
     next_local: *hir.LocalId,
     diagnostics: *diag.Diagnostics,
 ) Error!void {
-    const expr = &crate.exprs.items[expr_id];
+    var expr = &crate.exprs.items[expr_id];
     switch (expr.kind) {
         .UnresolvedIdent => |name| {
             if (locals.get(name)) |local_id| {
@@ -173,6 +184,12 @@ fn resolveExpr(
                 try resolveExpr(crate, arg, module_symbols, locals, next_local, diagnostics);
             }
         },
+        .MethodCall => |method_call| {
+            try resolveExpr(crate, method_call.target, module_symbols, locals, next_local, diagnostics);
+            for (method_call.args) |arg| {
+                try resolveExpr(crate, arg, module_symbols, locals, next_local, diagnostics);
+            }
+        },
         .Assignment => |assign| {
             try resolveExpr(crate, assign.target, module_symbols, locals, next_local, diagnostics);
             try resolveExpr(crate, assign.value, module_symbols, locals, next_local, diagnostics);
@@ -193,6 +210,11 @@ fn resolveExpr(
             try resolveExpr(crate, range.start, module_symbols, locals, next_local, diagnostics);
             try resolveExpr(crate, range.end, module_symbols, locals, next_local, diagnostics);
         },
+        .For => |*for_expr| {
+            try resolveExpr(crate, for_expr.iter, module_symbols, locals, next_local, diagnostics);
+            try bindPattern(&for_expr.pat, locals, next_local, diagnostics);
+            try resolveExpr(crate, for_expr.body, module_symbols, locals, next_local, diagnostics);
+        },
         .Cast => |cast| try resolveExpr(crate, cast.expr, module_symbols, locals, next_local, diagnostics),
         .Index => |index| {
             try resolveExpr(crate, index.target, module_symbols, locals, next_local, diagnostics);
@@ -207,6 +229,37 @@ fn resolveExpr(
         .StructInit => |init| {
             for (init.fields) |field| {
                 try resolveExpr(crate, field.value, module_symbols, locals, next_local, diagnostics);
+            }
+        },
+        .Lambda => |lambda| {
+            for (lambda.params) |*param| {
+                try bindPattern(param, locals, next_local, diagnostics);
+            }
+            try resolveExpr(crate, lambda.body, module_symbols, locals, next_local, diagnostics);
+        },
+        .Path => |path| {
+            if (path.segments.len == 1) {
+                const single_name = path.segments[0];
+                if (locals.get(single_name)) |local_id| {
+                    expr.kind = .{ .LocalRef = local_id };
+                    return;
+                }
+                if (module_symbols.get(single_name)) |def_id| {
+                    expr.kind = .{ .GlobalRef = def_id };
+                    return;
+                }
+                const message = std.fmt.allocPrint(diagnostics.allocator, "unresolved identifier `{s}`", .{single_name}) catch single_name;
+                diagnostics.reportError(expr.span, message);
+                if (message.ptr != single_name.ptr) diagnostics.allocator.free(message);
+            } else if (path.segments.len > 0) {
+                const name = path.segments[path.segments.len - 1];
+                if (module_symbols.get(name)) |def_id| {
+                    expr.kind = .{ .GlobalRef = def_id };
+                    return;
+                }
+                const message = std.fmt.allocPrint(diagnostics.allocator, "unresolved path ending in `{s}`", .{name}) catch name;
+                diagnostics.reportError(expr.span, message);
+                if (message.ptr != name.ptr) diagnostics.allocator.free(message);
             }
         },
         .LocalRef, .GlobalRef, .ConstInt, .ConstFloat, .ConstBool, .ConstChar, .ConstString, .Unknown => {},
@@ -278,4 +331,53 @@ test "name resolution resolves globals and locals" {
 
     try std.testing.expectEqual(@as(hir.DefId, bar_def), crate.exprs.items[bar_ref_id].kind.GlobalRef);
     try std.testing.expect(diagnostics.hasErrors());
+}
+
+test "name resolution binds function parameters" {
+    const allocator = std.testing.allocator;
+    var diagnostics = diag.Diagnostics.init(allocator);
+    defer diagnostics.deinit();
+
+    var crate = hir.Crate.init(allocator);
+    defer crate.deinit();
+
+    const span = hir.emptySpan(0);
+
+    const param_ref_id: hir.ExprId = @intCast(crate.exprs.items.len);
+    try crate.exprs.append(crate.allocator(), .{
+        .id = param_ref_id,
+        .kind = .{ .UnresolvedIdent = "a" },
+        .ty = 0,
+        .span = span,
+    });
+
+    try crate.patterns.append(crate.allocator(), .{ .id = 0, .kind = .{ .Identifier = "a" }, .span = span });
+
+    const block_expr_id: hir.ExprId = @intCast(crate.exprs.items.len);
+    try crate.exprs.append(crate.allocator(), .{
+        .id = block_expr_id,
+        .kind = .{ .Block = .{ .stmts = &[_]hir.StmtId{}, .tail = param_ref_id } },
+        .ty = 0,
+        .span = span,
+    });
+
+    const params = try crate.allocator().alloc(hir.LocalId, 1);
+    params[0] = 0;
+
+    try crate.items.append(crate.allocator(), .{ .id = 0, .kind = .{ .Function = .{
+        .def_id = 0,
+        .name = "with_param",
+        .params = params,
+        .return_type = null,
+        .body = block_expr_id,
+        .span = span,
+    } }, .span = span });
+
+    try resolve(&crate, &diagnostics);
+
+    try std.testing.expect(!diagnostics.hasErrors());
+    switch (crate.exprs.items[param_ref_id].kind) {
+        .LocalRef => |local_id| try std.testing.expectEqual(@as(hir.LocalId, 0), local_id),
+        else => try std.testing.expect(false),
+    }
 }
