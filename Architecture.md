@@ -24,7 +24,6 @@ The grammar is defined separately in `grammar.ebnf` and is not repeated here. Th
 ### 1.2 Non-Goals (initially)
 
 - Full Rust semantics (lifetimes, borrow checker, traits, full macro system).
-- Macros are allowed but are just lowered to be plain calls (`println!` is equivalent to `printl`)
 - Advanced optimizations (loop unrolling, vectorization, inlining, etc.).
 - Cross-platform codegen beyond x86-64 in the first version.
 - Full support for all grammar features at once:
@@ -687,6 +686,27 @@ Key lowering patterns:
       extra edges out of the loop body. If we introduce `break`/`continue`
       later, they will target `loop_exit` / `loop_step` respectively.
 
+* **`println!` macro:**
+
+  * Parsed as a macro call but lowered directly in MIR builder so the rest of
+    the pipeline sees a normal `Call`.
+  * Behaves like Rust's `println!` surface:
+
+    * `println!();` emits a newline-only call.
+    * `println!("hello there!");` prints the literal string with a trailing newline.
+    * `println!("format {} arguments", "some");` supports `{}` placeholders.
+    * `println!("format {local_variable} arguments");` captures in-scope
+      identifiers inline.
+
+  * Lowering strategy:
+
+    * Append an implicit newline to the format string if the user didn't
+      include one.
+    * Convert Rust-style `{}` / `{name}` placeholders to a C-style format
+      string (`%s`, `%lld`, `%d`, etc.) chosen from the argument types.
+    * Emit a single `InstKind.Call` targeting a backend-declared `printf` and
+      pass the rewritten format string plus evaluated operands as arguments.
+
 
 
 ### 8.3 MIR Design Rationale
@@ -908,6 +928,23 @@ pub fn emit(
     input_path: []const u8,
 ) !void;
 ```
+
+### 10.7 `println!` lowering and libc interop
+
+* Backend assumes the MIR builder has rewritten `println!` into a direct call
+  to `printf` with a C-style format string and any evaluated operands.
+* No runtime shim is introduced; the emitter must:
+
+  * Declare `printf` as an external symbol and follow System V varargs
+    conventions when lowering the `Call`.
+  * Place the rewritten format string (with the trailing `\n`) in a data
+    section accessible to the function using it.
+  * Ensure arguments are passed in the correct registers/stack slots for a
+    varargs call (ints in `rdi`/`rsi`/`rdx`/`rcx`/`r8`/`r9`, floats in `xmm*`,
+    extras on the stack).
+
+* Because the call goes straight to libc, linking must pull in the platform's
+  C standard library; no intermediary Zig helper is provided.
 
 ---
 
