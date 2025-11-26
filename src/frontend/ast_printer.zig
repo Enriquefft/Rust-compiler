@@ -2,30 +2,38 @@ const std = @import("std");
 const ast = @import("ast.zig");
 const AllocError = std.mem.Allocator.Error;
 
+
+
 const TreePrinter = struct {
     allocator: std.mem.Allocator,
-    prefix: std.ArrayList(u8),
+    prefix: std.ArrayListUnmanaged(u8),
+    segment_lengths: std.ArrayListUnmanaged(usize),
 
     fn init(allocator: std.mem.Allocator) TreePrinter {
         return .{
             .allocator = allocator,
-            .prefix = std.ArrayList(u8).empty,
+            .prefix = .{},
+            .segment_lengths = .{},
         };
     }
 
     fn deinit(self: *TreePrinter) void {
         self.prefix.deinit(self.allocator);
+        self.segment_lengths.deinit(self.allocator);
     }
 
     fn push(self: *TreePrinter, is_last: bool) !void {
         const segment: []const u8 = if (is_last) "    " else "│   ";
         try self.prefix.appendSlice(self.allocator, segment);
+        try self.segment_lengths.append(self.allocator, segment.len);
     }
 
     fn pop(self: *TreePrinter) void {
-        if (self.prefix.items.len >= 4) {
-            self.prefix.shrinkRetainingCapacity(self.prefix.items.len - 4);
-        }
+        if (self.segment_lengths.items.len == 0) return;
+
+        const last_len = self.segment_lengths.pop().?;
+        const new_len = self.prefix.items.len - last_len;
+        self.prefix.shrinkRetainingCapacity(new_len);
     }
 
     fn printNode(self: *TreePrinter, is_last: bool, label: []const u8) !void {
@@ -45,6 +53,7 @@ const TreePrinter = struct {
         try self.printNode(is_last, label);
     }
 };
+
 
 pub fn printCrateTree(allocator: std.mem.Allocator, crate: ast.Crate) AllocError!void {
     var printer = TreePrinter.init(allocator);
