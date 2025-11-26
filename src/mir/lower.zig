@@ -880,8 +880,8 @@ test "lower range and aggregate expressions" {
     stmts_slice[4] = field_stmt_id;
 
     const block_expr_id: hir.ExprId = @intCast(crate.exprs.items.len);
-    try crate.exprs.append(crate.allocator(), .{ .id = block_expr_id, .kind = .{ .Block = .{ .stmts = stmts_slice, .tail = call_expr_id } }, .ty = i32_ty, .span = span });
 
+    try crate.exprs.append(crate.allocator(), .{ .id = block_expr_id, .kind = .{ .Block = .{ .stmts = stmts_slice, .tail = call_expr_id } }, .ty = i32_ty, .span = span });
     try crate.items.append(crate.allocator(), .{ .id = 1, .kind = .{ .Function = .{ .def_id = 0, .name = "main", .params = &[_]hir.LocalId{}, .param_types = &[_]hir.TypeId{}, .return_type = i32_ty, .body = block_expr_id, .span = span } }, .span = span });
 
     var mir_crate = try lowerFromHir(allocator, &crate, &diagnostics);
