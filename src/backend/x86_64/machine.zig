@@ -36,6 +36,7 @@ pub const MOperand = union(enum) {
     Phys: PhysReg,
     Imm: i64,
     Mem: MemRef,
+    Label: []const u8,
 };
 
 pub const BinOpcode = enum { add, sub, imul, idiv, imod, and_, or_, xor_ };
@@ -60,6 +61,8 @@ pub const MachineBlock = struct {
     insts: []InstKind,
 };
 
+pub const StringLiteral = struct { name: []const u8, value: []const u8 };
+
 pub const MachineFn = struct {
     name: []const u8,
     blocks: []MachineBlock,
@@ -77,11 +80,17 @@ pub const MachineFn = struct {
 pub const MachineCrate = struct {
     allocator: std.mem.Allocator,
     fns: []MachineFn,
+    strings: []StringLiteral,
 
     pub fn deinit(self: *MachineCrate) void {
         for (self.fns) |*f| {
             f.deinit(self.allocator);
         }
         self.allocator.free(self.fns);
+        for (self.strings) |lit| {
+            self.allocator.free(lit.name);
+            self.allocator.free(lit.value);
+        }
+        self.allocator.free(self.strings);
     }
 };

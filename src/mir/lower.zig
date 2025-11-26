@@ -24,6 +24,7 @@ pub fn lowerFromHir(allocator: std.mem.Allocator, hir_crate: *const hir.Crate, d
 fn lowerFunction(crate: *mir.MirCrate, func: hir.Function, hir_crate: *const hir.Crate, diagnostics: *diag.Diagnostics) LowerError!mir.MirFn {
     var builder = FunctionBuilder{
         .allocator = crate.allocator(),
+        .mir_crate = crate,
         .hir_crate = hir_crate,
         .diagnostics = diagnostics,
         .mir_fn = mir.MirFn{
@@ -52,6 +53,7 @@ fn lowerFunction(crate: *mir.MirCrate, func: hir.Function, hir_crate: *const hir
 
 const FunctionBuilder = struct {
     allocator: std.mem.Allocator,
+    mir_crate: *mir.MirCrate,
     hir_crate: *const hir.Crate,
     diagnostics: *diag.Diagnostics,
     mir_fn: mir.MirFn,
@@ -59,6 +61,7 @@ const FunctionBuilder = struct {
     blocks: std.ArrayListUnmanaged(BlockState) = .{},
     current_block: mir.BlockId = 0,
     next_temp: mir.TempId = 0,
+    printf_id: ?u32 = null,
 
     const BlockState = struct {
         insts: std.ArrayListUnmanaged(mir.Inst) = .{},
@@ -99,6 +102,27 @@ const FunctionBuilder = struct {
         const tmp = self.next_temp;
         self.next_temp += 1;
         return tmp;
+    }
+
+    fn ensurePrintfOperand(self: *FunctionBuilder) LowerError!mir.Operand {
+        if (self.printf_id) |id| return .{ .Global = id };
+        if (self.mir_crate.builtin_printf) |id| {
+            self.printf_id = id;
+            return .{ .Global = id };
+        }
+
+        const id: u32 = @intCast(self.mir_crate.fns.items.len);
+        try self.mir_crate.fns.append(self.mir_crate.allocator(), .{
+            .name = "printf",
+            .params = &[_]mir.LocalId{},
+            .locals = &[_]mir.MirType{},
+            .ret_ty = .I32,
+            .blocks = &[_]mir.Block{},
+            .is_extern = true,
+        });
+        self.mir_crate.builtin_printf = id;
+        self.printf_id = id;
+        return .{ .Global = id };
     }
 
     fn ensureLocal(self: *FunctionBuilder, local: hir.LocalId, ty_id: ?hir.TypeId, span: hir.Span) LowerError!void {
@@ -182,6 +206,9 @@ const FunctionBuilder = struct {
                 return null;
             },
             .Call => |call| {
+                if (isBuiltinPrintln(self.hir_crate, call.callee)) {
+                    return try self.lowerPrintln(call, expr);
+                }
                 const callee_op = try self.lowerExpr(call.callee) orelse {
                     self.diagnostics.reportError(expr.span, "missing callee while lowering call");
                     return null;
@@ -327,6 +354,102 @@ const FunctionBuilder = struct {
         }
     }
 
+    fn lowerPrintln(self: *FunctionBuilder, call: @FieldType(hir.Expr.Kind, "Call"), expr: hir.Expr) LowerError!?mir.Operand {
+        if (call.args.len == 0) {
+            self.diagnostics.reportError(expr.span, "println! requires a format string");
+            return null;
+        }
+
+        const fmt_expr = self.hir_crate.exprs.items[call.args[0]];
+        if (fmt_expr.kind != .ConstString) {
+            self.diagnostics.reportError(fmt_expr.span, "println! format must be a string literal");
+            return null;
+        }
+
+        var arg_types = std.ArrayListUnmanaged(mir.MirType){};
+        defer arg_types.deinit(self.allocator);
+
+        var lowered_args = std.ArrayListUnmanaged(mir.Operand){};
+        defer lowered_args.deinit(self.allocator);
+
+        for (call.args[1..]) |arg_id| {
+            const hir_arg = self.hir_crate.exprs.items[arg_id];
+            const arg_ty = mapType(self.hir_crate, hir_arg.ty, hir_arg.span, self.diagnostics) orelse return null;
+            try arg_types.append(self.allocator, arg_ty);
+
+            const lowered = try self.lowerExpr(arg_id) orelse return null;
+            try lowered_args.append(self.allocator, lowered);
+        }
+
+        const fmt_literal = fmt_expr.kind.ConstString;
+        const fmt_string = try self.buildPrintfFormat(unquoteString(fmt_literal), arg_types.items, fmt_expr.span) orelse return null;
+
+        var call_args = std.ArrayListUnmanaged(mir.Operand){};
+        defer call_args.deinit(self.allocator);
+        try call_args.append(self.allocator, .{ .ImmString = fmt_string });
+        try call_args.appendSlice(self.allocator, lowered_args.items);
+
+        const target = try self.ensurePrintfOperand();
+        const tmp = self.newTemp();
+        _ = try self.emitInst(.{ .ty = mapType(self.hir_crate, expr.ty, expr.span, self.diagnostics), .dest = tmp, .kind = .{ .Call = .{ .target = target, .args = try call_args.toOwnedSlice(self.allocator) } } });
+        return .{ .Temp = tmp };
+    }
+
+    fn buildPrintfFormat(self: *FunctionBuilder, literal: []const u8, arg_types: []const mir.MirType, span: hir.Span) LowerError!?[]const u8 {
+        var buffer = std.ArrayListUnmanaged(u8){};
+        errdefer buffer.deinit(self.allocator);
+
+        var idx: usize = 0;
+        var arg_idx: usize = 0;
+        while (idx < literal.len) : (idx += 1) {
+            switch (literal[idx]) {
+                '{' => {
+                    if (idx + 1 < literal.len and literal[idx + 1] == '{') {
+                        try buffer.append(self.allocator, '{');
+                        idx += 1;
+                        continue;
+                    }
+                    const close = std.mem.indexOfScalarPos(u8, literal, idx + 1, '}') orelse {
+                        self.diagnostics.reportError(span, "unclosed '{' in println! format string");
+                        return null;
+                    };
+                    if (arg_idx >= arg_types.len) {
+                        self.diagnostics.reportError(span, "println! is missing arguments for format placeholders");
+                        return null;
+                    }
+                    const spec = mapPrintfSpecifier(arg_types[arg_idx]) orelse {
+                        self.diagnostics.reportError(span, "println! argument type is not supported by printf lowering");
+                        return null;
+                    };
+                    try buffer.appendSlice(self.allocator, spec);
+                    arg_idx += 1;
+                    idx = close;
+                },
+                '}' => {
+                    if (idx + 1 < literal.len and literal[idx + 1] == '}') {
+                        try buffer.append(self.allocator, '}');
+                        idx += 1;
+                        continue;
+                    }
+                    self.diagnostics.reportError(span, "unmatched '}' in println! format string");
+                    return null;
+                },
+                else => try buffer.append(self.allocator, literal[idx]),
+            }
+        }
+
+        if (arg_idx != arg_types.len) {
+            self.diagnostics.reportError(span, "println! has more arguments than format placeholders");
+            return null;
+        }
+
+        if (literal.len == 0 or literal[literal.len - 1] != '\n') {
+            try buffer.append(self.allocator, '\n');
+        }
+
+        return try buffer.toOwnedSlice(self.allocator);
+    }
+
     fn lowerStmt(self: *FunctionBuilder, stmt_id: hir.StmtId) LowerError!void {
         const stmt = self.hir_crate.stmts.items[stmt_id];
         switch (stmt.kind) {
@@ -398,6 +521,33 @@ const FunctionBuilder = struct {
         return .{ .Temp = result_tmp };
     }
 };
+
+fn isBuiltinPrintln(hir_crate: *const hir.Crate, callee_id: hir.ExprId) bool {
+    const callee = hir_crate.exprs.items[callee_id];
+    return callee.kind == .UnresolvedIdent and std.mem.eql(u8, callee.kind.UnresolvedIdent, "println");
+}
+
+fn unquoteString(lit: []const u8) []const u8 {
+    if (lit.len >= 2 and lit[0] == '"' and lit[lit.len - 1] == '"') {
+        return lit[1 .. lit.len - 1];
+    }
+    return lit;
+}
+
+fn mapPrintfSpecifier(ty: mir.MirType) ?[]const u8 {
+    return switch (ty) {
+        .I32 => "%d",
+        .I64 => "%ld",
+        .U32 => "%u",
+        .U64 => "%lu",
+        .Usize => "%zu",
+        .F32, .F64 => "%f",
+        .Bool => "%d",
+        .Char => "%c",
+        .String, .Str => "%s",
+        else => null,
+    };
+}
 
 fn mapType(hir_crate: *const hir.Crate, ty_id: ?hir.TypeId, span: hir.Span, diagnostics: *diag.Diagnostics) ?mir.MirType {
     if (ty_id) |id| {

@@ -84,11 +84,13 @@ pub const MirFn = struct {
     locals: []MirType,
     ret_ty: ?MirType,
     blocks: []Block,
+    is_extern: bool = false,
 };
 
 pub const MirCrate = struct {
     arena: std.heap.ArenaAllocator,
     fns: std.ArrayListUnmanaged(MirFn),
+    builtin_printf: ?u32 = null,
 
     pub fn init(backing_allocator: std.mem.Allocator) MirCrate {
         return .{ .arena = std.heap.ArenaAllocator.init(backing_allocator), .fns = .{} };

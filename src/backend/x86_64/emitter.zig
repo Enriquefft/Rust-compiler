@@ -6,10 +6,10 @@ pub fn emitAssembly(allocator: std.mem.Allocator, mc: *const machine.MachineCrat
     defer buffer.deinit(allocator);
 
     var writer = buffer.writer(allocator);
-    try writer.writeAll("; x86_64 assembly\n");
+    try writer.writeAll(".intel_syntax noprefix\n.text\n");
 
     for (mc.fns) |func| {
-        try writer.print("global {s}\n{s}:\n", .{ func.name, func.name });
+        try writer.print(".globl {s}\n{s}:\n", .{ func.name, func.name });
         try emitPrologue(&writer, func.stack_size);
 
         for (func.blocks) |block| {
@@ -22,24 +22,52 @@ pub fn emitAssembly(allocator: std.mem.Allocator, mc: *const machine.MachineCrat
         try writer.writeAll("    leave\n    ret\n\n");
     }
 
+    if (mc.strings.len > 0) {
+        try writer.writeAll(".section .rodata\n");
+        for (mc.strings) |lit| {
+            try writer.print("{s}: .byte ", .{lit.name});
+            for (lit.value, 0..) |byte, idx| {
+                try writer.print("{d}", .{byte});
+                if (idx + 1 < lit.value.len) try writer.writeAll(", ");
+            }
+            if (lit.value.len > 0) try writer.writeAll(", ");
+            try writer.writeAll("0\n");
+        }
+        try writer.writeByte('\n');
+    }
+
     return try buffer.toOwnedSlice(allocator);
 }
 
 fn emitPrologue(writer: anytype, stack_size: usize) !void {
+    var aligned_size = stack_size;
+    const remainder: usize = aligned_size % 16;
+    const target: usize = 8;
+    if (remainder != target) {
+        const adjust = (16 + target - remainder) % 16;
+        aligned_size += adjust;
+    }
+
     try writer.writeAll("    push rbp\n    mov rbp, rsp\n");
-    if (stack_size > 0) {
-        try writer.print("    sub rsp, {d}\n", .{stack_size});
+    if (aligned_size > 0) {
+        try writer.print("    sub rsp, {d}\n", .{aligned_size});
     }
 }
 
 fn emitInst(writer: anytype, inst: machine.InstKind, fn_name: []const u8) !void {
     switch (inst) {
         .Mov => |payload| {
-            try writer.writeAll("    mov ");
-            try writeOperand(writer, payload.dst);
-            try writer.writeAll(", ");
-            try writeOperand(writer, payload.src);
-            try writer.writeByte('\n');
+            if (payload.src == .Label) {
+                try writer.writeAll("    lea ");
+                try writeOperand(writer, payload.dst);
+                try writer.print(", [rip + {s}]\n", .{payload.src.Label});
+            } else {
+                try writer.writeAll("    mov ");
+                try writeOperand(writer, payload.dst);
+                try writer.writeAll(", ");
+                try writeOperand(writer, payload.src);
+                try writer.writeByte('\n');
+            }
         },
         .Bin => |payload| {
             try writer.print("    {s} ", .{binMnemonic(payload.op)});
@@ -127,6 +155,7 @@ fn writeOperand(writer: anytype, op: machine.MOperand) !void {
             }
             try writer.writeByte(']');
         },
+        .Label => |name| try writer.writeAll(name),
         .VReg => |id| try writer.print("v{d}", .{id}),
     }
 }
@@ -165,17 +194,18 @@ test "emitter streams operands directly to writer" {
         .vreg_count = 2,
     };
 
-    var mc = machine.MachineCrate{ .allocator = std.testing.allocator, .fns = funcs };
+    var mc = machine.MachineCrate{ .allocator = std.testing.allocator, .fns = funcs, .strings = &[_]machine.StringLiteral{} };
     defer mc.deinit();
 
     const assembly = try emitAssembly(std.testing.allocator, &mc);
     defer std.testing.allocator.free(assembly);
 
-    const expected = "; x86_64 assembly\n" ++
-        "global emit_operands\n" ++
+    const expected = ".intel_syntax noprefix\n" ++
+        ".text\n" ++
+        ".globl emit_operands\n" ++
         "emit_operands:\n" ++
         "    push rbp\n    mov rbp, rsp\n" ++
-        "    sub rsp, 16\n" ++
+        "    sub rsp, 24\n" ++
         ".Lemit_operands_0:\n" ++
         "    mov rax, 42\n" ++
         "    cmp [rbp-16], 0\n" ++

@@ -164,32 +164,37 @@ fn checkExpr(
             }
         },
         .Call => |call| {
-            const callee_ty = try checkExpr(crate, call.callee, diagnostics, locals);
-            var param_types: []hir.TypeId = &[_]hir.TypeId{};
-            var ret_ty: hir.TypeId = try ensureType(crate, .Unknown);
+            if (isBuiltinPrintln(crate, call.callee)) {
+                try checkPrintlnArgs(crate, call, diagnostics, locals, span);
+                expr.ty = try ensureType(crate, .Unknown);
+            } else {
+                const callee_ty = try checkExpr(crate, call.callee, diagnostics, locals);
+                var param_types: []hir.TypeId = &[_]hir.TypeId{};
+                var ret_ty: hir.TypeId = try ensureType(crate, .Unknown);
 
-            if (callee_ty < crate.types.items.len) {
-                switch (crate.types.items[callee_ty].kind) {
-                    .Fn => |fn_ty| {
-                        param_types = fn_ty.params;
-                        ret_ty = fn_ty.ret;
-                    },
-                    else => {},
+                if (callee_ty < crate.types.items.len) {
+                    switch (crate.types.items[callee_ty].kind) {
+                        .Fn => |fn_ty| {
+                            param_types = fn_ty.params;
+                            ret_ty = fn_ty.ret;
+                        },
+                        else => {},
+                    }
                 }
-            }
 
-            if (param_types.len != call.args.len) {
-                diagnostics.reportError(span, "argument count does not match function type");
-            }
-
-            for (call.args, 0..) |arg_id, idx| {
-                const arg_ty = try checkExpr(crate, arg_id, diagnostics, locals);
-                if (idx < param_types.len and !typesEqual(crate, arg_ty, param_types[idx])) {
-                    diagnostics.reportError(span, "argument type does not match parameter");
+                if (param_types.len != call.args.len) {
+                    diagnostics.reportError(span, "argument count does not match function type");
                 }
-            }
 
-            expr.ty = ret_ty;
+                for (call.args, 0..) |arg_id, idx| {
+                    const arg_ty = try checkExpr(crate, arg_id, diagnostics, locals);
+                    if (idx < param_types.len and !typesEqual(crate, arg_ty, param_types[idx])) {
+                        diagnostics.reportError(span, "argument type does not match parameter");
+                    }
+                }
+
+                expr.ty = ret_ty;
+            }
         },
         .Assignment => |assign| {
             const target_ty = try checkExpr(crate, assign.target, diagnostics, locals);
@@ -339,6 +344,101 @@ fn checkStmt(
         },
         .Unknown => {},
     }
+}
+
+fn isBuiltinPrintln(crate: *hir.Crate, callee_id: hir.ExprId) bool {
+    const callee = crate.exprs.items[callee_id];
+    return callee.kind == .UnresolvedIdent and std.mem.eql(u8, callee.kind.UnresolvedIdent, "println");
+}
+
+fn checkPrintlnArgs(
+    crate: *hir.Crate,
+    call: @FieldType(hir.Expr.Kind, "Call"),
+    diagnostics: *diag.Diagnostics,
+    locals: *std.AutoHashMap(hir.LocalId, hir.TypeId),
+    span: hir.Span,
+) Error!void {
+    if (call.args.len == 0) {
+        diagnostics.reportError(span, "println! requires a format string argument");
+        return;
+    }
+
+    const fmt_expr_id = call.args[0];
+    const fmt_ty = try checkExpr(crate, fmt_expr_id, diagnostics, locals);
+    if (!isStringLike(crate, fmt_ty)) {
+        diagnostics.reportError(crate.exprs.items[fmt_expr_id].span, "println! expects a string literal format");
+    }
+
+    var placeholder_count: usize = 0;
+    if (crate.exprs.items[fmt_expr_id].kind == .ConstString) {
+        const parse_result = countPlaceholders(unquoteString(crate.exprs.items[fmt_expr_id].kind.ConstString));
+        switch (parse_result) {
+            .ok => placeholder_count = parse_result.ok,
+            .malformed => diagnostics.reportError(crate.exprs.items[fmt_expr_id].span, "malformed println! format string"),
+        }
+    }
+
+    const provided_args = call.args.len - 1;
+    if (placeholder_count != 0 and placeholder_count != provided_args) {
+        diagnostics.reportError(span, "argument count does not match println! placeholders");
+    }
+
+    for (call.args[1..]) |arg_id| {
+        const arg_ty = try checkExpr(crate, arg_id, diagnostics, locals);
+        if (!isSupportedPrintArg(crate, arg_ty)) {
+            diagnostics.reportError(crate.exprs.items[arg_id].span, "println! does not support this argument type");
+        }
+    }
+}
+
+fn countPlaceholders(fmt: []const u8) union(enum) { ok: usize, malformed: void } {
+    var idx: usize = 0;
+    var count: usize = 0;
+    while (idx < fmt.len) : (idx += 1) {
+        switch (fmt[idx]) {
+            '{' => {
+                if (idx + 1 < fmt.len and fmt[idx + 1] == '{') {
+                    idx += 1;
+                    continue;
+                }
+                const close = std.mem.indexOfScalarPos(u8, fmt, idx + 1, '}') orelse return .malformed;
+                count += 1;
+                idx = close;
+            },
+            '}' => {
+                if (idx + 1 < fmt.len and fmt[idx + 1] == '}') {
+                    idx += 1;
+                    continue;
+                }
+                return .malformed;
+            },
+            else => {},
+        }
+    }
+    return .{ .ok = count };
+}
+
+fn isSupportedPrintArg(crate: *hir.Crate, ty: hir.TypeId) bool {
+    if (ty >= crate.types.items.len) return false;
+    return switch (crate.types.items[ty].kind) {
+        .PrimInt, .PrimFloat, .Bool, .Char, .String, .Str => true,
+        else => false,
+    };
+}
+
+fn isStringLike(crate: *hir.Crate, ty: hir.TypeId) bool {
+    if (ty >= crate.types.items.len) return false;
+    return switch (crate.types.items[ty].kind) {
+        .String, .Str => true,
+        else => false,
+    };
+}
+
+fn unquoteString(lit: []const u8) []const u8 {
+    if (lit.len >= 2 and lit[0] == '"' and lit[lit.len - 1] == '"') {
+        return lit[1 .. lit.len - 1];
+    }
+    return lit;
 }
 
 fn ensureType(crate: *hir.Crate, kind: hir.Type.Kind) Error!hir.TypeId {

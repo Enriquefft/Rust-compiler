@@ -124,6 +124,12 @@ fn resolveExpr(
                 return;
             }
 
+            if (std.mem.eql(u8, name, "println")) {
+                // Treat println! as a built-in macro and defer lowering to later stages
+                // without emitting an unresolved-identifier error here.
+                return;
+            }
+
             const message = std.fmt.allocPrint(
                 diagnostics.allocator,
                 "unresolved identifier `{s}`",

@@ -12,8 +12,12 @@ pub fn lowerCrate(allocator: std.mem.Allocator, mir_crate: *const mir.MirCrate, 
     var fns = std.ArrayListUnmanaged(machine.MachineFn){};
     defer fns.deinit(allocator);
 
+    var strings = std.ArrayListUnmanaged(machine.StringLiteral){};
+    defer strings.deinit(allocator);
+
     for (mir_crate.fns.items) |func| {
-        const lowered = lowerFn(allocator, func, mir_crate, diagnostics) catch |err| {
+        if (func.is_extern) continue;
+        const lowered = lowerFn(allocator, func, mir_crate, diagnostics, &strings) catch |err| {
             switch (err) {
                 error.Unsupported => diagnostics.reportError(zero_span, "unsupported MIR construct in x86_64 lowering"),
                 else => {},
@@ -23,7 +27,7 @@ pub fn lowerCrate(allocator: std.mem.Allocator, mir_crate: *const mir.MirCrate, 
         try fns.append(allocator, lowered);
     }
 
-    return .{ .allocator = allocator, .fns = try fns.toOwnedSlice(allocator) };
+    return .{ .allocator = allocator, .fns = try fns.toOwnedSlice(allocator), .strings = try strings.toOwnedSlice(allocator) };
 }
 
 fn lowerFn(
@@ -31,6 +35,7 @@ fn lowerFn(
     func: mir.MirFn,
     mir_crate: *const mir.MirCrate,
     diagnostics: *diag.Diagnostics,
+    strings: *std.ArrayListUnmanaged(machine.StringLiteral),
 ) LowerError!machine.MachineFn {
     var blocks = std.ArrayListUnmanaged(machine.MachineBlock){};
     defer blocks.deinit(allocator);
@@ -42,7 +47,7 @@ fn lowerFn(
         defer insts.deinit(allocator);
 
         for (block.insts) |inst| {
-            if (try lowerInst(allocator, inst, &insts, diagnostics, &vreg_count, mir_crate)) |_| {} else {
+            if (try lowerInst(allocator, inst, &insts, diagnostics, &vreg_count, mir_crate, strings)) |_| {} else {
                 // no-op
             }
         }
@@ -72,20 +77,21 @@ fn lowerInst(
     diagnostics: *diag.Diagnostics,
     vreg_count: *machine.VReg,
     mir_crate: *const mir.MirCrate,
+    strings: *std.ArrayListUnmanaged(machine.StringLiteral),
 ) LowerError!?void {
     const dest_vreg = if (inst.dest) |tmp| destRegister(tmp, vreg_count) else null;
 
     switch (inst.kind) {
         .Copy => |payload| {
             if (dest_vreg) |dst| {
-                const src = try lowerOperand(payload.src, vreg_count, diagnostics);
+                const src = try lowerOperand(payload.src, vreg_count, diagnostics, strings, allocator);
                 try insts.append(allocator, .{ .Mov = .{ .dst = .{ .VReg = dst }, .src = src } });
             }
         },
         .Bin => |payload| {
             if (dest_vreg) |dst| {
-                const lhs = try lowerOperand(payload.lhs, vreg_count, diagnostics);
-                const rhs = try lowerOperand(payload.rhs, vreg_count, diagnostics);
+                const lhs = try lowerOperand(payload.lhs, vreg_count, diagnostics, strings, allocator);
+                const rhs = try lowerOperand(payload.rhs, vreg_count, diagnostics, strings, allocator);
                 const op = switch (payload.op) {
                     .Add => machine.BinOpcode.add,
                     .Sub => machine.BinOpcode.sub,
@@ -102,15 +108,15 @@ fn lowerInst(
         },
         .Cmp => |payload| {
             if (dest_vreg) |dst| {
-                const lhs = try lowerOperand(payload.lhs, vreg_count, diagnostics);
-                const rhs = try lowerOperand(payload.rhs, vreg_count, diagnostics);
+                const lhs = try lowerOperand(payload.lhs, vreg_count, diagnostics, strings, allocator);
+                const rhs = try lowerOperand(payload.rhs, vreg_count, diagnostics, strings, allocator);
                 try insts.append(allocator, .{ .Cmp = .{ .lhs = lhs, .rhs = rhs } });
                 try insts.append(allocator, .{ .Setcc = .{ .cond = mapCond(payload.op), .dst = .{ .VReg = dst } } });
             }
         },
         .Unary => |payload| {
             if (dest_vreg) |dst| {
-                const src = try lowerOperand(payload.operand, vreg_count, diagnostics);
+                const src = try lowerOperand(payload.operand, vreg_count, diagnostics, strings, allocator);
                 const op = switch (payload.op) {
                     .Not => machine.UnaryOpcode.not_,
                     .Neg => machine.UnaryOpcode.neg,
@@ -127,7 +133,7 @@ fn lowerInst(
         },
         .StoreLocal => |payload| {
             const mem = localMem(payload.local);
-            const src = try lowerOperand(payload.src, vreg_count, diagnostics);
+            const src = try lowerOperand(payload.src, vreg_count, diagnostics, strings, allocator);
             try insts.append(allocator, .{ .Mov = .{ .dst = mem, .src = src } });
         },
         .Call => |payload| {
@@ -136,9 +142,12 @@ fn lowerInst(
             const arg_registers = [_]machine.PhysReg{ .rdi, .rsi, .rdx, .rcx, .r8, .r9 };
             for (payload.args, 0..) |arg, idx| {
                 if (idx >= arg_registers.len) break; // simplistic handling: ignore extra args for now
-                const lowered = try lowerOperand(arg, vreg_count, diagnostics);
+                const lowered = try lowerOperand(arg, vreg_count, diagnostics, strings, allocator);
                 try insts.append(allocator, .{ .Mov = .{ .dst = .{ .Phys = arg_registers[idx] }, .src = lowered } });
             }
+
+            // SysV ABI requires rax to contain the number of XMM registers used for varargs.
+            try insts.append(allocator, .{ .Mov = .{ .dst = .{ .Phys = .rax }, .src = .{ .Imm = 0 } } });
 
             try insts.append(allocator, .{ .Call = target_name });
 
@@ -148,15 +157,15 @@ fn lowerInst(
         },
         .Range => |payload| {
             if (dest_vreg) |dst| {
-                const start = try lowerOperand(payload.start, vreg_count, diagnostics);
-                _ = try lowerOperand(payload.end, vreg_count, diagnostics);
+                const start = try lowerOperand(payload.start, vreg_count, diagnostics, strings, allocator);
+                _ = try lowerOperand(payload.end, vreg_count, diagnostics, strings, allocator);
                 try insts.append(allocator, .{ .Mov = .{ .dst = .{ .VReg = dst }, .src = start } });
             }
         },
         .Index => |payload| {
             if (dest_vreg) |dst| {
-                const target = try lowerOperand(payload.target, vreg_count, diagnostics);
-                const idx = try lowerOperand(payload.index, vreg_count, diagnostics);
+                const target = try lowerOperand(payload.target, vreg_count, diagnostics, strings, allocator);
+                const idx = try lowerOperand(payload.index, vreg_count, diagnostics, strings, allocator);
                 const mem = switch (target) {
                     .Mem => |base_mem| blk: {
                         const offset = switch (idx) {
@@ -181,7 +190,7 @@ fn lowerInst(
         },
         .Field => |payload| {
             if (dest_vreg) |dst| {
-                const target = try lowerOperand(payload.target, vreg_count, diagnostics);
+                const target = try lowerOperand(payload.target, vreg_count, diagnostics, strings, allocator);
                 const mem = switch (target) {
                     .Mem => |base_mem| blk: {
                         // Basic field layout: assume packed i64 fields and use a deterministic pseudo-offset based on the name.
@@ -202,7 +211,7 @@ fn lowerInst(
         .Array => |payload| {
             if (dest_vreg) |dst| {
                 if (payload.elems.len > 0) {
-                    const first = try lowerOperand(payload.elems[0], vreg_count, diagnostics);
+                    const first = try lowerOperand(payload.elems[0], vreg_count, diagnostics, strings, allocator);
                     try insts.append(allocator, .{ .Mov = .{ .dst = .{ .VReg = dst }, .src = first } });
                 } else {
                     try insts.append(allocator, .{ .Mov = .{ .dst = .{ .VReg = dst }, .src = .{ .Imm = 0 } } });
@@ -212,13 +221,13 @@ fn lowerInst(
         .StructInit => |payload| {
             if (dest_vreg) |dst| {
                 if (payload.fields.len > 0) {
-                    const first = try lowerOperand(payload.fields[0].value, vreg_count, diagnostics);
+                    const first = try lowerOperand(payload.fields[0].value, vreg_count, diagnostics, strings, allocator);
                     try insts.append(allocator, .{ .Mov = .{ .dst = .{ .VReg = dst }, .src = first } });
                 } else {
                     try insts.append(allocator, .{ .Mov = .{ .dst = .{ .VReg = dst }, .src = .{ .Imm = 0 } } });
                 }
             }
-        }
+        },
     }
 
     return {};
@@ -234,7 +243,7 @@ fn lowerTerm(
     switch (term) {
         .Goto => |target| try insts.append(allocator, .{ .Jmp = target }),
         .If => |payload| {
-            const cond_op = lowerSimpleOperand(payload.cond, vreg_count, diagnostics) catch |err| switch (err) {
+            const cond_op = lowerSimpleOperand(payload.cond, vreg_count, diagnostics, null, null) catch |err| switch (err) {
                 error.Unsupported => return err,
                 else => return err,
             };
@@ -244,16 +253,24 @@ fn lowerTerm(
         },
         .Ret => |maybe_op| {
             if (maybe_op) |op| {
-                const lowered = lowerSimpleOperand(op, vreg_count, diagnostics) catch |err| return err;
+                const lowered = lowerSimpleOperand(op, vreg_count, diagnostics, null, null) catch |err| return err;
                 try insts.append(allocator, .{ .Mov = .{ .dst = .{ .Phys = .rax }, .src = lowered } });
+            } else {
+                try insts.append(allocator, .{ .Mov = .{ .dst = .{ .Phys = .rax }, .src = .{ .Imm = 0 } } });
             }
             try insts.append(allocator, .{ .Ret = null });
         },
     }
 }
 
-fn lowerOperand(op: mir.Operand, vreg_count: *machine.VReg, diagnostics: *diag.Diagnostics) LowerError!machine.MOperand {
-    return lowerSimpleOperand(op, vreg_count, diagnostics) catch |err| switch (err) {
+fn lowerOperand(
+    op: mir.Operand,
+    vreg_count: *machine.VReg,
+    diagnostics: *diag.Diagnostics,
+    strings: *std.ArrayListUnmanaged(machine.StringLiteral),
+    allocator: std.mem.Allocator,
+) LowerError!machine.MOperand {
+    return lowerSimpleOperand(op, vreg_count, diagnostics, strings, allocator) catch |err| switch (err) {
         error.Unsupported => {
             diagnostics.reportError(zero_span, "unsupported operand in x86_64 lowering");
             return err;
@@ -262,20 +279,49 @@ fn lowerOperand(op: mir.Operand, vreg_count: *machine.VReg, diagnostics: *diag.D
     };
 }
 
-fn lowerSimpleOperand(op: mir.Operand, vreg_count: ?*machine.VReg, diagnostics: *diag.Diagnostics) LowerError!machine.MOperand {
+fn lowerSimpleOperand(
+    op: mir.Operand,
+    vreg_count: ?*machine.VReg,
+    diagnostics: *diag.Diagnostics,
+    strings: ?*std.ArrayListUnmanaged(machine.StringLiteral),
+    allocator: ?std.mem.Allocator,
+) LowerError!machine.MOperand {
     return switch (op) {
         .Temp => |tmp| .{ .VReg = destRegister(tmp, vreg_count) },
         .Local => |local| localMem(local),
         .ImmInt => |v| .{ .Imm = v },
         .ImmBool => |v| .{ .Imm = if (v) 1 else 0 },
         .ImmFloat => |v| .{ .Imm = @bitCast(v) },
-        .ImmString => |_| .{ .Imm = 0 },
+        .ImmString => |bytes| blk: {
+            if (strings) |lit_list| {
+                const alloc = allocator orelse return error.Unsupported;
+                const label = try ensureStringLiteral(lit_list, alloc, bytes);
+                break :blk .{ .Label = label };
+            }
+            diagnostics.reportError(zero_span, "string literal lowering requires storage list");
+            return error.Unsupported;
+        },
         .Global => |id| .{ .Imm = @intCast(id) },
         else => {
             diagnostics.reportError(zero_span, "unsupported operand kind for x86_64 lowering");
             return error.Unsupported;
         },
     };
+}
+
+fn ensureStringLiteral(
+    strings: *std.ArrayListUnmanaged(machine.StringLiteral),
+    allocator: std.mem.Allocator,
+    value: []const u8,
+) ![]const u8 {
+    for (strings.items) |lit| {
+        if (std.mem.eql(u8, lit.value, value)) return lit.name;
+    }
+
+    const name = try std.fmt.allocPrint(allocator, "str{d}", .{strings.items.len});
+    const stored = try allocator.dupe(u8, value);
+    try strings.append(allocator, .{ .name = name, .value = stored });
+    return name;
 }
 
 fn resolveCallTarget(target: mir.Operand, mir_crate: *const mir.MirCrate, diagnostics: *diag.Diagnostics) LowerError![]const u8 {
