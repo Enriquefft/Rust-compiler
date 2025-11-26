@@ -39,7 +39,7 @@ pub fn resolve(crate: *hir.Crate, diagnostics: *diag.Diagnostics) Error!void {
                     }
 
                     const pat = &crate.patterns.items[param_pat_id];
-                    try bindPattern(pat, &locals, &next_local, diagnostics);
+                    try bindPattern(pat, &locals, &next_local, diagnostics, null);
                     func.params[idx] = pat.id;
                 }
 
@@ -95,21 +95,37 @@ fn bindPattern(
     locals: *std.StringHashMap(hir.LocalId),
     next_local: *hir.LocalId,
     diagnostics: *diag.Diagnostics,
+    scope_start: ?hir.LocalId,
 ) Error!void {
     switch (pat.kind) {
         .Identifier => |name| {
-            if (try locals.fetchPut(name, next_local.*)) |existing| {
-                const message = std.fmt.allocPrint(
-                    diagnostics.allocator,
-                    "duplicate local binding `{s}` previously defined as local {d}",
-                    .{ name, existing.value },
-                ) catch name;
-                diagnostics.reportError(pat.span, message);
-                if (message.ptr != name.ptr) diagnostics.allocator.free(message);
-            } else {
-                pat.id = next_local.*;
-                next_local.* += 1;
+            if (locals.get(name)) |existing| {
+                if (scope_start) |start| {
+                    if (existing >= start) {
+                        const message = std.fmt.allocPrint(
+                            diagnostics.allocator,
+                            "duplicate local binding `{s}` previously defined as local {d}",
+                            .{ name, existing },
+                        ) catch name;
+                        diagnostics.reportError(pat.span, message);
+                        if (message.ptr != name.ptr) diagnostics.allocator.free(message);
+                        return;
+                    }
+                } else {
+                    const message = std.fmt.allocPrint(
+                        diagnostics.allocator,
+                        "duplicate local binding `{s}` previously defined as local {d}",
+                        .{ name, existing },
+                    ) catch name;
+                    diagnostics.reportError(pat.span, message);
+                    if (message.ptr != name.ptr) diagnostics.allocator.free(message);
+                    return;
+                }
             }
+
+            try locals.put(name, next_local.*);
+            pat.id = next_local.*;
+            next_local.* += 1;
         },
         .Wildcard => {
             pat.id = next_local.*;
@@ -132,7 +148,7 @@ fn resolveStmt(
             if (let_stmt.value) |expr_id| {
                 try resolveExpr(crate, expr_id, module_symbols, locals, next_local, diagnostics);
             }
-            try bindPattern(&let_stmt.pat, locals, next_local, diagnostics);
+            try bindPattern(&let_stmt.pat, locals, next_local, diagnostics, null);
         },
         .Expr => |expr_id| {
             try resolveExpr(crate, expr_id, module_symbols, locals, next_local, diagnostics);
@@ -214,7 +230,7 @@ fn resolveExpr(
         },
         .For => |*for_expr| {
             try resolveExpr(crate, for_expr.iter, module_symbols, locals, next_local, diagnostics);
-            try bindPattern(&for_expr.pat, locals, next_local, diagnostics);
+            try bindPattern(&for_expr.pat, locals, next_local, diagnostics, null);
             try resolveExpr(crate, for_expr.body, module_symbols, locals, next_local, diagnostics);
         },
         .Cast => |cast| try resolveExpr(crate, cast.expr, module_symbols, locals, next_local, diagnostics),
@@ -234,10 +250,16 @@ fn resolveExpr(
             }
         },
         .Lambda => |lambda| {
+            var lambda_locals = try locals.clone();
+            defer lambda_locals.deinit();
+
+            var lambda_next_local = next_local.*;
+            const scope_start = lambda_next_local;
             for (lambda.params) |*param| {
-                try bindPattern(param, locals, next_local, diagnostics);
+                try bindPattern(param, &lambda_locals, &lambda_next_local, diagnostics, scope_start);
             }
-            try resolveExpr(crate, lambda.body, module_symbols, locals, next_local, diagnostics);
+            try resolveExpr(crate, lambda.body, module_symbols, &lambda_locals, &lambda_next_local, diagnostics);
+            next_local.* = lambda_next_local;
         },
         .Path => |path| {
             if (path.segments.len == 1) {

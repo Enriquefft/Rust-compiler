@@ -693,7 +693,7 @@ test "lower function with simple block" {
 
     try crate.patterns.append(crate.allocator(), .{ .id = 0, .kind = .{ .Identifier = "x" }, .span = span });
 
-    try crate.items.append(crate.allocator(), .{ .id = 0, .kind = .{ .Function = .{ .def_id = 0, .name = "main", .params = &[_]hir.LocalId{}, .return_type = i64_ty, .body = block_expr_id, .span = span } }, .span = span });
+    try crate.items.append(crate.allocator(), .{ .id = 0, .kind = .{ .Function = .{ .def_id = 0, .name = "main", .params = &[_]hir.LocalId{}, .param_types = &[_]hir.TypeId{},.return_type = i64_ty, .body = block_expr_id, .span = span } }, .span = span });
 
     var mir_crate = try lowerFromHir(allocator, &crate, &diagnostics);
     defer mir_crate.deinit();
@@ -735,7 +735,7 @@ test "lower char and string literals" {
 
     try crate.patterns.append(crate.allocator(), .{ .id = 0, .kind = .{ .Identifier = "c" }, .span = span });
 
-    try crate.items.append(crate.allocator(), .{ .id = 0, .kind = .{ .Function = .{ .def_id = 0, .name = "main", .params = &[_]hir.LocalId{}, .return_type = string_ty, .body = block_expr_id, .span = span } }, .span = span });
+    try crate.items.append(crate.allocator(), .{ .id = 0, .kind = .{ .Function = .{ .def_id = 0, .name = "main", .params = &[_]hir.LocalId{}, .param_types = &[_]hir.TypeId{},.return_type = string_ty, .body = block_expr_id, .span = span } }, .span = span });
 
     var mir_crate = try lowerFromHir(allocator, &crate, &diagnostics);
     defer mir_crate.deinit();
@@ -784,7 +784,7 @@ test "lower if expression creates branch blocks" {
     const if_id: hir.ExprId = @intCast(crate.exprs.items.len);
     try crate.exprs.append(crate.allocator(), .{ .id = if_id, .kind = .{ .If = .{ .cond = cond_id, .then_branch = then_block, .else_branch = else_block } }, .ty = i32_ty, .span = span });
 
-    try crate.items.append(crate.allocator(), .{ .id = 0, .kind = .{ .Function = .{ .def_id = 0, .name = "main", .params = &[_]hir.LocalId{}, .return_type = i32_ty, .body = if_id, .span = span } }, .span = span });
+    try crate.items.append(crate.allocator(), .{ .id = 0, .kind = .{ .Function = .{ .def_id = 0, .name = "main", .params = &[_]hir.LocalId{}, .param_types = &[_]hir.TypeId{},.return_type = i32_ty, .body = if_id, .span = span } }, .span = span });
 
     var mir_crate = try lowerFromHir(allocator, &crate, &diagnostics);
     defer mir_crate.deinit();
@@ -812,7 +812,7 @@ test "lower range and aggregate expressions" {
 
     const helper_const_id: hir.ExprId = @intCast(crate.exprs.items.len);
     try crate.exprs.append(crate.allocator(), .{ .id = helper_const_id, .kind = .{ .ConstInt = 7 }, .ty = i32_ty, .span = span });
-    try crate.items.append(crate.allocator(), .{ .id = 0, .kind = .{ .Function = .{ .def_id = 1, .name = "helper", .params = &[_]hir.LocalId{}, .return_type = i32_ty, .body = helper_const_id, .span = span } }, .span = span });
+    try crate.items.append(crate.allocator(), .{ .id = 0, .kind = .{ .Function = .{ .def_id = 1, .name = "helper", .params = &[_]hir.LocalId{}, .param_types = &[_]hir.TypeId{},.return_type = i32_ty, .body = helper_const_id, .span = span } }, .span = span });
 
     const one_id: hir.ExprId = @intCast(crate.exprs.items.len);
     try crate.exprs.append(crate.allocator(), .{ .id = one_id, .kind = .{ .ConstInt = 1 }, .ty = i32_ty, .span = span });
@@ -882,7 +882,7 @@ test "lower range and aggregate expressions" {
     const block_expr_id: hir.ExprId = @intCast(crate.exprs.items.len);
     try crate.exprs.append(crate.allocator(), .{ .id = block_expr_id, .kind = .{ .Block = .{ .stmts = stmts_slice, .tail = call_expr_id } }, .ty = i32_ty, .span = span });
 
-    try crate.items.append(crate.allocator(), .{ .id = 1, .kind = .{ .Function = .{ .def_id = 0, .name = "main", .params = &[_]hir.LocalId{}, .return_type = i32_ty, .body = block_expr_id, .span = span } }, .span = span });
+    try crate.items.append(crate.allocator(), .{ .id = 1, .kind = .{ .Function = .{ .def_id = 0, .name = "main", .params = &[_]hir.LocalId{}, .param_types = &[_]hir.TypeId{}, .return_type = i32_ty, .body = block_expr_id, .span = span } }, .span = span });
 
     var mir_crate = try lowerFromHir(allocator, &crate, &diagnostics);
     defer mir_crate.deinit();
@@ -946,10 +946,10 @@ test "lower println macro into printf call" {
     const call_expr_id: hir.ExprId = @intCast(crate.exprs.items.len);
     try crate.exprs.append(crate.allocator(), .{ .id = call_expr_id, .kind = .{ .Call = .{ .callee = callee_expr_id, .args = args_slice } }, .ty = i32_ty, .span = span });
 
-    const println_fn: hir.Function = .{ .def_id = 0, .name = "println", .params = &[_]hir.LocalId{}, .return_type = null, .body = null, .span = span };
+    const println_fn: hir.Function = .{ .def_id = 0, .name = "println", .params = &[_]hir.LocalId{}, .param_types = &[_]hir.TypeId{}, .return_type = null, .body = null, .span = span };
     try crate.items.append(crate.allocator(), .{ .id = 0, .kind = .{ .Function = println_fn }, .span = span });
 
-    const main_fn: hir.Function = .{ .def_id = 1, .name = "main", .params = &[_]hir.LocalId{}, .return_type = i32_ty, .body = call_expr_id, .span = span };
+    const main_fn: hir.Function = .{ .def_id = 1, .name = "main", .params = &[_]hir.LocalId{}, .param_types = &[_]hir.TypeId{}, .return_type = i32_ty, .body = call_expr_id, .span = span };
     try crate.items.append(crate.allocator(), .{ .id = 1, .kind = .{ .Function = main_fn }, .span = span });
 
     var mir_crate = try lowerFromHir(allocator, &crate, &diagnostics);
