@@ -14,8 +14,7 @@ pub const Artifact = struct {
 
 /// Entrypoint for backend codegen. Dispatches to the configured target backend.
 pub fn codegen(mir_crate: *const mir.MirCrate, allocator: std.mem.Allocator, diagnostics: *diag.Diagnostics) !Artifact {
-    _ = diagnostics; // Target-specific diagnostics would be reported here.
-    return x86_64.codegen(mir_crate, allocator);
+    return x86_64.codegen(mir_crate, allocator, diagnostics);
 }
 
 test "backend returns placeholder assembly" {

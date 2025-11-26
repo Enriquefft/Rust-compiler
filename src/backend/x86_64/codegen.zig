@@ -1,18 +1,21 @@
 const std = @import("std");
 const mir = @import("../../mir/mir.zig");
 const backend = @import("../backend.zig");
+const diag = @import("../../diag/diagnostics.zig");
+const isel = @import("isel.zig");
+const regalloc = @import("regalloc.zig");
+const emitter = @import("emitter.zig");
 
-/// Generates placeholder x86_64 assembly from MIR.
-pub fn codegen(mir_crate: *const mir.MirCrate, allocator: std.mem.Allocator) !backend.Artifact {
-    var buffer = try std.ArrayList(u8).initCapacity(allocator, 0);
-    defer buffer.deinit(allocator);
+/// Generates x86_64 assembly from MIR.
+pub fn codegen(mir_crate: *const mir.MirCrate, allocator: std.mem.Allocator, diagnostics: *diag.Diagnostics) !backend.Artifact {
+    var machine_crate = try isel.lowerCrate(allocator, mir_crate, diagnostics);
+    defer machine_crate.deinit();
 
-    var writer = buffer.writer(allocator);
-    try writer.writeAll("; x86_64 assembly placeholder\n");
-    try writer.print("; function count: {d}\n", .{mir_crate.fns.items.len});
+    for (machine_crate.fns) |*func| {
+        try regalloc.allocateRegisters(func, diagnostics);
+    }
 
-    return .{
-        .allocator = allocator,
-        .assembly = try buffer.toOwnedSlice(allocator),
-    };
+    const assembly = try emitter.emitAssembly(allocator, &machine_crate);
+
+    return .{ .allocator = allocator, .assembly = assembly };
 }
