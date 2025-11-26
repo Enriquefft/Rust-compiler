@@ -10,6 +10,7 @@ test "all modules" {
     _ = @import("diag/diagnostics.zig");
     _ = @import("diag/source_map.zig");
     _ = @import("backend/backend.zig");
+    _ = @import("backend/x86_64/emitter.zig");
     _ = @import("hir/hir.zig");
     _ = @import("hir/name_res.zig");
     _ = @import("hir/typecheck.zig");
