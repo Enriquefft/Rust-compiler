@@ -13,7 +13,7 @@ pub fn lowerCrate(allocator: std.mem.Allocator, mir_crate: *const mir.MirCrate, 
     defer fns.deinit(allocator);
 
     for (mir_crate.fns.items) |func| {
-        const lowered = try lowerFn(allocator, func, diagnostics) catch |err| {
+        const lowered = try lowerFn(allocator, func, mir_crate, diagnostics) catch |err| {
             switch (err) {
                 error.Unsupported => diagnostics.reportError(zero_span, "unsupported MIR construct in x86_64 lowering"),
                 else => {},
@@ -26,7 +26,12 @@ pub fn lowerCrate(allocator: std.mem.Allocator, mir_crate: *const mir.MirCrate, 
     return .{ .allocator = allocator, .fns = try fns.toOwnedSlice(allocator) };
 }
 
-fn lowerFn(allocator: std.mem.Allocator, func: mir.MirFn, diagnostics: *diag.Diagnostics) LowerError!machine.MachineFn {
+fn lowerFn(
+    allocator: std.mem.Allocator,
+    func: mir.MirFn,
+    mir_crate: *const mir.MirCrate,
+    diagnostics: *diag.Diagnostics,
+) LowerError!machine.MachineFn {
     var blocks = std.ArrayListUnmanaged(machine.MachineBlock){};
     defer blocks.deinit(allocator);
 
@@ -37,7 +42,7 @@ fn lowerFn(allocator: std.mem.Allocator, func: mir.MirFn, diagnostics: *diag.Dia
         defer insts.deinit(allocator);
 
         for (block.insts) |inst| {
-            if (try lowerInst(allocator, inst, &insts, diagnostics, &vreg_count)) |_| {} else {
+            if (try lowerInst(allocator, inst, &insts, diagnostics, &vreg_count, mir_crate)) |_| {} else {
                 // no-op
             }
         }
@@ -66,6 +71,7 @@ fn lowerInst(
     insts: *std.ArrayListUnmanaged(machine.InstKind),
     diagnostics: *diag.Diagnostics,
     vreg_count: *machine.VReg,
+    mir_crate: *const mir.MirCrate,
 ) LowerError!?void {
     const dest_vreg = if (inst.dest) |tmp| destRegister(tmp, vreg_count) else null;
 
@@ -124,6 +130,95 @@ fn lowerInst(
             const src = try lowerOperand(payload.src, vreg_count, diagnostics);
             try insts.append(allocator, .{ .Mov = .{ .dst = mem, .src = src } });
         },
+        .Call => |payload| {
+            const target_name = resolveCallTarget(payload.target, mir_crate, diagnostics) catch |err| return err;
+
+            const arg_registers = [_]machine.PhysReg{ .rdi, .rsi, .rdx, .rcx, .r8, .r9 };
+            for (payload.args, 0..) |arg, idx| {
+                if (idx >= arg_registers.len) break; // simplistic handling: ignore extra args for now
+                const lowered = try lowerOperand(arg, vreg_count, diagnostics);
+                try insts.append(allocator, .{ .Mov = .{ .dst = .{ .Phys = arg_registers[idx] }, .src = lowered } });
+            }
+
+            try insts.append(allocator, .{ .Call = target_name });
+
+            if (dest_vreg) |dst| {
+                try insts.append(allocator, .{ .Mov = .{ .dst = .{ .VReg = dst }, .src = .{ .Phys = .rax } } });
+            }
+        },
+        .Range => |payload| {
+            if (dest_vreg) |dst| {
+                const start = try lowerOperand(payload.start, vreg_count, diagnostics);
+                _ = try lowerOperand(payload.end, vreg_count, diagnostics);
+                try insts.append(allocator, .{ .Mov = .{ .dst = .{ .VReg = dst }, .src = start } });
+            }
+        },
+        .Index => |payload| {
+            if (dest_vreg) |dst| {
+                const target = try lowerOperand(payload.target, vreg_count, diagnostics);
+                const idx = try lowerOperand(payload.index, vreg_count, diagnostics);
+                const mem = switch (target) {
+                    .Mem => |base_mem| blk: {
+                        const offset = switch (idx) {
+                            .Imm => |imm| blk2: {
+                                const scaled: i32 = @intCast(imm * @as(i64, @intCast(@sizeOf(i64))));
+                                break :blk2 base_mem.offset + scaled;
+                            },
+                            else => {
+                                diagnostics.reportError(zero_span, "indexing currently supports only immediate indices");
+                                return error.Unsupported;
+                            },
+                        };
+                        break :blk machine.MOperand{ .Mem = .{ .base = base_mem.base, .offset = offset } };
+                    },
+                    else => {
+                        diagnostics.reportError(zero_span, "unsupported index base for x86_64 lowering");
+                        return error.Unsupported;
+                    },
+                };
+                try insts.append(allocator, .{ .Mov = .{ .dst = .{ .VReg = dst }, .src = mem } });
+            }
+        },
+        .Field => |payload| {
+            if (dest_vreg) |dst| {
+                const target = try lowerOperand(payload.target, vreg_count, diagnostics);
+                const mem = switch (target) {
+                    .Mem => |base_mem| blk: {
+                        // Basic field layout: assume packed i64 fields and use a deterministic pseudo-offset based on the name.
+                        var hash: u32 = 0;
+                        for (payload.name) |ch| hash = hash * 31 + ch;
+                        const field_index: i32 = @intCast(hash % 4); // limit offset growth
+                        const offset = base_mem.offset + field_index * @as(i32, @intCast(@sizeOf(i64)));
+                        break :blk machine.MOperand{ .Mem = .{ .base = base_mem.base, .offset = offset } };
+                    },
+                    else => {
+                        diagnostics.reportError(zero_span, "unsupported field base for x86_64 lowering");
+                        return error.Unsupported;
+                    },
+                };
+                try insts.append(allocator, .{ .Mov = .{ .dst = .{ .VReg = dst }, .src = mem } });
+            }
+        },
+        .Array => |payload| {
+            if (dest_vreg) |dst| {
+                if (payload.elems.len > 0) {
+                    const first = try lowerOperand(payload.elems[0], vreg_count, diagnostics);
+                    try insts.append(allocator, .{ .Mov = .{ .dst = .{ .VReg = dst }, .src = first } });
+                } else {
+                    try insts.append(allocator, .{ .Mov = .{ .dst = .{ .VReg = dst }, .src = .{ .Imm = 0 } } });
+                }
+            }
+        },
+        .StructInit => |payload| {
+            if (dest_vreg) |dst| {
+                if (payload.fields.len > 0) {
+                    const first = try lowerOperand(payload.fields[0].value, vreg_count, diagnostics);
+                    try insts.append(allocator, .{ .Mov = .{ .dst = .{ .VReg = dst }, .src = first } });
+                } else {
+                    try insts.append(allocator, .{ .Mov = .{ .dst = .{ .VReg = dst }, .src = .{ .Imm = 0 } } });
+                }
+            }
+        },
         else => {
             diagnostics.reportError(zero_span, "unsupported MIR instruction in x86_64 lowering");
             return error.Unsupported;
@@ -177,8 +272,27 @@ fn lowerSimpleOperand(op: mir.Operand, vreg_count: ?*machine.VReg, diagnostics: 
         .Local => |local| localMem(local),
         .ImmInt => |v| .{ .Imm = v },
         .ImmBool => |v| .{ .Imm = if (v) 1 else 0 },
+        .ImmFloat => |v| .{ .Imm = @bitCast(i64, v) },
+        .ImmString => |_| .{ .Imm = 0 },
+        .Global => |id| .{ .Imm = @intCast(id) },
         else => {
             diagnostics.reportError(zero_span, "unsupported operand kind for x86_64 lowering");
+            return error.Unsupported;
+        },
+    };
+}
+
+fn resolveCallTarget(target: mir.Operand, mir_crate: *const mir.MirCrate, diagnostics: *diag.Diagnostics) LowerError![]const u8 {
+    return switch (target) {
+        .Global => |id| blk: {
+            if (id >= mir_crate.fns.items.len) {
+                diagnostics.reportError(zero_span, "call target refers to unknown function id");
+                return error.Unsupported;
+            }
+            break :blk mir_crate.fns.items[id].name;
+        },
+        else => {
+            diagnostics.reportError(zero_span, "only direct function calls are supported in x86_64 lowering");
             return error.Unsupported;
         },
     };
