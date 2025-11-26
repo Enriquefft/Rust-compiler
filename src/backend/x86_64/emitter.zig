@@ -195,7 +195,7 @@ fn emitInst(writer: anytype, inst: machine.InstKind, fn_name: []const u8) !void 
                 try writer.writeByte('\n');
             },
         },
-        .Ret => |_| {},
+        .Ret => |_| try writer.writeAll("    leave\n    ret\n"),
     }
 }
 
