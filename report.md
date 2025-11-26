@@ -1,6 +1,6 @@
 # Codes compilation report
 
-Generated: 2025-11-26T12:49:11-05:00
+Generated: 2025-11-26T14:15:44-05:00
 
 ## closures_test1.rs
 
@@ -8,9 +8,27 @@ Generated: 2025-11-26T12:49:11-05:00
 #### Compile output
 
 
-error: /home/hybridz/Projects/Rust-compiler/codes/closures_test1.rs:6:28-6:29: duplicate local binding `n` previously defined as local 0
+error: /home/hybridz/Projects/Rust-compiler/codes/closures_test1.rs:2:46-2:50: argument count does not match function type
+fn apply(f: fn(i32) -> i32, x: i32) -> i32 { f(x) }
+                                             ^^^^
+error: /home/hybridz/Projects/Rust-compiler/codes/closures_test1.rs:2:1-2:52: function return type does not match body
+fn apply(f: fn(i32) -> i32, x: i32) -> i32 { f(x) }
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+error: /home/hybridz/Projects/Rust-compiler/codes/closures_test1.rs:5:28-5:33: arithmetic operands must have the same type
+    let add_one = |n: i32| n + 1;
+                           ^^^^^
+error: /home/hybridz/Projects/Rust-compiler/codes/closures_test1.rs:6:52-6:57: arithmetic operands must have the same type
     let double_then_add = |n: i32| { let doubled = n * 2; doubled + 3 };
-                           ^
+                                                   ^^^^^
+error: /home/hybridz/Projects/Rust-compiler/codes/closures_test1.rs:6:59-6:70: arithmetic operands must have the same type
+    let double_then_add = |n: i32| { let doubled = n * 2; doubled + 3 };
+                                                          ^^^^^^^^^^^
+error: /home/hybridz/Projects/Rust-compiler/codes/closures_test1.rs:7:23-7:40: argument type does not match parameter
+    println!("{} {}", apply(add_one, 5), double_then_add(4));
+                      ^^^^^^^^^^^^^^^^^
+error: /home/hybridz/Projects/Rust-compiler/codes/closures_test1.rs:7:42-7:60: argument type does not match parameter
+    println!("{} {}", apply(add_one, 5), double_then_add(4));
+                                         ^^^^^^^^^^^^^^^^^^
 
 
 #### Run output
@@ -23,12 +41,28 @@ Skipped because compilation failed.
 #### Compile output
 
 
-error: /home/hybridz/Projects/Rust-compiler/codes/closures_test2.rs:8:20-8:21: duplicate local binding `a` previously defined as local 0
+error: /home/hybridz/Projects/Rust-compiler/codes/closures_test2.rs:3:5-3:12: argument count does not match function type
+    f(x, y)
+    ^^^^^^^
+error: /home/hybridz/Projects/Rust-compiler/codes/closures_test2.rs:2:1-4:2: function return type does not match body
+fn operate(f: fn(i32, i32) -> i32, x: i32, y: i32) -> i32 {
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    f(x, y)
+^^^^^^^^^^^
+}
+^
+error: /home/hybridz/Projects/Rust-compiler/codes/closures_test2.rs:7:32-7:37: arithmetic operands must be numeric
+    let sum = |a: i32, b: i32| a + b;
+                               ^^^^^
+error: /home/hybridz/Projects/Rust-compiler/codes/closures_test2.rs:8:38-8:43: arithmetic operands must be numeric
     let product = |a: i32, b: i32| { a * b };
-                   ^
-error: /home/hybridz/Projects/Rust-compiler/codes/closures_test2.rs:8:28-8:29: duplicate local binding `b` previously defined as local 1
-    let product = |a: i32, b: i32| { a * b };
-                           ^
+                                     ^^^^^
+error: /home/hybridz/Projects/Rust-compiler/codes/closures_test2.rs:9:23-9:41: argument type does not match parameter
+    println!("{} {}", operate(sum, 2, 4), operate(product, 3, 5));
+                      ^^^^^^^^^^^^^^^^^^
+error: /home/hybridz/Projects/Rust-compiler/codes/closures_test2.rs:9:43-9:65: argument type does not match parameter
+    println!("{} {}", operate(sum, 2, 4), operate(product, 3, 5));
+                                          ^^^^^^^^^^^^^^^^^^^^^^
 
 
 #### Run output
@@ -48,13 +82,13 @@ Skipped because compilation failed.
 #### Run output
 
 
-/tmp/tmp.Iqz0UOmfkH/conditionals_and_ranges_test1.s:22:5: error: invalid operand for instruction
+/tmp/tmp.6gPpFt05sp/conditionals_and_ranges_test1.s:22:5: error: invalid operand for instruction
     idiv rax, 2
     ^
-/tmp/tmp.Iqz0UOmfkH/conditionals_and_ranges_test1.s:50:5: error: invalid operand for instruction
+/tmp/tmp.6gPpFt05sp/conditionals_and_ranges_test1.s:50:5: error: invalid operand for instruction
     idiv rdi, 2
     ^
-/tmp/tmp.Iqz0UOmfkH/conditionals_and_ranges_test1.s:75:9: error: ambiguous operand size for instruction 'add'
+/tmp/tmp.6gPpFt05sp/conditionals_and_ranges_test1.s:75:9: error: ambiguous operand size for instruction 'add'
     add [rbp-40], 1
         ^~~~~~~
 
@@ -163,10 +197,10 @@ Skipped because compilation failed.
 #### Run output
 
 
-/tmp/tmp.Iqz0UOmfkH/core_language_test2.s:38:16: error: Expected 'PTR' or 'ptr' token!
+/tmp/tmp.6gPpFt05sp/core_language_test2.s:38:16: error: Expected 'PTR' or 'ptr' token!
     call double
                ^
-/tmp/tmp.Iqz0UOmfkH/core_language_test2.s:42:16: error: Expected 'PTR' or 'ptr' token!
+/tmp/tmp.6gPpFt05sp/core_language_test2.s:42:16: error: Expected 'PTR' or 'ptr' token!
     call double
                ^
 
