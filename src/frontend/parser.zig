@@ -22,6 +22,10 @@ const Parser = struct {
     diagnostics: *diag.Diagnostics,
     tokens: []const Token,
     pos: usize,
+    /// When true, struct literals (e.g., `Foo { x: 1 }`) are not parsed at the expression level.
+    /// This is used in contexts where a block is required after an expression, such as
+    /// `if cond { }`, `while cond { }`, and `for x in iter { }`.
+    no_struct_literal: bool = false,
 
     fn parseCrate(self: *Parser) ast.Crate {
         var items = std.ArrayListUnmanaged(ast.Item){};
@@ -379,7 +383,7 @@ const Parser = struct {
 
     fn parseWhileStmt(self: *Parser) ?ast.Stmt {
         const kw = self.expectConsume(.KwWhile, "expected 'while'") orelse return null;
-        const cond = self.parseExpr() orelse return null;
+        const cond = self.parseExprNoStructLiteral() orelse return null;
         const body = self.parseBlock() orelse return null;
         const span = Span{ .file_id = kw.span.file_id, .start = kw.span.start, .end = body.span.end };
         return ast.Stmt{ .tag = .While, .span = span, .data = .{ .While = .{ .condition = cond, .body = body } } };
@@ -396,7 +400,7 @@ const Parser = struct {
         const kw = self.expectConsume(.KwFor, "expected 'for'") orelse return null;
         const pat = self.parsePattern() orelse return null;
         _ = self.expectConsume(.KwIn, "expected 'in' after pattern") orelse return null;
-        const iter = self.parseExpr() orelse return null;
+        const iter = self.parseExprNoStructLiteral() orelse return null;
         const body = self.parseBlock() orelse return null;
         const span = Span{ .file_id = kw.span.file_id, .start = kw.span.start, .end = body.span.end };
         return ast.Stmt{ .tag = .For, .span = span, .data = .{ .For = .{ .pattern = pat, .iterator = iter, .body = body } } };
@@ -413,7 +417,17 @@ const Parser = struct {
         return ast.Stmt{ .tag = .Return, .span = span, .data = .{ .Return = .{ .value = value } } };
     }
 
+    /// Main entry point for parsing expressions. Delegates to the assignment parser.
     fn parseExpr(self: *Parser) ?*ast.Expr {
+        return self.parseAssign();
+    }
+
+    /// Parse an expression in a context where struct literals are not allowed
+    /// (e.g., condition of if/while, iterator of for).
+    fn parseExprNoStructLiteral(self: *Parser) ?*ast.Expr {
+        const prev_no_struct_literal = self.no_struct_literal;
+        self.no_struct_literal = true;
+        defer self.no_struct_literal = prev_no_struct_literal;
         return self.parseAssign();
     }
 
@@ -441,7 +455,7 @@ const Parser = struct {
             return self.parseOr();
         }
         const if_tok = self.previous();
-        const cond = self.parseExpr() orelse return null;
+        const cond = self.parseExprNoStructLiteral() orelse return null;
         const then_block = self.parseBlock() orelse return null;
         var else_expr: ?*ast.Expr = null;
         if (self.match(.KwElse)) {
@@ -606,7 +620,9 @@ const Parser = struct {
                 continue;
             }
             // Struct literal: Path { field: value, ... }
-            if (expr.tag == .Path and self.check(.LBrace)) {
+            // Skip struct literal parsing when we're in a no-struct-literal context
+            // (e.g., condition of if/while, iterator of for)
+            if (expr.tag == .Path and self.check(.LBrace) and !self.no_struct_literal) {
                 expr = self.finishStructInit(expr) orelse return null;
                 continue;
             }
