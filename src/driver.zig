@@ -57,6 +57,7 @@ pub const CompileOptions = struct {
     visualize_ast: bool = false,
     visualize_hir: bool = false,
     visualize_mir: bool = false,
+    visualize_passes: bool = false,
 };
 pub fn compileFile(options: CompileOptions) !CompileResult {
     // Create a fresh source map. This tracks all loaded files,
@@ -161,6 +162,7 @@ pub fn compileFile(options: CompileOptions) !CompileResult {
             options.allocator,
             &mir_crate,
             &diagnostics,
+            options.visualize_passes,
         );
     }
 
