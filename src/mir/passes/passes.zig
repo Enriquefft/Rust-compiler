@@ -4,6 +4,10 @@ const mir = @import("../mir.zig");
 const constant_folding = @import("constant_folding.zig");
 const dead_code_elim = @import("dead_code_elimination.zig");
 const cfg_simplify = @import("cfg_simplify.zig");
+const debug_dump = @import("debug_dump.zig");
+
+pub const debugDumpPass = debug_dump.pass;
+
 
 /// An optimization or analysis pass executed over MIR.
 pub const Pass = struct {
@@ -23,13 +27,26 @@ fn noOpRun(allocator: std.mem.Allocator, mir_crate: *mir.MirCrate, diagnostics: 
     _ = diagnostics;
 }
 
-/// Executes all MIR passes in sequence.
+
 pub fn runAll(allocator: std.mem.Allocator, mir_crate: *mir.MirCrate, diagnostics: *diag.Diagnostics) !void {
-    const passes = [_]Pass{ noOpPass, constantFoldingPass, deadCodeEliminationPass, cfgSimplifyPass };
+    const passes = [_]Pass{
+        noOpPass,
+        debugDumpPass,
+
+        constantFoldingPass,
+        debugDumpPass,
+
+        deadCodeEliminationPass,
+        debugDumpPass,
+
+        cfgSimplifyPass,
+        debugDumpPass,
+    };
     for (passes) |pass| {
         try pass.run(allocator, mir_crate, diagnostics);
     }
 }
+
 
 test "runAll sequences configured passes" {
     var mir_crate = mir.MirCrate.init(std.testing.allocator);
