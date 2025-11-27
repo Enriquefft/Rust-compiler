@@ -56,6 +56,7 @@ pub const InstKind = union(enum) {
 
     LoadLocal: struct { local: LocalId },
     StoreLocal: struct { local: LocalId, src: Operand },
+    StorePtr: struct { ptr: Operand, src: Operand },
 
     Call: struct {
         target: Operand,

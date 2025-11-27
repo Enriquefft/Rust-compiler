@@ -209,8 +209,20 @@ fn checkExpr(
             }
         },
         .Call => |call| {
-            // Check if this is a pointer method call (e.g., ptr.is_null())
-            if (isPointerMethodCall(crate, call.callee, diagnostics, locals, in_unsafe)) |method_info| {
+            // Check if this is an array method call (e.g., data.len())
+            if (isArrayMethodCall(crate, call.callee, diagnostics, locals, in_unsafe)) |method_info| {
+                // Handle array method calls
+                if (std.mem.eql(u8, method_info.method_name, "len")) {
+                    // len() takes no arguments and returns usize
+                    if (call.args.len != 0) {
+                        diagnostics.reportError(span, "len() takes no arguments");
+                    }
+                    expr.ty = try ensureType(crate, .{ .PrimInt = .Usize });
+                } else {
+                    diagnostics.reportError(span, "unknown array method");
+                    expr.ty = try ensureType(crate, .Unknown);
+                }
+            } else if (isPointerMethodCall(crate, call.callee, diagnostics, locals, in_unsafe)) |method_info| {
                 // Handle pointer method calls
                 if (std.mem.eql(u8, method_info.method_name, "is_null")) {
                     // is_null() takes no arguments and returns bool
@@ -334,12 +346,21 @@ fn checkExpr(
         .For => |for_expr| {
             const iter_ty = try checkExpr(crate, for_expr.iter, diagnostics, locals, in_unsafe);
 
-            const elem_ty = switch (getArrayElementType(crate, iter_ty)) {
-                .ok => |et| et,
-                .err => blk: {
-                    diagnostics.reportError(span, "for loop iterator must be an array (or ref/pointer to array)");
-                    break :blk try ensureType(crate, .Unknown);
-                },
+            // Check if the iterator is a range expression
+            const iter_expr = &crate.exprs.items[for_expr.iter];
+            const elem_ty = if (iter_expr.kind == .Range) blk: {
+                // For range expressions, the element type is the type of the range bounds
+                break :blk iter_ty;
+            } else blk: {
+                // Otherwise, expect an array (or ref/pointer to array)
+                break :blk switch (getArrayElementType(crate, iter_ty)) {
+                    .ok => |et| et,
+                    .err => blk2: {
+                        diagnostics.reportError(span, "for loop iterator must be an array (or ref/pointer to array)");
+                        break :blk2 try ensureType(crate, .Unknown);
+                    },
+                };
+
             };
 
             const pat_ty = try ensurePatternBinding(crate, for_expr.pat.id, locals);
@@ -837,6 +858,53 @@ fn isPointerMethodCall(
         },
         else => return null,
     }
+}
+
+const ArrayMethodInfo = struct {
+    target_ty: hir.TypeId,
+    method_name: []const u8,
+};
+
+fn isArrayMethodCall(
+    crate: *hir.Crate,
+    callee_id: hir.ExprId,
+    diagnostics: *diag.Diagnostics,
+    locals: *std.AutoHashMap(hir.LocalId, hir.TypeId),
+    in_unsafe: bool,
+) ?ArrayMethodInfo {
+    if (callee_id >= crate.exprs.items.len) return null;
+    const callee_expr = crate.exprs.items[callee_id];
+
+    // Check if the callee is a Field expression
+    if (callee_expr.kind != .Field) return null;
+
+    const field = callee_expr.kind.Field;
+
+    // Check if the target is an array type (or ref/pointer to array)
+    const target_ty = checkExpr(crate, field.target, diagnostics, locals, in_unsafe) catch return null;
+    if (target_ty >= crate.types.items.len) return null;
+
+    // Check if it's an array or ref/pointer to array
+    const is_array = switch (crate.types.items[target_ty].kind) {
+        .Array => true,
+        .Ref => |ref| blk: {
+            if (ref.inner >= crate.types.items.len) break :blk false;
+            break :blk crate.types.items[ref.inner].kind == .Array;
+        },
+        .Pointer => |ptr| blk: {
+            if (ptr.inner >= crate.types.items.len) break :blk false;
+            break :blk crate.types.items[ptr.inner].kind == .Array;
+        },
+        else => false,
+    };
+
+    if (is_array) {
+        return ArrayMethodInfo{
+            .target_ty = target_ty,
+            .method_name = field.name,
+        };
+    }
+    return null;
 }
 
 const StructMethodInfo = struct {

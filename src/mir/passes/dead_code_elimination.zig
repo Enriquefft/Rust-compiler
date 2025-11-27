@@ -35,9 +35,28 @@ fn eliminateInFunction(temp_allocator: std.mem.Allocator, arena: std.mem.Allocat
         markUses(block.term, used.items);
     }
 
+    // First pass: mark all uses from all instructions (not just dest==null)
     for (func.blocks) |block| {
         for (block.insts) |inst| {
-            if (inst.dest == null) markUsesInInst(inst, used.items);
+            markUsesInInst(inst, used.items);
+        }
+    }
+    
+    // Iterate until no more changes to handle transitive uses
+    var changed = true;
+    while (changed) {
+        changed = false;
+        for (func.blocks) |block| {
+            for (block.insts) |inst| {
+                if (inst.dest) |tmp| {
+                    if (tmp < used.items.len and used.items[tmp]) {
+                        // This instruction's result is used, so mark its operands as used too
+                        const prev_count = countUsed(used.items);
+                        markUsesInInst(inst, used.items);
+                        if (countUsed(used.items) > prev_count) changed = true;
+                    }
+                }
+            }
         }
     }
 
@@ -58,7 +77,6 @@ fn eliminateInFunction(temp_allocator: std.mem.Allocator, arena: std.mem.Allocat
             } else true;
 
             if (keep) {
-                markUsesInInst(inst, used.items);
                 try new_insts.insert(arena, 0, inst);
             }
         }
@@ -97,6 +115,10 @@ fn markMaxTemp(kind: mir.InstKind, max_temp: *mir.TempId) void {
         .Unary => |un| markOperandMax(un.operand, max_temp),
         .Cast => |cast| markOperandMax(cast.src, max_temp),
         .StoreLocal => |store| markOperandMax(store.src, max_temp),
+        .StorePtr => |store| {
+            markOperandMax(store.ptr, max_temp);
+            markOperandMax(store.src, max_temp);
+        },
         .Call => |call| {
             markOperandMax(call.target, max_temp);
             for (call.args) |arg| markOperandMax(arg, max_temp);
@@ -143,6 +165,10 @@ fn markUsesInInst(inst: mir.Inst, used: []bool) void {
         .Cast => |cast| markOperand(cast.src, used),
         .LoadLocal => {},
         .StoreLocal => |store| markOperand(store.src, used),
+        .StorePtr => |store| {
+            markOperand(store.ptr, used);
+            markOperand(store.src, used);
+        },
         .Call => |call| {
             markOperand(call.target, used);
             for (call.args) |arg| markOperand(arg, used);
@@ -165,6 +191,14 @@ fn markOperand(op: mir.Operand, used: []bool) void {
     if (op == .Temp and op.Temp < used.len) {
         used[op.Temp] = true;
     }
+}
+
+fn countUsed(used: []const bool) usize {
+    var count: usize = 0;
+    for (used) |u| {
+        if (u) count += 1;
+    }
+    return count;
 }
 
 fn isSideEffectFree(inst: mir.Inst) bool {
