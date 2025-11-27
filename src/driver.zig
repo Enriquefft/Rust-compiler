@@ -138,6 +138,9 @@ pub fn compileFile(options: CompileOptions) !CompileResult {
 
     // === HIR → MIR LOWERING ===
     if (!diagnostics.hasErrors()) {
+
+        std.debug.print("Lowering HIR to MIR...\n", .{});
+
         mir_crate = try mir_lower.lowerFromHir(
             options.allocator,
             &hir_crate,

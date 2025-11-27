@@ -4,84 +4,67 @@
 
 .section .rodata
 .Lstr0:
-    .byte 37, 100, 32, 37, 100, 32, 37, 100, 10, 0
+    .byte 115, 117, 109, 32, 61, 32, 37, 108, 100, 10, 0
 
 .text
-.globl add
-add:
-    push rbp
-    mov rbp, rsp
-    sub rsp, 32
-.Ladd_0:
-    mov [rbp-8], rdi
-    mov [rbp-16], rsi
-    mov rax, [rbp-8]
-    add rax, [rbp-16]
-    mov [rbp-24], rax
-    mov rax, [rbp-24]
-    leave
-    ret
-    leave
-    ret
-
-.globl offset
-offset:
-    push rbp
-    mov rbp, rsp
-    sub rsp, 32
-.Loffset_0:
-    mov [rbp-8], rdi
-    mov [rbp-16], rsi
-    mov [rbp-24], rdx
-    mov rax, [rbp-8]
-    mov rbx, rax
-    add rbx, [rbp-16]
-    mov rcx, [rbp+0]
-    mov rdx, rcx
-    add rdx, [rbp-24]
-    mov rsi, rbx
-    mov [rbp-32], rax
-    mov rax, rsi
-    leave
-    ret
-    leave
-    ret
-
 .globl main
 main:
     push rbp
     mov rbp, rsp
-    sub rsp, 80
+    sub rsp, 208
 .Lmain_0:
-    mov rax, 1
-    mov [rbp-8], rax
-    mov rdi, [rbp-8]
-    mov rsi, 3
-    mov rdx, 4
+    mov rax, 3
+    mov rbx, 6
+    mov rdx, rbx
+    mov rcx, 1
+    mov [rbp-136], rcx
+    mov rcx, [rbp-136]
+    mov rdx, 8
     mov [rbp-32], rax
-    call offset
-    mov rbx, rax
-    mov [rbp-16], rbx
-    mov rcx, [rbp-16]
-    mov rdx, [rbp-8]
-    mov rdi, rcx
-    mov rsi, rdx
-    mov [rbp-40], rbx
+    mov [rbp-40], rdx
     mov [rbp-48], rcx
-    mov [rbp-56], rdx
-    call main
-    mov rsi, rax
-    mov [rbp-24], rsi
-    mov rdi, [rbp-8]
-    mov r8, [rbp-8]
+    mov qword ptr [rbp-64], 0
+    mov qword ptr [rbp-128], 0
+    jmp .Lmain_1
+.Lmain_1:
+    mov rbx, [rbp-128]
+    mov qword ptr [rbp-136], 4
+    cmp rbx, [rbp-136]
+    setl dl
+    and rdx, 1
+    test rdx, rdx
+    jne .Lmain_2
+    jmp .Lmain_3
+.Lmain_2:
+    mov rsi, [rbp-128]
+    mov rdi, rsi
+    imul rdi, 8
+    lea r8, [rbp-32]
+    sub r8, rdi
+    mov r9, [r8]
+    mov [rbp-96], r9
+    mov r10, [rbp-64]
+    mov rdi, r10
+    add rdi, [rbp-96]
     mov [rbp-64], rdi
+    mov r8, [rbp-128]
+    mov [rbp-144], r8
+    add qword ptr [rbp-144], 1
+    mov r11, [rbp-144]
+    mov [rbp-128], r11
+    jmp .Lmain_1
+.Lmain_3:
+    mov [rbp-152], rdi
     lea rdi, [rip + .Lstr0]
-    mov [rbp-72], rsi
+    mov [rbp-160], rsi
     mov rsi, [rbp-64]
-    mov rdx, r8
-    mov rcx, [rbp-24]
+    mov [rbp-168], rax
     mov rax, 0
-    mov [rbp-80], r8
+    mov [rbp-176], r9
+    mov [rbp-184], rbx
+    mov [rbp-192], rdx
+    mov [rbp-200], r8
+    mov [rbp-208], r10
     call printf
     mov rax, 0
     leave

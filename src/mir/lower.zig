@@ -13,6 +13,9 @@ pub fn lowerFromHir(allocator: std.mem.Allocator, hir_crate: *const hir.Crate, d
     var crate = mir.MirCrate.init(allocator);
 
     for (hir_crate.items.items) |item| {
+
+        std.debug.print("Lowering item: {s}\n", .{item.kind.Function.name});
+
         switch (item.kind) {
             .Function => |fn_item| {
                 if (std.mem.eql(u8, fn_item.name, "println") and fn_item.body == null) continue;
@@ -27,6 +30,10 @@ pub fn lowerFromHir(allocator: std.mem.Allocator, hir_crate: *const hir.Crate, d
 }
 
 fn lowerFunction(crate: *mir.MirCrate, func: hir.Function, hir_crate: *const hir.Crate, diagnostics: *diag.Diagnostics) LowerError!mir.MirFn {
+    std.debug.print("Lowering function: {s}\n", .{func.name});
+    std.debug.print("Function has {d} params\n", .{func.params.len});
+    std.debug.print("Function return type: {any}\n", .{hir_crate.types.items[func.return_type.?].kind});
+
     var builder = FunctionBuilder{
         .allocator = crate.allocator(),
         .crate = crate,
@@ -41,6 +48,8 @@ fn lowerFunction(crate: *mir.MirCrate, func: hir.Function, hir_crate: *const hir
         },
         .param_local_map = std.AutoArrayHashMap(hir.LocalId, hir.LocalId).init(crate.allocator()),
     };
+
+
     _ = try builder.beginBlock();
 
     // Track the next available local ID
@@ -88,6 +97,9 @@ fn lowerFunction(crate: *mir.MirCrate, func: hir.Function, hir_crate: *const hir
         for (0..num_fields) |field_idx| {
             const local = next_local + @as(hir.LocalId, @intCast(field_idx));
             try builder.ensureLocal(local, ty, func.span);
+
+            std.debug.print("Mapping param {d} field {d} to local {d}\n", .{param_idx, field_idx, local});
+
             _ = try builder.emitInst(.{ .ty = mapType(hir_crate, ty, func.span, diagnostics), .dest = null, .kind = .{ .StoreLocal = .{ .local = local, .src = .{ .Param = @intCast(arg_idx) } } } });
             arg_idx += 1;
         }
@@ -400,57 +412,258 @@ const FunctionBuilder = struct {
                 self.switchTo(exit_block);
                 return null;
             },
+
+
             .For => |for_expr| {
                 const iter_expr = self.hir_crate.exprs.items[for_expr.iter];
-                if (iter_expr.kind != .Range) {
-                    self.diagnostics.reportError(expr.span, "only range-based for loops are supported");
+
+                // 1) Range-based loop (existing behavior)
+                if (iter_expr.kind == .Range) {
+                    const start_op = try self.lowerExpr(iter_expr.kind.Range.start) orelse return null;
+                    const end_op = try self.lowerExpr(iter_expr.kind.Range.end) orelse return null;
+
+                    const mir_ty = mapType(self.hir_crate, iter_expr.ty, expr.span, self.diagnostics);
+
+                    // Allocate a local for the loop variable from next_local and map the pattern ID
+                    const loop_local = self.next_local;
+                    self.next_local += 1;
+                    try self.param_local_map.put(for_expr.pat.id, loop_local);
+                    try self.ensureLocal(loop_local, iter_expr.ty, expr.span);
+                    _ = try self.emitInst(.{
+                        .ty = mir_ty,
+                        .dest = null,
+                        .kind = .{ .StoreLocal = .{ .local = loop_local, .src = start_op } },
+                    });
+
+                    const cond_block = try self.newBlock();
+                    const body_block = try self.newBlock();
+                    const exit_block = try self.newBlock();
+                    self.setTerm(.{ .Goto = cond_block });
+
+                    self.switchTo(cond_block);
+                    const cur_tmp = self.newTemp();
+                    _ = try self.emitInst(.{
+                        .ty = mir_ty,
+                        .dest = cur_tmp,
+                        .kind = .{ .LoadLocal = .{ .local = loop_local } },
+                    });
+                    const cmp_tmp = self.newTemp();
+                    const cmp_op = if (iter_expr.kind.Range.inclusive) mir.CmpOp.Le else mir.CmpOp.Lt;
+                    _ = try self.emitInst(.{
+                        .ty = .Bool,
+                        .dest = cmp_tmp,
+                        .kind = .{
+                            .Cmp = .{
+                                .op = cmp_op,
+                                .lhs = .{ .Temp = cur_tmp },
+                                .rhs = end_op,
+                            },
+                        },
+                    });
+                    self.setTerm(.{
+                        .If = .{
+                            .cond = .{ .Temp = cmp_tmp },
+                            .then_block = body_block,
+                            .else_block = exit_block,
+                        },
+                    });
+
+                    self.switchTo(body_block);
+                    _ = try self.lowerExpr(for_expr.body);
+
+                    const incr_tmp = self.newTemp();
+                    _ = try self.emitInst(.{
+                        .ty = mir_ty,
+                        .dest = incr_tmp,
+                        .kind = .{
+                            .Bin = .{
+                                .op = .Add,
+                                .lhs = .{ .Local = loop_local },
+                                .rhs = .{ .ImmInt = 1 },
+                            },
+                        },
+                    });
+                    _ = try self.emitInst(.{
+                        .ty = mir_ty,
+                        .dest = null,
+                        .kind = .{
+                            .StoreLocal = .{
+                                .local = loop_local,
+                                .src = .{ .Temp = incr_tmp },
+                            },
+                        },
+                    });
+                    self.setTerm(.{ .Goto = cond_block });
+
+                    self.switchTo(exit_block);
                     return null;
                 }
 
-                const start_op = try self.lowerExpr(iter_expr.kind.Range.start) orelse return null;
-                const end_op = try self.lowerExpr(iter_expr.kind.Range.end) orelse return null;
+                // 2) Array-based loop: for elem in array { body }
+                const array_info = if (iter_expr.ty < self.hir_crate.types.items.len)
+                    self.getArrayInfo(iter_expr.ty)
+                else
+                    null;
 
-                const mir_ty = mapType(self.hir_crate, iter_expr.ty, expr.span, self.diagnostics);
+                if (array_info == null) {
+                    std.debug.print("For loop iterator kind: {any}\n", .{iter_expr.kind});
+                    self.diagnostics.reportError(expr.span, "for loop iterator must be a range or array");
+                    return null;
+                }
 
-                // Allocate a local for the loop variable from next_local and map the pattern ID
-                const loop_local = self.next_local;
+                const elem_ty_id = array_info.?.elem;
+                const array_len = array_info.?.len;
+
+                // Evaluate iterator expression once (nums, &nums, etc)
+                const array_op = try self.lowerExpr(for_expr.iter) orelse return null;
+
+                // Allocate a local for the loop variable (element) and map pattern ID
+                const loop_local: hir.LocalId = self.next_local;
                 self.next_local += 1;
                 try self.param_local_map.put(for_expr.pat.id, loop_local);
-                try self.ensureLocal(loop_local, iter_expr.ty, expr.span);
-                _ = try self.emitInst(.{ .ty = mir_ty, .dest = null, .kind = .{ .StoreLocal = .{ .local = loop_local, .src = start_op } } });
+                try self.ensureLocal(loop_local, elem_ty_id, expr.span);
 
+                // Allocate a local for the index (we store an i64 counter there)
+                const idx_local: hir.LocalId = self.next_local;
+                self.next_local += 1;
+                try self.ensureLocal(idx_local, null, expr.span);
+                if (idx_local < self.locals.items.len) {
+                    self.locals.items[idx_local] = .I64;
+                }
+
+                // idx = 0
+                _ = try self.emitInst(.{
+                    .ty = .I64,
+                    .dest = null,
+                    .kind = .{
+                        .StoreLocal = .{
+                            .local = idx_local,
+                            .src = .{ .ImmInt = 0 },
+                        },
+                    },
+                });
+
+                // Build blocks: cond, body, exit
                 const cond_block = try self.newBlock();
                 const body_block = try self.newBlock();
                 const exit_block = try self.newBlock();
                 self.setTerm(.{ .Goto = cond_block });
 
+                // Condition: idx < array_len
                 self.switchTo(cond_block);
-                const cur_tmp = self.newTemp();
-                _ = try self.emitInst(.{ .ty = mir_ty, .dest = cur_tmp, .kind = .{ .LoadLocal = .{ .local = loop_local } } });
+                const idx_tmp = self.newTemp();
+                _ = try self.emitInst(.{
+                    .ty = .I64,
+                    .dest = idx_tmp,
+                    .kind = .{ .LoadLocal = .{ .local = idx_local } },
+                });
+
+                const len_tmp = self.newTemp();
+                _ = try self.emitInst(.{
+                    .ty = .I64,
+                    .dest = len_tmp,
+                    .kind = .{ .Copy = .{ .src = .{ .ImmInt = array_len } } },
+                });
+
                 const cmp_tmp = self.newTemp();
-                const cmp_op = if (iter_expr.kind.Range.inclusive) mir.CmpOp.Le else mir.CmpOp.Lt;
                 _ = try self.emitInst(.{
                     .ty = .Bool,
                     .dest = cmp_tmp,
-                    .kind = .{ .Cmp = .{ .op = cmp_op, .lhs = .{ .Temp = cur_tmp }, .rhs = end_op } },
+                    .kind = .{
+                        .Cmp = .{
+                            .op = .Lt,
+                            .lhs = .{ .Temp = idx_tmp },
+                            .rhs = .{ .Temp = len_tmp },
+                        },
+                    },
                 });
-                self.setTerm(.{ .If = .{ .cond = .{ .Temp = cmp_tmp }, .then_block = body_block, .else_block = exit_block } });
 
+                self.setTerm(.{
+                    .If = .{
+                        .cond = .{ .Temp = cmp_tmp },
+                        .then_block = body_block,
+                        .else_block = exit_block,
+                    },
+                });
+
+                // Body:
                 self.switchTo(body_block);
+
+                // Load idx again for indexing
+                const idx_body_tmp = self.newTemp();
+                _ = try self.emitInst(.{
+                    .ty = .I64,
+                    .dest = idx_body_tmp,
+                    .kind = .{ .LoadLocal = .{ .local = idx_local } },
+                });
+
+                // elem = array[idx]
+                const elem_tmp = self.newTemp();
+                _ = try self.emitInst(.{
+                    .ty = mapType(self.hir_crate, elem_ty_id, expr.span, self.diagnostics),
+                    .dest = elem_tmp,
+                    .kind = .{
+                        .Index = .{
+                            .target = array_op,
+                            .index = .{ .Temp = idx_body_tmp },
+                        },
+                    },
+                });
+
+                // store elem into loop_local (pattern variable)
+                _ = try self.emitInst(.{
+                    .ty = mapType(self.hir_crate, elem_ty_id, expr.span, self.diagnostics),
+                    .dest = null,
+                    .kind = .{
+                        .StoreLocal = .{
+                            .local = loop_local,
+                            .src = .{ .Temp = elem_tmp },
+                        },
+                    },
+                });
+
+                // Lower loop body (uses loop_local via LocalRef)
                 _ = try self.lowerExpr(for_expr.body);
 
-                const incr_tmp = self.newTemp();
+                // idx += 1
+                const idx_old_tmp = self.newTemp();
                 _ = try self.emitInst(.{
-                    .ty = mir_ty,
-                    .dest = incr_tmp,
-                    .kind = .{ .Bin = .{ .op = .Add, .lhs = .{ .Local = loop_local }, .rhs = .{ .ImmInt = 1 } } },
+                    .ty = .I64,
+                    .dest = idx_old_tmp,
+                    .kind = .{ .LoadLocal = .{ .local = idx_local } },
                 });
-                _ = try self.emitInst(.{ .ty = mir_ty, .dest = null, .kind = .{ .StoreLocal = .{ .local = loop_local, .src = .{ .Temp = incr_tmp } } } });
+
+                const idx_inc_tmp = self.newTemp();
+                _ = try self.emitInst(.{
+                    .ty = .I64,
+                    .dest = idx_inc_tmp,
+                    .kind = .{
+                        .Bin = .{
+                            .op = .Add,
+                            .lhs = .{ .Temp = idx_old_tmp },
+                            .rhs = .{ .ImmInt = 1 },
+                        },
+                    },
+                });
+
+                _ = try self.emitInst(.{
+                    .ty = .I64,
+                    .dest = null,
+                    .kind = .{
+                        .StoreLocal = .{
+                            .local = idx_local,
+                            .src = .{ .Temp = idx_inc_tmp },
+                        },
+                    },
+                });
+
                 self.setTerm(.{ .Goto = cond_block });
 
+                // Exit:
                 self.switchTo(exit_block);
                 return null;
             },
+
             .Cast => |c| {
                 const inner = try self.lowerExpr(c.expr) orelse return null;
                 const inner_expr = self.hir_crate.exprs.items[c.expr];
@@ -765,6 +978,46 @@ const FunctionBuilder = struct {
             };
         }
         return null;
+    }
+
+    fn getArrayInfo(self: *FunctionBuilder, ty_id: hir.TypeId) ?struct {
+        elem: hir.TypeId,
+        len: i64,
+    } {
+        if (ty_id >= self.hir_crate.types.items.len) return null;
+        const ty = self.hir_crate.types.items[ty_id];
+
+        switch (ty.kind) {
+            .Array => |arr| {
+                if (arr.size_const) |sz| {
+                    return .{ .elem = arr.elem, .len = sz };
+                }
+                return null;
+            },
+            .Ref => |ref_info| {
+                if (ref_info.inner >= self.hir_crate.types.items.len) return null;
+                const inner = self.hir_crate.types.items[ref_info.inner];
+                if (inner.kind == .Array) {
+                    const arr = inner.kind.Array;
+                    if (arr.size_const) |sz| {
+                        return .{ .elem = arr.elem, .len = sz };
+                    }
+                }
+                return null;
+            },
+            .Pointer => |ptr_info| {
+                if (ptr_info.inner >= self.hir_crate.types.items.len) return null;
+                const inner = self.hir_crate.types.items[ptr_info.inner];
+                if (inner.kind == .Array) {
+                    const arr = inner.kind.Array;
+                    if (arr.size_const) |sz| {
+                        return .{ .elem = arr.elem, .len = sz };
+                    }
+                }
+                return null;
+            },
+            else => return null,
+        }
     }
 
     fn lowerArrayMethodCall(self: *FunctionBuilder, _: hir.ExprId, method_name: []const u8, array_size: ?i64, _: []const hir.ExprId, expr: hir.Expr) LowerError!?mir.Operand {
@@ -1099,6 +1352,7 @@ fn stripQuotes(s: []const u8) []const u8 {
 }
 
 fn mapType(hir_crate: *const hir.Crate, ty_id: ?hir.TypeId, span: hir.Span, diagnostics: *diag.Diagnostics) ?mir.MirType {
+
     if (ty_id) |id| {
         if (id >= hir_crate.types.items.len) {
             diagnostics.reportError(span, "unknown type id during MIR lowering");
@@ -1149,11 +1403,15 @@ fn mapType(hir_crate: *const hir.Crate, ty_id: ?hir.TypeId, span: hir.Span, diag
                 break :blk null;
             },
             .Unknown => blk: {
-                diagnostics.reportWarning(span, "missing type information during MIR lowering");
+
+
+                std.debug.print("Warning: unknown type encountered during MIR lowering at span {any}\n", .{span});
+                diagnostics.reportWarning(span, "unknown type information during MIR lowering");
                 break :blk null;
             },
         };
     }
+
     diagnostics.reportWarning(span, "missing type information during MIR lowering");
     return null;
 }

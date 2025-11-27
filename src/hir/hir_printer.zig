@@ -401,6 +401,7 @@ fn printType(printer: *TreePrinter, crate: *const hir.Crate, type_id: hir.TypeId
             try printer.printNodeFmt(is_last, "{s}: Array", .{label});
             try printer.push(is_last);
             try printType(printer, crate, arr.elem, true, "Element");
+            try printer.printNodeFmt(true, "Length: {any}", .{arr.size_const});
             printer.pop();
         },
         .Pointer => |ptr| {
