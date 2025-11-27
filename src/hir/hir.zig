@@ -77,6 +77,7 @@ pub const Expr = struct {
         StructInit: StructInit,
         Lambda: struct { params: []Pattern, param_types: []TypeId, body: ExprId },
         Block: struct { stmts: []StmtId, tail: ?ExprId },
+        Unsafe: struct { body: ExprId },
         Unknown,
     };
 };
@@ -804,6 +805,30 @@ fn lowerExpr(crate: *Crate, expr: ast.Expr, diagnostics: *diag.Diagnostics, next
         .Block => {
             return try lowerBlock(crate, expr.data.Block, diagnostics, next_type_id);
         },
+
+
+           .Unsafe => {
+            const body_block_id = try lowerBlock(
+                crate,
+                expr.data.Unsafe.block,
+                diagnostics,
+                next_type_id,
+            );
+
+            const id: ExprId = @intCast(crate.exprs.items.len);
+            try crate.exprs.append(
+                crate.allocator(),
+                .{
+                    .id = id,
+                    .kind = .{ .Unsafe = .{ .body = body_block_id } },
+                    .ty = try appendUnknownType(crate, next_type_id),
+                    .span = expr.span,
+                },
+            );
+            return id;
+        },
+
+
         .Path => {
             var segments = try crate.allocator().alloc([]const u8, expr.data.Path.segments.len);
             for (expr.data.Path.segments, 0..) |seg, idx| {

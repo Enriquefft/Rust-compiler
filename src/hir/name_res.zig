@@ -191,6 +191,11 @@ fn resolveExpr(
             }
             if (block.tail) |tail| try resolveExpr(crate, tail, module_symbols, locals, next_local, diagnostics);
         },
+
+        .Unsafe => |unsafe_block| {
+            try resolveExpr(crate, unsafe_block.body, module_symbols, locals, next_local, diagnostics);
+        },
+
         .Binary => |binary| {
             try resolveExpr(crate, binary.lhs, module_symbols, locals, next_local, diagnostics);
             try resolveExpr(crate, binary.rhs, module_symbols, locals, next_local, diagnostics);

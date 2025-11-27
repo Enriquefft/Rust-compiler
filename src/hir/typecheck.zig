@@ -28,7 +28,7 @@ fn typecheckFunction(crate: *hir.Crate, func: *hir.Function, diagnostics: *diag.
     }
 
     if (func.body) |body_id| {
-        const body_ty = try checkExpr(crate, body_id, diagnostics, &locals);
+        const body_ty = try checkExpr(crate, body_id, diagnostics, &locals, false);
         if (func.return_type) |ret_ty| {
             if (!typesCompatible(crate, ret_ty, body_ty)) {
                 diagnostics.reportError(func.span, "function return type does not match body");
@@ -62,6 +62,7 @@ fn checkExpr(
     expr_id: hir.ExprId,
     diagnostics: *diag.Diagnostics,
     locals: *std.AutoHashMap(hir.LocalId, hir.TypeId),
+in_unsafe: bool,
 ) Error!hir.TypeId {
     const expr = &crate.exprs.items[expr_id];
     const span = expr.span;
@@ -111,25 +112,32 @@ fn checkExpr(
         .Block => |block| {
             var last_ty: ?hir.TypeId = null;
             for (block.stmts) |stmt_id| {
-                try checkStmt(crate, stmt_id, diagnostics, locals, &last_ty);
+                try checkStmt(crate, stmt_id, diagnostics, locals, &last_ty, in_unsafe);
             }
             if (block.tail) |tail| {
-                last_ty = try checkExpr(crate, tail, diagnostics, locals);
+                last_ty = try checkExpr(crate, tail, diagnostics, locals, in_unsafe);
             }
             expr.ty = last_ty orelse try ensureType(crate, .Unknown);
         },
+
+        .Unsafe => |u| {
+    // Inside the unsafe block body, we typecheck with in_unsafe = true.
+    const body_ty = try checkExpr(crate, u.body, diagnostics, locals, true);
+    expr.ty = body_ty;
+},
+
         .UnresolvedIdent => {
             diagnostics.reportError(span, "identifier was not resolved before type checking");
             expr.ty = try ensureType(crate, .Unknown);
         },
         .Cast => |c| {
             // Type check the inner expression first
-            _ = try checkExpr(crate, c.expr, diagnostics, locals);
+            _ = try checkExpr(crate, c.expr, diagnostics, locals, in_unsafe);
             expr.ty = c.ty;
         },
         .Binary => |bin| {
-            const lhs_ty = try checkExpr(crate, bin.lhs, diagnostics, locals);
-            const rhs_ty = try checkExpr(crate, bin.rhs, diagnostics, locals);
+            const lhs_ty = try checkExpr(crate, bin.lhs, diagnostics, locals, in_unsafe);
+            const rhs_ty = try checkExpr(crate, bin.rhs, diagnostics, locals, in_unsafe);
 
             switch (bin.op) {
                 .LogicalOr, .LogicalAnd => {
@@ -158,7 +166,7 @@ fn checkExpr(
             }
         },
         .Unary => |un| {
-            const operand_ty = try checkExpr(crate, un.expr, diagnostics, locals);
+            const operand_ty = try checkExpr(crate, un.expr, diagnostics, locals, in_unsafe);
             switch (un.op) {
                 .Not => {
                     if (!isBool(crate, operand_ty)) diagnostics.reportError(span, "`!` expects a boolean operand");
@@ -168,21 +176,33 @@ fn checkExpr(
                     if (!isNumeric(crate, operand_ty)) diagnostics.reportError(span, "unary `-` expects a numeric operand");
                     expr.ty = operand_ty;
                 },
+
+
                 .Deref => {
-                    if (operand_ty >= crate.types.items.len) {
-                        diagnostics.reportError(span, "unknown operand type for deref");
-                        expr.ty = try ensureType(crate, .Unknown);
-                    } else {
-                        expr.ty = switch (crate.types.items[operand_ty].kind) {
-                            .Pointer => |ptr| ptr.inner,
-                            .Ref => |r| r.inner,
-                            else => blk: {
-                                diagnostics.reportError(span, "cannot dereference non-pointer type");
-                                break :blk try ensureType(crate, .Unknown);
-                            },
-                        };
-                    }
-                },
+    if (operand_ty >= crate.types.items.len) {
+        diagnostics.reportError(span, "unknown operand type for deref");
+        expr.ty = try ensureType(crate, .Unknown);
+    } else {
+        expr.ty = switch (crate.types.items[operand_ty].kind) {
+            .Pointer => |ptr| blk: {
+                if (!in_unsafe) {
+                    diagnostics.reportError(
+                        span,
+                        "dereferencing a raw pointer is unsafe; wrap this in `unsafe { ... }`",
+                    );
+                }
+                break :blk ptr.inner;
+            },
+            .Ref => |r| r.inner,
+            else => blk: {
+                diagnostics.reportError(span, "cannot dereference non-pointer type");
+                break :blk try ensureType(crate, .Unknown);
+            },
+        };
+    }
+},
+
+
                 .Ref, .RefMut => {
                     const inner = operand_ty;
                     expr.ty = try ensureType(crate, .{ .Ref = .{ .mutable = un.op == .RefMut, .inner = inner } });
@@ -191,7 +211,7 @@ fn checkExpr(
         },
         .Call => |call| {
             // Check if this is a pointer method call (e.g., ptr.is_null())
-            if (isPointerMethodCall(crate, call.callee, diagnostics, locals)) |method_info| {
+            if (isPointerMethodCall(crate, call.callee, diagnostics, locals, in_unsafe)) |method_info| {
                 // Handle pointer method calls
                 if (std.mem.eql(u8, method_info.method_name, "is_null")) {
                     // is_null() takes no arguments and returns bool
@@ -203,22 +223,22 @@ fn checkExpr(
                     diagnostics.reportError(span, "unknown pointer method");
                     expr.ty = try ensureType(crate, .Unknown);
                 }
-            } else if (isStructMethodCall(crate, call.callee, diagnostics, locals)) |method_info| {
+            } else if (isStructMethodCall(crate, call.callee, diagnostics, locals, in_unsafe)) |method_info| {
                 // Handle struct method calls (e.g., point.offset(1, 2))
                 // Type check all arguments
                 for (call.args) |arg_id| {
-                    _ = try checkExpr(crate, arg_id, diagnostics, locals);
+                    _ = try checkExpr(crate, arg_id, diagnostics, locals, in_unsafe);
                 }
                 // Set the return type from the method
                 expr.ty = method_info.ret_ty;
             } else {
-                const callee_ty = try checkExpr(crate, call.callee, diagnostics, locals);
+                const callee_ty = try checkExpr(crate, call.callee, diagnostics, locals, in_unsafe);
                 var param_types: []hir.TypeId = &[_]hir.TypeId{};
                 var ret_ty: hir.TypeId = try ensureType(crate, .Unknown);
 
                 if (isBuiltinPrintln(crate, call.callee)) {
                     for (call.args) |arg_id| {
-                        _ = try checkExpr(crate, arg_id, diagnostics, locals);
+                        _ = try checkExpr(crate, arg_id, diagnostics, locals, in_unsafe);
                     }
                     expr.ty = ret_ty;
                 } else {
@@ -247,7 +267,7 @@ fn checkExpr(
                     }
 
                     for (call.args, 0..) |arg_id, idx| {
-                        const arg_ty = try checkExpr(crate, arg_id, diagnostics, locals);
+                        const arg_ty = try checkExpr(crate, arg_id, diagnostics, locals, in_unsafe);
                         if (idx < param_types.len) {
                             const expected = param_types[idx];
                             const expected_kind = if (expected < crate.types.items.len)
@@ -264,15 +284,15 @@ fn checkExpr(
             }
         },
         .MethodCall => |call| {
-            _ = try checkExpr(crate, call.target, diagnostics, locals);
+            _ = try checkExpr(crate, call.target, diagnostics, locals, in_unsafe);
             for (call.args) |arg_id| {
-                _ = try checkExpr(crate, arg_id, diagnostics, locals);
+                _ = try checkExpr(crate, arg_id, diagnostics, locals, in_unsafe);
             }
             expr.ty = try ensureType(crate, .Unknown);
         },
         .Assignment => |assign| {
-            const target_ty = try checkExpr(crate, assign.target, diagnostics, locals);
-            const value_ty = try checkExpr(crate, assign.value, diagnostics, locals);
+            const target_ty = try checkExpr(crate, assign.target, diagnostics, locals, in_unsafe);
+            const value_ty = try checkExpr(crate, assign.value, diagnostics, locals, in_unsafe);
 
             if (!typesCompatible(crate, target_ty, value_ty)) {
 
@@ -285,18 +305,18 @@ fn checkExpr(
         },
         .Return => |ret| {
             if (ret) |value_id| {
-                expr.ty = try checkExpr(crate, value_id, diagnostics, locals);
+                expr.ty = try checkExpr(crate, value_id, diagnostics, locals, in_unsafe);
             } else {
                 expr.ty = try ensureType(crate, .Unknown);
             }
         },
         .If => |ifs| {
-            const cond_ty = try checkExpr(crate, ifs.cond, diagnostics, locals);
+            const cond_ty = try checkExpr(crate, ifs.cond, diagnostics, locals, in_unsafe);
             if (!isBool(crate, cond_ty)) diagnostics.reportError(span, "if condition must be boolean");
 
-            const then_ty = try checkExpr(crate, ifs.then_branch, diagnostics, locals);
+            const then_ty = try checkExpr(crate, ifs.then_branch, diagnostics, locals, in_unsafe);
             if (ifs.else_branch) |else_id| {
-                const else_ty = try checkExpr(crate, else_id, diagnostics, locals);
+                const else_ty = try checkExpr(crate, else_id, diagnostics, locals, in_unsafe);
                 if (typesCompatible(crate, then_ty, else_ty)) {
                     expr.ty = then_ty;
                 } else {
@@ -308,13 +328,13 @@ fn checkExpr(
             }
         },
         .While => |wh| {
-            const cond_ty = try checkExpr(crate, wh.cond, diagnostics, locals);
+            const cond_ty = try checkExpr(crate, wh.cond, diagnostics, locals, in_unsafe);
             if (!isBool(crate, cond_ty)) diagnostics.reportError(span, "while condition must be boolean");
-            _ = try checkExpr(crate, wh.body, diagnostics, locals);
+            _ = try checkExpr(crate, wh.body, diagnostics, locals, in_unsafe);
             expr.ty = try ensureType(crate, .Unknown);
         },
         .For => |for_expr| {
-            const iter_ty = try checkExpr(crate, for_expr.iter, diagnostics, locals);
+            const iter_ty = try checkExpr(crate, for_expr.iter, diagnostics, locals, in_unsafe);
 
             const elem_ty = switch (getArrayElementType(crate, iter_ty)) {
         .ok => |et| et,
@@ -329,12 +349,12 @@ fn checkExpr(
                 diagnostics.reportError(span, "for pattern type does not match iterator");
             }
             try locals.put(for_expr.pat.id, elem_ty);
-            _ = try checkExpr(crate, for_expr.body, diagnostics, locals);
+            _ = try checkExpr(crate, for_expr.body, diagnostics, locals, in_unsafe);
             expr.ty = try ensureType(crate, .Unknown);
         },
         .Range => |range| {
-            const start_ty = try checkExpr(crate, range.start, diagnostics, locals);
-            const end_ty = try checkExpr(crate, range.end, diagnostics, locals);
+            const start_ty = try checkExpr(crate, range.start, diagnostics, locals, in_unsafe);
+            const end_ty = try checkExpr(crate, range.end, diagnostics, locals, in_unsafe);
             if (!typesCompatible(crate, start_ty, end_ty)) {
                 diagnostics.reportError(span, "range bounds must have the same type");
                 expr.ty = try ensureType(crate, .Unknown);
@@ -343,8 +363,8 @@ fn checkExpr(
             }
         },
         .Index => |index| {
-            const target_ty = try checkExpr(crate, index.target, diagnostics, locals);
-            _ = try checkExpr(crate, index.index, diagnostics, locals);
+            const target_ty = try checkExpr(crate, index.target, diagnostics, locals, in_unsafe);
+            _ = try checkExpr(crate, index.index, diagnostics, locals, in_unsafe);
             expr.ty = switch (getArrayElementType(crate, target_ty)) {
                 .ok => |elem_ty| elem_ty,
                 .err => blk: {
@@ -354,13 +374,13 @@ fn checkExpr(
             };
         },
         .Field => |field| {
-            const target_ty = try checkExpr(crate, field.target, diagnostics, locals);
+            const target_ty = try checkExpr(crate, field.target, diagnostics, locals, in_unsafe);
             expr.ty = try resolveFieldType(crate, target_ty, field.name, span, diagnostics);
         },
         .Array => |elements| {
             var element_ty: ?hir.TypeId = null;
             for (elements) |elem_id| {
-                const ty = try checkExpr(crate, elem_id, diagnostics, locals);
+                const ty = try checkExpr(crate, elem_id, diagnostics, locals, in_unsafe);
                 if (element_ty) |existing| {
                     if (!typesCompatible(crate, existing, ty)) {
                         diagnostics.reportError(span, "array elements must have the same type");
@@ -382,7 +402,7 @@ fn checkExpr(
             if (maybe_def_id) |def_id| {
                 const struct_item = crate.items.items[def_id].kind.Struct;
                 for (init.fields) |field_init| {
-                    const value_ty = try checkExpr(crate, field_init.value, diagnostics, locals);
+                    const value_ty = try checkExpr(crate, field_init.value, diagnostics, locals, in_unsafe);
                     const expected_ty = findFieldType(struct_item, field_init.name);
                     if (expected_ty) |ty| {
                         if (!typesCompatible(crate, ty, value_ty)) {
@@ -416,7 +436,7 @@ fn checkExpr(
                 try lambda_locals.put(entry.key_ptr.*, entry.value_ptr.*);
             }
 
-            const body_ty = try checkExpr(crate, lambda.body, diagnostics, &lambda_locals);
+            const body_ty = try checkExpr(crate, lambda.body, diagnostics, &lambda_locals, in_unsafe);
             expr.ty = try ensureType(crate, .{ .Fn = .{ .params = param_types, .ret = body_ty } });
         },
         .Path => {
@@ -436,13 +456,14 @@ fn checkStmt(
     diagnostics: *diag.Diagnostics,
     locals: *std.AutoHashMap(hir.LocalId, hir.TypeId),
     last_ty: *?hir.TypeId,
+    in_unsafe: bool,
 ) Error!void {
     const stmt = &crate.stmts.items[stmt_id];
     switch (stmt.kind) {
         .Let => |*let_stmt| {
             var declared_ty = let_stmt.ty;
             if (let_stmt.value) |value_id| {
-                const value_ty = try checkExpr(crate, value_id, diagnostics, locals);
+                const value_ty = try checkExpr(crate, value_id, diagnostics, locals, in_unsafe);
                 if (declared_ty) |*ty_id| {
 
 
@@ -465,7 +486,7 @@ fn checkStmt(
             last_ty.* = declared_ty;
         },
         .Expr => |expr_id| {
-            last_ty.* = try checkExpr(crate, expr_id, diagnostics, locals);
+            last_ty.* = try checkExpr(crate, expr_id, diagnostics, locals, in_unsafe);
         },
         .Unknown => {},
     }
@@ -793,6 +814,7 @@ fn isPointerMethodCall(
     callee_id: hir.ExprId,
     diagnostics: *diag.Diagnostics,
     locals: *std.AutoHashMap(hir.LocalId, hir.TypeId),
+in_unsafe: bool,
 ) ?PointerMethodInfo {
     if (callee_id >= crate.exprs.items.len) return null;
     const callee_expr = crate.exprs.items[callee_id];
@@ -803,7 +825,7 @@ fn isPointerMethodCall(
     const field = callee_expr.kind.Field;
 
     // Check if the target is a pointer type
-    const target_ty = checkExpr(crate, field.target, diagnostics, locals) catch return null;
+    const target_ty = checkExpr(crate, field.target, diagnostics, locals, in_unsafe) catch return null;
     if (target_ty >= crate.types.items.len) return null;
 
     switch (crate.types.items[target_ty].kind) {
@@ -828,6 +850,7 @@ fn isStructMethodCall(
     callee_id: hir.ExprId,
     diagnostics: *diag.Diagnostics,
     locals: *std.AutoHashMap(hir.LocalId, hir.TypeId),
+in_unsafe: bool,
 ) ?StructMethodInfo {
     if (callee_id >= crate.exprs.items.len) return null;
     const callee_expr = crate.exprs.items[callee_id];
@@ -838,7 +861,7 @@ fn isStructMethodCall(
     const field = callee_expr.kind.Field;
 
     // Check if the target is a struct type
-    const target_ty = checkExpr(crate, field.target, diagnostics, locals) catch return null;
+    const target_ty = checkExpr(crate, field.target, diagnostics, locals, in_unsafe) catch return null;
     const resolved_ty = resolveType(crate, target_ty);
     if (resolved_ty >= crate.types.items.len) return null;
 
@@ -993,12 +1016,12 @@ test "typechecker handles composite expressions" {
     var locals = std.AutoHashMap(hir.LocalId, hir.TypeId).init(crate.allocator());
     defer locals.deinit();
 
-    try std.testing.expectEqual(i64_ty, try checkExpr(&crate, binary_expr_id, &diagnostics, &locals));
-    try std.testing.expectEqual(bool_ty, try checkExpr(&crate, unary_expr_id, &diagnostics, &locals));
+    try std.testing.expectEqual(i64_ty, try checkExpr(&crate, binary_expr_id, &diagnostics, &locals, false));
+    try std.testing.expectEqual(bool_ty, try checkExpr(&crate, unary_expr_id, &diagnostics, &locals, false));
     const expected_arr_ty = try ensureType(&crate, .{ .Array = .{ .elem = i64_ty, .size_const = 2 } });
-    try std.testing.expectEqual(expected_arr_ty, try checkExpr(&crate, array_expr_id, &diagnostics, &locals));
-    try std.testing.expectEqual(struct_ty, try checkExpr(&crate, struct_init_expr_id, &diagnostics, &locals));
-    try std.testing.expectEqual(i64_ty, try checkExpr(&crate, field_expr_id, &diagnostics, &locals));
+    try std.testing.expectEqual(expected_arr_ty, try checkExpr(&crate, array_expr_id, &diagnostics, &locals, false));
+    try std.testing.expectEqual(struct_ty, try checkExpr(&crate, struct_init_expr_id, &diagnostics, &locals, false));
+    try std.testing.expectEqual(i64_ty, try checkExpr(&crate, field_expr_id, &diagnostics, &locals, false));
     try std.testing.expect(!diagnostics.hasErrors());
 }
 
@@ -1032,8 +1055,8 @@ test "typechecker reports invalid expressions" {
     var locals = std.AutoHashMap(hir.LocalId, hir.TypeId).init(crate.allocator());
     defer locals.deinit();
 
-    _ = try checkExpr(&crate, bad_binary_expr_id, &diagnostics, &locals);
-    _ = try checkExpr(&crate, array_expr_id, &diagnostics, &locals);
+    _ = try checkExpr(&crate, bad_binary_expr_id, &diagnostics, &locals, false);
+    _ = try checkExpr(&crate, array_expr_id, &diagnostics, &locals, false);
 
     try std.testing.expect(diagnostics.hasErrors());
 }

@@ -181,6 +181,8 @@ pub const Expr = struct {
         Array: ArrayExpr,
         StructInit: StructInitExpr,
         Paren: *Expr,
+        Unsafe: UnsafeExpr,
+
     },
 
     pub const Tag = enum {
@@ -204,6 +206,7 @@ pub const Expr = struct {
         Array,
         StructInit,
         Paren,
+        Unsafe
     };
 };
 
@@ -351,6 +354,11 @@ pub const Block = struct {
     result: ?*Expr,
     span: Span,
 };
+
+pub const UnsafeExpr = struct {
+    block: Block,
+};
+
 
 pub const Stmt = struct {
     tag: Tag,

@@ -319,6 +319,8 @@ const Parser = struct {
         var stmts = std.ArrayListUnmanaged(ast.Stmt){};
         var result_expr: ?*ast.Expr = null;
         while (!self.check(.RBrace) and !self.isAtEnd()) {
+
+
             if (self.match(.Semicolon)) {
                 stmts.append(self.arena, .{ .tag = .Empty, .span = lbrace.span, .data = .Empty }) catch {};
                 continue;
@@ -346,6 +348,8 @@ const Parser = struct {
             }
 
             if (self.isStartOfExpr()) {
+
+
                 if (self.parseExpr()) |expr| {
                     if (self.match(.Semicolon)) {
                         stmts.append(self.arena, .{ .tag = .Expr, .span = expr.span, .data = .{ .Expr = .{ .expr = expr.* } } }) catch {};
@@ -353,7 +357,8 @@ const Parser = struct {
                         result_expr = expr;
                         break;
                     }
-                } else self.synchronize();
+                } else {
+                    self.synchronize();}
             } else {
                 self.reportError(self.peek().span, "unexpected token in block");
                 self.synchronize();
@@ -419,6 +424,15 @@ const Parser = struct {
 
     /// Main entry point for parsing expressions. Delegates to the assignment parser.
     fn parseExpr(self: *Parser) ?*ast.Expr {
+
+        // unsafe block
+        if (self.match(.KwUnsafe)) {
+            const unsafe_tok = self.previous();
+            const block = self.parseBlock() orelse return null;
+            const span = Span{ .file_id = unsafe_tok.span.file_id, .start = unsafe_tok.span.start, .end = block.span.end };
+            return self.allocExpr(.{ .tag = .Unsafe, .span = span, .data = .{ .Unsafe= .{ .block = block } } });
+        }
+
         return self.parseAssign();
     }
 
@@ -753,7 +767,7 @@ const Parser = struct {
 
     fn isStartOfExpr(self: *Parser) bool {
         return switch (self.peekKind()) {
-            .LParen, .LBrace, .LBracket, .Identifier, .IntLit, .FloatLit, .BoolLit, .CharLit, .StringLit, .KwIf, .KwWhile, .KwFor, .KwReturn, .Bang, .Minus, .Star, .Amp, .Pipe, .KwSelf => true,
+            .LParen, .LBrace, .LBracket, .Identifier, .IntLit, .FloatLit, .BoolLit, .CharLit, .StringLit, .KwIf, .KwWhile, .KwFor, .KwReturn, .Bang, .Minus, .Star, .Amp, .Pipe, .KwSelf, .KwUnsafe => true,
             else => false,
         };
     }
@@ -769,19 +783,25 @@ const Parser = struct {
     }
 
     fn synchronize(self: *Parser) void {
+
         if (self.tokens.len == 0) return;
+
 
         if (self.pos == 0) {
             _ = self.advance();
         }
 
         while (!self.isAtEnd()) {
+            //this line
             if (self.previous().kind == .Semicolon) return;
             switch (self.peekKind()) {
                 .KwFn, .KwStruct, .KwImpl, .KwType, .KwLet, .KwWhile, .KwFor, .KwIf, .KwReturn => return,
                 .RBrace => return,
                 else => {},
             }
+
+                std.debug.print("Skipping token: {}\n", .{self.peek().kind});
+
             _ = self.advance();
         }
     }

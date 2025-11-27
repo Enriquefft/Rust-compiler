@@ -2,7 +2,7 @@
 fn main() {
     let mut data = [10, 20, 30];
     let mut ptr: *mut i32 = &mut data[1];
-    unsafe { *ptr += 5; }
+    unsafe { *ptr += 5; };
     let mut total = 0;
     for i in 0..data.len() {
         let value_ref = &data[i];

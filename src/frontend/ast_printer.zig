@@ -250,6 +250,14 @@ fn printExpr(printer: *TreePrinter, expr: ast.Expr, is_last: bool) AllocError!vo
             printer.pop();
         },
         .Block => try printBlock(printer, expr.data.Block, is_last),
+
+        .Unsafe => {
+            try printer.printNode(is_last, "UnsafeExpr");
+            try printer.push(is_last);
+            try printBlock(printer, expr.data.Unsafe.block, true);
+            printer.pop();
+        },
+
         .If => {
             try printer.printNode(is_last, "IfExpr");
             try printer.push(is_last);
