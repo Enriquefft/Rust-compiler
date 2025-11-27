@@ -5,6 +5,10 @@ const mir = @import("mir.zig");
 
 const LowerError = error{OutOfMemory};
 
+/// Maximum number of struct fields supported for hash-based field indexing.
+/// This limits the field layout to avoid collisions in the hash-based approach.
+const MAX_STRUCT_FIELDS: u32 = 4;
+
 pub fn lowerFromHir(allocator: std.mem.Allocator, hir_crate: *const hir.Crate, diagnostics: *diag.Diagnostics) LowerError!mir.MirCrate {
     var crate = mir.MirCrate.init(allocator);
 
@@ -578,20 +582,19 @@ const FunctionBuilder = struct {
     fn lowerStructInitToLocal(self: *FunctionBuilder, struct_init: hir.StructInit, base_local: hir.LocalId, span: hir.Span) LowerError!void {
         // Store each field to a separate local slot
         // Use hash-based ordering to match field access
-        for (struct_init.fields, 0..) |field, idx| {
+        for (struct_init.fields) |field| {
             const value_op = try self.lowerExpr(field.value) orelse continue;
             
             // Calculate field index using same hash as backend field access
             var hash: u32 = 0;
             for (field.name) |ch| hash = hash *% 31 +% ch;
-            const field_index: hir.LocalId = @intCast(hash % 4);
+            const field_index: hir.LocalId = @intCast(hash % MAX_STRUCT_FIELDS);
             
             // Store to local slot: base_local + field_index
             // First field (index 0) goes to base_local, others go to adjacent slots
             const target_local = base_local + field_index;
             try self.ensureLocal(target_local, null, span);
             _ = try self.emitInst(.{ .ty = null, .dest = null, .kind = .{ .StoreLocal = .{ .local = target_local, .src = value_op } } });
-            _ = idx;
         }
     }
 
@@ -775,7 +778,7 @@ const FunctionBuilder = struct {
             const base_local = target_expr.kind.LocalRef;
             
             // Determine struct field count from type
-            var num_fields: usize = 2; // Default for Point-like structs
+            var num_fields: usize = 1; // Default to 1 if type info unavailable
             if (target_expr.ty < self.hir_crate.types.items.len) {
                 const target_type = self.hir_crate.types.items[target_expr.ty];
                 switch (target_type.kind) {

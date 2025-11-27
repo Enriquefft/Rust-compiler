@@ -6,6 +6,10 @@ const machine = @import("machine.zig");
 
 const zero_span = source_map.Span{ .file_id = 0, .start = 0, .end = 0 };
 
+/// Maximum number of struct fields supported for hash-based field indexing.
+/// This limits the field layout to avoid collisions in the hash-based approach.
+const MAX_STRUCT_FIELDS: u32 = 4;
+
 pub const LowerError = error{ Unsupported, OutOfMemory };
 
 const DataTable = struct {
@@ -313,7 +317,7 @@ fn lowerInst(
                         // Basic field layout: assume packed i64 fields and use a deterministic pseudo-offset based on the name.
                         var hash: u32 = 0;
                         for (payload.name) |ch| hash = hash *% 31 +% ch;
-                        const field_index: i32 = @intCast(hash % 4); // limit offset growth
+                        const field_index: i32 = @intCast(hash % MAX_STRUCT_FIELDS);
                         // Subtract offset since locals grow downward (negative offsets from rbp)
                         const offset = base_mem.offset - field_index * @as(i32, @intCast(@sizeOf(i64)));
                         break :blk machine.MOperand{ .Mem = .{ .base = base_mem.base, .offset = offset } };
