@@ -82,8 +82,7 @@ fn printFunction(printer: *TreePrinter, func: mir.MirFn, is_last: bool) AllocErr
     if (func.params.len > 0) {
         try printer.push(false);
         for (func.params, 0..) |param_id, idx| {
-            const param_ty = if (param_id < func.locals.len) func.locals[param_id] else mir.MirType.Unknown;
-            try printer.printNodeFmt(idx == func.params.len - 1, "Param {d}: {s}", .{ param_id, @tagName(param_ty) });
+            try printer.printNodeFmt(idx == func.params.len - 1, "Param {d}", .{param_id});
         }
         printer.pop();
     }
