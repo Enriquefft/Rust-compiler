@@ -1,0 +1,20 @@
+# Configure environment for GitHub Copilot coding agents
+# This file configures the development environment with all required tooling.
+#
+# Project dependencies:
+#   - Zig 0.15.0-dev: Used to build the Rust-subset compiler
+#   - GCC: Used to assemble and link generated x86-64 assembly
+#   - Bash: Used for build scripts (pre-installed on ubuntu-latest)
+
+name: "Copilot Setup Steps"
+
+steps:
+  - name: Install Zig 0.15
+    uses: mlugg/setup-zig@v2
+    with:
+      version: "0.15.0-dev"
+
+  - name: Install GCC
+    run: |
+      sudo apt-get update
+      sudo apt-get install -y gcc
