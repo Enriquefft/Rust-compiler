@@ -351,26 +351,66 @@ const Parser = struct {
                 continue;
             }
 
-            if (self.isStartOfExpr()) {
 
-
-                if (self.parseExpr()) |expr| {
-                    if (self.match(.Semicolon)) {
-                        stmts.append(self.arena, .{ .tag = .Expr, .span = expr.span, .data = .{ .Expr = .{ .expr = expr.* } } }) catch {};
-                    } else {
-                        result_expr = expr;
-                        break;
-                    }
-                } else {
-                    self.synchronize();}
+              // If we see a '{' here, we treat the whole nested block as a statement,
+        // not as a tail expression of the enclosing block.
+        if (self.check(.LBrace)) {
+            if (self.parseBlock()) |blk| {
+                const expr_val = ast.Expr{
+                    .tag = .Block,
+                    .span = blk.span,
+                    .data = .{ .Block = blk },
+                };
+                stmts.append(self.arena, .{
+                    .tag = .Expr,
+                    .span = blk.span,
+                    .data = .{ .Expr = .{ .expr = expr_val } },
+                }) catch {};
+                // Optional trailing semicolon after the block, e.g. "{ ... };"
+                _ = self.match(.Semicolon);
             } else {
-                self.reportError(self.peek().span, "unexpected token in block");
                 self.synchronize();
             }
+            continue;
         }
-        const rbrace = self.expectConsume(.RBrace, "expected '}' to close block") orelse return null;
-        const span = Span{ .file_id = lbrace.span.file_id, .start = lbrace.span.start, .end = rbrace.span.end };
-        return ast.Block{ .stmts = stmts.toOwnedSlice(self.arena) catch @panic("out of memory"), .result = result_expr, .span = span };
+
+        // Generic expression in statement or tail position
+        if (self.isStartOfExpr()) {
+            if (self.parseExpr()) |expr| {
+                if (self.match(.Semicolon)) {
+                    // Expression statement: `expr;`
+                    stmts.append(self.arena, .{
+                        .tag = .Expr,
+                        .span = expr.span,
+                        .data = .{ .Expr = .{ .expr = expr.* } },
+                    }) catch {};
+                } else {
+                    // Tail expression of the block (must be last)
+                    result_expr = expr;
+                    break;
+                }
+            } else {
+                self.synchronize();
+            }
+        } else {
+            self.reportError(self.peek().span, "unexpected token in block");
+            self.synchronize();
+        }
+    }
+
+    const rbrace = self.expectConsume(.RBrace, "expected '}' to close block") orelse return null;
+    const span = Span{
+        .file_id = lbrace.span.file_id,
+        .start = lbrace.span.start,
+        .end = rbrace.span.end,
+    };
+
+    return ast.Block{
+        .stmts = stmts.toOwnedSlice(self.arena) catch @panic("out of memory"),
+        .result = result_expr,
+        .span = span,
+    };
+
     }
 
     fn parseLetStmt(self: *Parser) ?ast.Stmt {
