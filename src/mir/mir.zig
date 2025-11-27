@@ -26,6 +26,7 @@ pub const Operand = union(enum) {
     Temp: TempId,
     Local: LocalId,
     Param: u32,
+    RetSecond, // Second return value (rdx in x86-64 calling convention)
     ImmInt: i64,
     ImmFloat: f64,
     ImmBool: bool,

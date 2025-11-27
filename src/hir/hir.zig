@@ -348,13 +348,16 @@ fn lowerImpl(
     defer diagnostics_dummy.deinit();
     const target = try lowerType(crate, data.target, &diagnostics_dummy, next_type_id);
     
+    // Get the struct name for method name mangling
+    var struct_name: []const u8 = "";
+    
     // Create a struct type for the self parameter based on the target type path
     var self_type: TypeId = target;
     if (data.target.tag == .Path) {
         // Look up the struct by name to get a proper struct type
         const path = data.target.data.Path;
         if (path.segments.len == 1) {
-            const struct_name = path.segments[0].name;
+            struct_name = path.segments[0].name;
             for (crate.items.items, 0..) |crate_item, idx| {
                 if (crate_item.kind == .Struct) {
                     const struct_item = crate_item.kind.Struct;
@@ -429,7 +432,11 @@ fn lowerImpl(
         
         const body_expr = try lowerBlock(crate, method.body, &diagnostics_dummy, next_type_id);
         
-        const method_name = try crate.allocator().dupe(u8, method.name.name);
+        // Create mangled method name: StructName_methodName to avoid libc conflicts
+        const method_name = if (struct_name.len > 0)
+            try std.fmt.allocPrint(crate.allocator(), "{s}_{s}", .{struct_name, method.name.name})
+        else
+            try crate.allocator().dupe(u8, method.name.name);
         
         const fn_item = Function{
             .def_id = method_def_id,
