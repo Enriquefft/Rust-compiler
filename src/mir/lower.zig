@@ -756,7 +756,8 @@ const FunctionBuilder = struct {
                                 // Check if it ends with _methodName
                                 if (std.mem.endsWith(u8, func.name, field.name) and
                                     func.name.len > field.name.len and
-                                    func.name[func.name.len - field.name.len - 1] == '_') {
+                                    func.name[func.name.len - field.name.len - 1] == '_')
+                                {
                                     return StructMethodInfo{
                                         .target_id = field.target,
                                         .method_name = func.name, // Use mangled name

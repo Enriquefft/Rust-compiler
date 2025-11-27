@@ -214,8 +214,7 @@ fn emitInst(writer: anytype, inst: machine.InstKind, fn_name: []const u8) !void 
             // try writeOperand(writer, payload.rhs);
             // try writer.writeByte('\n');
 
-
-                      // Handle memory + immediate case: need size qualifier
+            // Handle memory + immediate case: need size qualifier
             if (payload.lhs == .Mem and payload.rhs == .Imm) {
                 try writer.writeAll("    cmp qword ptr ");
                 try writeMem(writer, payload.lhs.Mem);
@@ -229,7 +228,6 @@ fn emitInst(writer: anytype, inst: machine.InstKind, fn_name: []const u8) !void 
                 try writeOperand(writer, payload.rhs);
                 try writer.writeByte('\n');
             }
-
         },
         .Setcc => |payload| {
             try writer.print("    set{s} ", .{condSuffix(payload.cond)});

@@ -49,7 +49,6 @@ const Parser = struct {
     fn parseItem(self: *Parser) ?ast.Item {
         const tok = self.peek();
 
-
         switch (tok.kind) {
             .KwFn => return self.parseFnItem(),
             .KwStruct => return self.parseStructItem(),
@@ -91,7 +90,6 @@ const Parser = struct {
     }
 
     fn parseStructItem(self: *Parser) ?ast.Item {
-
         const kw = self.expectConsume(.KwStruct, "expected 'struct'") orelse return null;
         const name_tok = self.expectConsume(.Identifier, "expected struct name") orelse return null;
         const name = self.makeIdent(name_tok);
@@ -172,7 +170,6 @@ const Parser = struct {
                     const param = self.parseSelfParam();
                     params.append(self.arena, param) catch {};
                 } else {
-
                     _ = self.match(.KwMut);
                     const pattern = self.parsePattern() orelse break;
                     const ty = if (self.match(.Colon)) self.parseType() else null;
@@ -322,9 +319,6 @@ const Parser = struct {
         var stmts = std.ArrayListUnmanaged(ast.Stmt){};
         var result_expr: ?*ast.Expr = null;
         while (!self.check(.RBrace) and !self.isAtEnd()) {
-
-
-
             if (self.match(.Semicolon)) {
                 stmts.append(self.arena, .{ .tag = .Empty, .span = lbrace.span, .data = .Empty }) catch {};
                 continue;
@@ -351,70 +345,67 @@ const Parser = struct {
                 continue;
             }
 
-
-              // If we see a '{' here, we treat the whole nested block as a statement,
-        // not as a tail expression of the enclosing block.
-        if (self.check(.LBrace)) {
-            if (self.parseBlock()) |blk| {
-                const expr_val = ast.Expr{
-                    .tag = .Block,
-                    .span = blk.span,
-                    .data = .{ .Block = blk },
-                };
-                stmts.append(self.arena, .{
-                    .tag = .Expr,
-                    .span = blk.span,
-                    .data = .{ .Expr = .{ .expr = expr_val } },
-                }) catch {};
-                // Optional trailing semicolon after the block, e.g. "{ ... };"
-                _ = self.match(.Semicolon);
-            } else {
-                self.synchronize();
-            }
-            continue;
-        }
-
-        // Generic expression in statement or tail position
-        if (self.isStartOfExpr()) {
-            if (self.parseExpr()) |expr| {
-                if (self.match(.Semicolon)) {
-                    // Expression statement: `expr;`
+            // If we see a '{' here, we treat the whole nested block as a statement,
+            // not as a tail expression of the enclosing block.
+            if (self.check(.LBrace)) {
+                if (self.parseBlock()) |blk| {
+                    const expr_val = ast.Expr{
+                        .tag = .Block,
+                        .span = blk.span,
+                        .data = .{ .Block = blk },
+                    };
                     stmts.append(self.arena, .{
                         .tag = .Expr,
-                        .span = expr.span,
-                        .data = .{ .Expr = .{ .expr = expr.* } },
+                        .span = blk.span,
+                        .data = .{ .Expr = .{ .expr = expr_val } },
                     }) catch {};
+                    // Optional trailing semicolon after the block, e.g. "{ ... };"
+                    _ = self.match(.Semicolon);
                 } else {
-                    // Tail expression of the block (must be last)
-                    result_expr = expr;
-                    break;
+                    self.synchronize();
+                }
+                continue;
+            }
+
+            // Generic expression in statement or tail position
+            if (self.isStartOfExpr()) {
+                if (self.parseExpr()) |expr| {
+                    if (self.match(.Semicolon)) {
+                        // Expression statement: `expr;`
+                        stmts.append(self.arena, .{
+                            .tag = .Expr,
+                            .span = expr.span,
+                            .data = .{ .Expr = .{ .expr = expr.* } },
+                        }) catch {};
+                    } else {
+                        // Tail expression of the block (must be last)
+                        result_expr = expr;
+                        break;
+                    }
+                } else {
+                    self.synchronize();
                 }
             } else {
+                self.reportError(self.peek().span, "unexpected token in block");
                 self.synchronize();
             }
-        } else {
-            self.reportError(self.peek().span, "unexpected token in block");
-            self.synchronize();
         }
-    }
 
-    const rbrace = self.expectConsume(.RBrace, "expected '}' to close block") orelse return null;
-    const span = Span{
-        .file_id = lbrace.span.file_id,
-        .start = lbrace.span.start,
-        .end = rbrace.span.end,
-    };
+        const rbrace = self.expectConsume(.RBrace, "expected '}' to close block") orelse return null;
+        const span = Span{
+            .file_id = lbrace.span.file_id,
+            .start = lbrace.span.start,
+            .end = rbrace.span.end,
+        };
 
-    return ast.Block{
-        .stmts = stmts.toOwnedSlice(self.arena) catch @panic("out of memory"),
-        .result = result_expr,
-        .span = span,
-    };
-
+        return ast.Block{
+            .stmts = stmts.toOwnedSlice(self.arena) catch @panic("out of memory"),
+            .result = result_expr,
+            .span = span,
+        };
     }
 
     fn parseLetStmt(self: *Parser) ?ast.Stmt {
-
         std.debug.print("Parsing let statement\n", .{});
 
         const kw = self.expectConsume(.KwLet, "expected 'let'") orelse return null;
@@ -477,7 +468,7 @@ const Parser = struct {
             const unsafe_tok = self.previous();
             const block = self.parseBlock() orelse return null;
             const span = Span{ .file_id = unsafe_tok.span.file_id, .start = unsafe_tok.span.start, .end = block.span.end };
-            return self.allocExpr(.{ .tag = .Unsafe, .span = span, .data = .{ .Unsafe= .{ .block = block } } });
+            return self.allocExpr(.{ .tag = .Unsafe, .span = span, .data = .{ .Unsafe = .{ .block = block } } });
         }
 
         return self.parseAssign();
@@ -830,9 +821,7 @@ const Parser = struct {
     }
 
     fn synchronize(self: *Parser) void {
-
         if (self.tokens.len == 0) return;
-
 
         if (self.pos == 0) {
             _ = self.advance();

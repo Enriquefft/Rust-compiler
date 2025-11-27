@@ -84,7 +84,7 @@ fn rewriteOperands(
                     }
                 }
             }
-            
+
             const dst = try materializeWrite(payload.dst, map, available, spill_scratch, phys_used, spill_slots, diagnostics);
             var src = try materializeRead(payload.src, map, available, spill_scratch, phys_used, spill_slots, diagnostics);
 

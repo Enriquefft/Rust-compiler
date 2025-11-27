@@ -231,7 +231,7 @@ fn lowerInst(
                 const src = try lowerOperand(ctx, payload.src, vreg_count);
                 const from_ty = payload.from_ty;
                 const to_ty = payload.to_ty;
-                
+
                 // Handle float to int conversion
                 if ((from_ty == .F32 or from_ty == .F64) and (to_ty == .I32 or to_ty == .I64 or to_ty == .U32 or to_ty == .U64)) {
                     // cvttsd2si - truncate double/float to signed integer
@@ -347,7 +347,7 @@ fn lowerInst(
                 if (payload.fields.len > 0) {
                     const first = try lowerOperand(ctx, payload.fields[0].value, vreg_count);
                     try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .VReg = dst }, .src = first } });
-                    
+
                     // For 2-field structs, also store second field to rdx for return
                     if (payload.fields.len > 1) {
                         const second = try lowerOperand(ctx, payload.fields[1].value, vreg_count);

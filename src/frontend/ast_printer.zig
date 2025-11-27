@@ -2,8 +2,6 @@ const std = @import("std");
 const ast = @import("ast.zig");
 const AllocError = std.mem.Allocator.Error;
 
-
-
 const TreePrinter = struct {
     allocator: std.mem.Allocator,
     prefix: std.ArrayListUnmanaged(u8),
@@ -53,7 +51,6 @@ const TreePrinter = struct {
         try self.printNode(is_last, label);
     }
 };
-
 
 pub fn printCrateTree(allocator: std.mem.Allocator, crate: ast.Crate) AllocError!void {
     var printer = TreePrinter.init(allocator);

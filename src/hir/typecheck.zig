@@ -62,10 +62,11 @@ fn checkExpr(
     expr_id: hir.ExprId,
     diagnostics: *diag.Diagnostics,
     locals: *std.AutoHashMap(hir.LocalId, hir.TypeId),
-in_unsafe: bool,
+    in_unsafe: bool,
 ) Error!hir.TypeId {
     const expr = &crate.exprs.items[expr_id];
     const span = expr.span;
+
     switch (expr.kind) {
         .ConstInt => {
             expr.ty = try ensureType(crate, .{ .PrimInt = .I64 });
@@ -121,10 +122,10 @@ in_unsafe: bool,
         },
 
         .Unsafe => |u| {
-    // Inside the unsafe block body, we typecheck with in_unsafe = true.
-    const body_ty = try checkExpr(crate, u.body, diagnostics, locals, true);
-    expr.ty = body_ty;
-},
+            // Inside the unsafe block body, we typecheck with in_unsafe = true.
+            const body_ty = try checkExpr(crate, u.body, diagnostics, locals, true);
+            expr.ty = body_ty;
+        },
 
         .UnresolvedIdent => {
             diagnostics.reportError(span, "identifier was not resolved before type checking");
@@ -177,31 +178,29 @@ in_unsafe: bool,
                     expr.ty = operand_ty;
                 },
 
-
                 .Deref => {
-    if (operand_ty >= crate.types.items.len) {
-        diagnostics.reportError(span, "unknown operand type for deref");
-        expr.ty = try ensureType(crate, .Unknown);
-    } else {
-        expr.ty = switch (crate.types.items[operand_ty].kind) {
-            .Pointer => |ptr| blk: {
-                if (!in_unsafe) {
-                    diagnostics.reportError(
-                        span,
-                        "dereferencing a raw pointer is unsafe; wrap this in `unsafe { ... }`",
-                    );
-                }
-                break :blk ptr.inner;
-            },
-            .Ref => |r| r.inner,
-            else => blk: {
-                diagnostics.reportError(span, "cannot dereference non-pointer type");
-                break :blk try ensureType(crate, .Unknown);
-            },
-        };
-    }
-},
-
+                    if (operand_ty >= crate.types.items.len) {
+                        diagnostics.reportError(span, "unknown operand type for deref");
+                        expr.ty = try ensureType(crate, .Unknown);
+                    } else {
+                        expr.ty = switch (crate.types.items[operand_ty].kind) {
+                            .Pointer => |ptr| blk: {
+                                if (!in_unsafe) {
+                                    diagnostics.reportError(
+                                        span,
+                                        "dereferencing a raw pointer is unsafe; wrap this in `unsafe { ... }`",
+                                    );
+                                }
+                                break :blk ptr.inner;
+                            },
+                            .Ref => |r| r.inner,
+                            else => blk: {
+                                diagnostics.reportError(span, "cannot dereference non-pointer type");
+                                break :blk try ensureType(crate, .Unknown);
+                            },
+                        };
+                    }
+                },
 
                 .Ref, .RefMut => {
                     const inner = operand_ty;
@@ -295,8 +294,7 @@ in_unsafe: bool,
             const value_ty = try checkExpr(crate, assign.value, diagnostics, locals, in_unsafe);
 
             if (!typesCompatible(crate, target_ty, value_ty)) {
-
-                std.debug.print("Assignment type mismatch: target {any}, value {any}\n", .{crate.types.items[target_ty], crate.types.items[value_ty]});
+                std.debug.print("Assignment type mismatch: target {any}, value {any}\n", .{ crate.types.items[target_ty], crate.types.items[value_ty] });
 
                 diagnostics.reportError(span, "assignment types do not match");
             }
@@ -337,12 +335,12 @@ in_unsafe: bool,
             const iter_ty = try checkExpr(crate, for_expr.iter, diagnostics, locals, in_unsafe);
 
             const elem_ty = switch (getArrayElementType(crate, iter_ty)) {
-        .ok => |et| et,
-        .err => blk: {
-            diagnostics.reportError(span, "for loop iterator must be an array (or ref/pointer to array)");
-            break :blk try ensureType(crate, .Unknown);
-        },
-    };
+                .ok => |et| et,
+                .err => blk: {
+                    diagnostics.reportError(span, "for loop iterator must be an array (or ref/pointer to array)");
+                    break :blk try ensureType(crate, .Unknown);
+                },
+            };
 
             const pat_ty = try ensurePatternBinding(crate, for_expr.pat.id, locals);
             if (!isUnknown(crate, pat_ty) and !typesCompatible(crate, pat_ty, elem_ty)) {
@@ -465,12 +463,10 @@ fn checkStmt(
             if (let_stmt.value) |value_id| {
                 const value_ty = try checkExpr(crate, value_id, diagnostics, locals, in_unsafe);
                 if (declared_ty) |*ty_id| {
-
-
                     if (!typesCompatible(crate, ty_id.*, value_ty)) {
-                    // view types
+                        // view types
 
-                        std.debug.print("Declared type: {any}, Value type: {any}\n", .{crate.types.items[ty_id.*], crate.types.items[value_ty]});
+                        std.debug.print("Declared type: {any}, Value type: {any}\n", .{ crate.types.items[ty_id.*], crate.types.items[value_ty] });
 
                         diagnostics.reportError(stmt.span, "mismatched types in let binding");
                     }
@@ -587,7 +583,7 @@ fn typesCompatible(crate: *hir.Crate, lhs: hir.TypeId, rhs: hir.TypeId) bool {
             else => false,
         },
 
-          .Array => |lhs_arr| switch (rhs_kind) {
+        .Array => |lhs_arr| switch (rhs_kind) {
             .Array => |rhs_arr| blk: {
                 if (lhs_arr.size_const != rhs_arr.size_const) break :blk false;
 
@@ -635,7 +631,11 @@ fn pathsMatch(lhs_segments: [][]const u8, rhs_segments: [][]const u8) bool {
 }
 
 fn getArrayElementType(crate: *hir.Crate, ty: hir.TypeId) union(enum) { ok: hir.TypeId, err: void } {
+    std.debug.print("Getting array element type for type ID {d}\n", .{ty});
+
     if (ty < crate.types.items.len) {
+        std.debug.print("Type kind: {any}\n", .{crate.types.items[ty].kind});
+
         switch (crate.types.items[ty].kind) {
             .Array => |arr| return .{ .ok = arr.elem },
             .Ref => |ref_ty| return getArrayElementType(crate, ref_ty.inner),
@@ -814,7 +814,7 @@ fn isPointerMethodCall(
     callee_id: hir.ExprId,
     diagnostics: *diag.Diagnostics,
     locals: *std.AutoHashMap(hir.LocalId, hir.TypeId),
-in_unsafe: bool,
+    in_unsafe: bool,
 ) ?PointerMethodInfo {
     if (callee_id >= crate.exprs.items.len) return null;
     const callee_expr = crate.exprs.items[callee_id];
@@ -850,7 +850,7 @@ fn isStructMethodCall(
     callee_id: hir.ExprId,
     diagnostics: *diag.Diagnostics,
     locals: *std.AutoHashMap(hir.LocalId, hir.TypeId),
-in_unsafe: bool,
+    in_unsafe: bool,
 ) ?StructMethodInfo {
     if (callee_id >= crate.exprs.items.len) return null;
     const callee_expr = crate.exprs.items[callee_id];

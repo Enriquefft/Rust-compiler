@@ -366,10 +366,7 @@ fn lowerImpl(
                         // Create a struct type referring to this def
                         const struct_ty_id = next_type_id.*;
                         next_type_id.* += 1;
-                        try crate.types.append(crate.allocator(), .{
-                            .id = struct_ty_id,
-                            .kind = .{ .Struct = .{ .def_id = @intCast(idx), .type_args = &[_]TypeId{} } }
-                        });
+                        try crate.types.append(crate.allocator(), .{ .id = struct_ty_id, .kind = .{ .Struct = .{ .def_id = @intCast(idx), .type_args = &[_]TypeId{} } } });
                         self_type = struct_ty_id;
                         break;
                     }
@@ -401,20 +398,14 @@ fn lowerImpl(
                     // Create a reference type to the struct
                     const ref_ty_id = next_type_id.*;
                     next_type_id.* += 1;
-                    try crate.types.append(crate.allocator(), .{
-                        .id = ref_ty_id,
-                        .kind = .{ .Ref = .{ .mutable = false, .inner = self_type } }
-                    });
+                    try crate.types.append(crate.allocator(), .{ .id = ref_ty_id, .kind = .{ .Ref = .{ .mutable = false, .inner = self_type } } });
                     break :blk ref_ty_id;
                 },
                 .SelfRefMut => blk: {
                     // Create a mutable reference type to the struct
                     const ref_ty_id = next_type_id.*;
                     next_type_id.* += 1;
-                    try crate.types.append(crate.allocator(), .{
-                        .id = ref_ty_id,
-                        .kind = .{ .Ref = .{ .mutable = true, .inner = self_type } }
-                    });
+                    try crate.types.append(crate.allocator(), .{ .id = ref_ty_id, .kind = .{ .Ref = .{ .mutable = true, .inner = self_type } } });
                     break :blk ref_ty_id;
                 },
                 .Normal => if (param.ty) |param_ty|
@@ -435,7 +426,7 @@ fn lowerImpl(
 
         // Create mangled method name: StructName_methodName to avoid libc conflicts
         const method_name = if (struct_name.len > 0)
-            try std.fmt.allocPrint(crate.allocator(), "{s}_{s}", .{struct_name, method.name.name})
+            try std.fmt.allocPrint(crate.allocator(), "{s}_{s}", .{ struct_name, method.name.name })
         else
             try crate.allocator().dupe(u8, method.name.name);
 
@@ -806,8 +797,7 @@ fn lowerExpr(crate: *Crate, expr: ast.Expr, diagnostics: *diag.Diagnostics, next
             return try lowerBlock(crate, expr.data.Block, diagnostics, next_type_id);
         },
 
-
-           .Unsafe => {
+        .Unsafe => {
             const body_block_id = try lowerBlock(
                 crate,
                 expr.data.Unsafe.block,
@@ -827,7 +817,6 @@ fn lowerExpr(crate: *Crate, expr: ast.Expr, diagnostics: *diag.Diagnostics, next
             );
             return id;
         },
-
 
         .Path => {
             var segments = try crate.allocator().alloc([]const u8, expr.data.Path.segments.len);
