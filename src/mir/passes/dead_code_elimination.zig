@@ -35,9 +35,28 @@ fn eliminateInFunction(temp_allocator: std.mem.Allocator, arena: std.mem.Allocat
         markUses(block.term, used.items);
     }
 
+    // First pass: mark all uses from all instructions (not just dest==null)
     for (func.blocks) |block| {
         for (block.insts) |inst| {
-            if (inst.dest == null) markUsesInInst(inst, used.items);
+            markUsesInInst(inst, used.items);
+        }
+    }
+    
+    // Iterate until no more changes to handle transitive uses
+    var changed = true;
+    while (changed) {
+        changed = false;
+        for (func.blocks) |block| {
+            for (block.insts) |inst| {
+                if (inst.dest) |tmp| {
+                    if (tmp < used.items.len and used.items[tmp]) {
+                        // This instruction's result is used, so mark its operands as used too
+                        const prev_count = countUsed(used.items);
+                        markUsesInInst(inst, used.items);
+                        if (countUsed(used.items) > prev_count) changed = true;
+                    }
+                }
+            }
         }
     }
 
@@ -58,7 +77,6 @@ fn eliminateInFunction(temp_allocator: std.mem.Allocator, arena: std.mem.Allocat
             } else true;
 
             if (keep) {
-                markUsesInInst(inst, used.items);
                 try new_insts.insert(arena, 0, inst);
             }
         }
@@ -173,6 +191,14 @@ fn markOperand(op: mir.Operand, used: []bool) void {
     if (op == .Temp and op.Temp < used.len) {
         used[op.Temp] = true;
     }
+}
+
+fn countUsed(used: []const bool) usize {
+    var count: usize = 0;
+    for (used) |u| {
+        if (u) count += 1;
+    }
+    return count;
 }
 
 fn isSideEffectFree(inst: mir.Inst) bool {

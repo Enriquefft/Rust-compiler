@@ -46,6 +46,10 @@ const LowerContext = struct {
     mir_crate: *const mir.MirCrate,
     data: *DataTable,
     uses_printf: bool = false,
+    // Map from VReg to memory location for Index results (to support Ref(Index))
+    index_mem_map: std.AutoHashMap(machine.VReg, machine.MemRef) = undefined,
+    // Map from VReg to address VReg for dynamic index results (to support Ref(Index) with dynamic indices)
+    dynamic_index_addr_map: std.AutoHashMap(machine.VReg, machine.VReg) = undefined,
 };
 
 pub fn lowerCrate(allocator: std.mem.Allocator, mir_crate: *const mir.MirCrate, diagnostics: *diag.Diagnostics) LowerError!machine.MachineCrate {
@@ -96,6 +100,14 @@ fn lowerFn(ctx: *LowerContext, func: mir.MirFn) LowerError!machine.MachineFn {
     defer blocks.deinit(ctx.allocator);
 
     var vreg_count: machine.VReg = 0;
+    
+    // Initialize index memory map for this function
+    ctx.index_mem_map = std.AutoHashMap(machine.VReg, machine.MemRef).init(ctx.allocator);
+    defer ctx.index_mem_map.deinit();
+    
+    // Initialize dynamic index address map for this function
+    ctx.dynamic_index_addr_map = std.AutoHashMap(machine.VReg, machine.VReg).init(ctx.allocator);
+    defer ctx.dynamic_index_addr_map.deinit();
 
     for (func.blocks, 0..) |block, idx| {
         var insts = std.ArrayListUnmanaged(machine.InstKind){};
@@ -115,7 +127,7 @@ fn lowerFn(ctx: *LowerContext, func: mir.MirFn) LowerError!machine.MachineFn {
         });
     }
 
-    const stack_size = func.locals.len * @sizeOf(i64);
+    const stack_size = func.locals.len * @sizeOf(i64) * 4; // Allocate extra space for arrays
 
     return .{
         .name = func.name,
@@ -185,6 +197,19 @@ fn lowerInst(
                             .Mem => |mem| {
                                 try insts.append(ctx.allocator, .{ .Lea = .{ .dst = .{ .VReg = dst }, .mem = mem } });
                             },
+                            .VReg => |vreg| {
+                                // Check if this VReg came from an Index operation (static index)
+                                if (ctx.index_mem_map.get(vreg)) |mem| {
+                                    // Use LEA with the stored memory location
+                                    try insts.append(ctx.allocator, .{ .Lea = .{ .dst = .{ .VReg = dst }, .mem = mem } });
+                                } else if (ctx.dynamic_index_addr_map.get(vreg)) |addr_vreg| {
+                                    // For dynamic index, the address is already computed in addr_vreg
+                                    try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .VReg = dst }, .src = .{ .VReg = addr_vreg } } });
+                                } else {
+                                    // For other VRegs, just copy (simplified - may not be correct for all cases)
+                                    try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .VReg = dst }, .src = src } });
+                                }
+                            },
                             else => {
                                 // For non-memory operands, just copy (simplified)
                                 try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .VReg = dst }, .src = src } });
@@ -225,6 +250,18 @@ fn lowerInst(
             const mem = localMem(payload.local);
             const src = try lowerOperand(ctx, payload.src, vreg_count);
             try insts.append(ctx.allocator, .{ .Mov = .{ .dst = mem, .src = src } });
+            
+            // For array types, also store additional elements from rdx, rcx etc.
+            if (inst.ty) |ty| {
+                if (ty == .Array) {
+                    // Store 2nd element from rdx at offset 8
+                    const mem2 = machine.MOperand{ .Mem = .{ .base = mem.Mem.base, .offset = mem.Mem.offset - 8 } };
+                    try insts.append(ctx.allocator, .{ .Mov = .{ .dst = mem2, .src = .{ .Phys = .rdx } } });
+                    // Store 3rd element from rcx at offset 16
+                    const mem3 = machine.MOperand{ .Mem = .{ .base = mem.Mem.base, .offset = mem.Mem.offset - 16 } };
+                    try insts.append(ctx.allocator, .{ .Mov = .{ .dst = mem3, .src = .{ .Phys = .rcx } } });
+                }
+            }
         },
         .StorePtr => |payload| {
             // Store to a pointer: *ptr = value
@@ -297,12 +334,13 @@ fn lowerInst(
                     .Mem => |base_mem| blk: {
                         const offset = switch (idx) {
                             .Imm => |imm| blk2: {
+                                // Stack grows downward, so higher indices are at more negative offsets
                                 const scaled: i32 = @intCast(imm * @as(i64, @intCast(@sizeOf(i64))));
-                                break :blk2 base_mem.offset + scaled;
+                                break :blk2 base_mem.offset - scaled;
                             },
                             .VReg, .Phys, .Mem => {
                                 // For variable indices, we need to compute the address dynamically
-                                // Load the index into a register, multiply by element size, add to base
+                                // Load the index into a register, multiply by element size, subtract from base
                                 vreg_count.* += 1;
                                 const idx_vreg = vreg_count.* - 1;
 
@@ -336,11 +374,17 @@ fn lowerInst(
                                 const base_vreg = vreg_count.* - 1;
                                 try insts.append(ctx.allocator, .{ .Lea = .{ .dst = .{ .VReg = base_vreg }, .mem = base_mem } });
 
-                                // Add scaled index to base
-                                try insts.append(ctx.allocator, .{ .Bin = .{ .op = .add, .dst = .{ .VReg = base_vreg }, .lhs = .{ .VReg = base_vreg }, .rhs = .{ .VReg = scaled_vreg } } });
+                                // Subtract scaled index from base (stack grows downward)
+                                try insts.append(ctx.allocator, .{ .Bin = .{ .op = .sub, .dst = .{ .VReg = base_vreg }, .lhs = .{ .VReg = base_vreg }, .rhs = .{ .VReg = scaled_vreg } } });
 
-                                // Load value from computed address
+                                // Load value from computed address into dst
                                 try insts.append(ctx.allocator, .{ .Deref = .{ .dst = .{ .VReg = dst }, .addr = .{ .VReg = base_vreg } } });
+                                
+                                // Record that dst came from dynamic indexing - store base_vreg as the address VReg
+                                // We use a special convention: store the address vreg as a negative offset to signal dynamic
+                                // Actually, we need a different approach - track dynamic index address VRegs
+                                try ctx.dynamic_index_addr_map.put(dst, base_vreg);
+                                
                                 return null; // Already added the mov instruction
                             },
                             else => {
@@ -356,6 +400,8 @@ fn lowerInst(
                     },
                 };
                 try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .VReg = dst }, .src = mem } });
+                // Record the memory location for this VReg (for potential Ref later)
+                try ctx.index_mem_map.put(dst, mem.Mem);
             }
         },
         .Field => |payload| {
@@ -382,8 +428,25 @@ fn lowerInst(
         .Array => |payload| {
             if (dest_vreg) |dst| {
                 if (payload.elems.len > 0) {
+                    // Store all array elements to consecutive memory locations
+                    // First element goes to dst, subsequent elements go to adjacent memory
                     const first = try lowerOperand(ctx, payload.elems[0], vreg_count);
                     try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .VReg = dst }, .src = first } });
+                    
+                    // For additional elements, we need to store them after the first
+                    for (payload.elems[1..], 1..) |elem, idx| {
+                        const elem_op = try lowerOperand(ctx, elem, vreg_count);
+                        vreg_count.* += 1;
+                        const elem_vreg = vreg_count.* - 1;
+                        try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .VReg = elem_vreg }, .src = elem_op } });
+                        // Store to offset idx * 8 from base (will be handled by regalloc/emitter)
+                        // We use RetSecond for 2nd element, otherwise we need additional mechanism
+                        if (idx == 1) {
+                            try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .Phys = .rdx }, .src = .{ .VReg = elem_vreg } } });
+                        } else if (idx == 2) {
+                            try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .Phys = .rcx }, .src = .{ .VReg = elem_vreg } } });
+                        }
+                    }
                 } else {
                     try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .VReg = dst }, .src = .{ .Imm = 0 } } });
                 }
@@ -506,7 +569,8 @@ fn destRegister(temp: mir.TempId, vreg_count: ?*machine.VReg) machine.VReg {
 }
 
 fn localMem(local: mir.LocalId) machine.MOperand {
-    const offset: i32 = -@as(i32, @intCast((local + 1) * @sizeOf(i64)));
+    // Each local gets 32 bytes (4 * 8) to accommodate arrays
+    const offset: i32 = -@as(i32, @intCast((local + 1) * @sizeOf(i64) * 4));
     return .{ .Mem = .{ .base = .rbp, .offset = offset } };
 }
 
