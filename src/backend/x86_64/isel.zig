@@ -314,7 +314,8 @@ fn lowerInst(
                         var hash: u32 = 0;
                         for (payload.name) |ch| hash = hash *% 31 +% ch;
                         const field_index: i32 = @intCast(hash % 4); // limit offset growth
-                        const offset = base_mem.offset + field_index * @as(i32, @intCast(@sizeOf(i64)));
+                        // Subtract offset since locals grow downward (negative offsets from rbp)
+                        const offset = base_mem.offset - field_index * @as(i32, @intCast(@sizeOf(i64)));
                         break :blk machine.MOperand{ .Mem = .{ .base = base_mem.base, .offset = offset } };
                     },
                     else => {
@@ -337,9 +338,17 @@ fn lowerInst(
         },
         .StructInit => |payload| {
             if (dest_vreg) |dst| {
+                // For struct initialization, store first field to dest vreg
+                // and second field (if any) to rdx for struct returns
                 if (payload.fields.len > 0) {
                     const first = try lowerOperand(ctx, payload.fields[0].value, vreg_count);
                     try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .VReg = dst }, .src = first } });
+                    
+                    // For 2-field structs, also store second field to rdx for return
+                    if (payload.fields.len > 1) {
+                        const second = try lowerOperand(ctx, payload.fields[1].value, vreg_count);
+                        try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .Phys = .rdx }, .src = second } });
+                    }
                 } else {
                     try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .VReg = dst }, .src = .{ .Imm = 0 } } });
                 }
@@ -399,6 +408,7 @@ fn lowerSimpleOperand(ctx: *LowerContext, op: mir.Operand, vreg_count: ?*machine
             ctx.diagnostics.reportError(zero_span, "parameter index exceeds supported register set");
             return error.Unsupported;
         },
+        .RetSecond => .{ .Phys = .rdx }, // Second return value is in rdx
         .ImmInt => |v| .{ .Imm = v },
         .ImmBool => |v| .{ .Imm = if (v) 1 else 0 },
         .ImmFloat => |v| .{ .Imm = @bitCast(v) },

@@ -722,12 +722,18 @@ fn findMethodType(crate: *hir.Crate, struct_def_id: hir.DefId, method_name: []co
                             const method_item = crate.items.items[method_id];
                             if (method_item.kind == .Function) {
                                 const func = method_item.kind.Function;
-                                if (std.mem.eql(u8, func.name, method_name)) {
-                                    // Return a function type for this method
-                                    // Note: we return an Unknown type for now since the actual
-                                    // function type needs to be constructed properly
-                                    // The Call expression handler will get the full type
-                                    return null; // Let the call handler deal with this
+                                // Method name is mangled as StructName_methodName
+                                // Check if it ends with _methodName
+                                const name_matches = std.mem.endsWith(u8, func.name, method_name) and
+                                    func.name.len > method_name.len and
+                                    func.name[func.name.len - method_name.len - 1] == '_';
+                                if (name_matches) {
+                                    // Return the method's return type
+                                    if (func.return_type) |ret_ty| {
+                                        return ret_ty;
+                                    }
+                                    // If no return type, return a placeholder
+                                    return ensureType(crate, .Unknown) catch null;
                                 }
                             }
                         }
@@ -841,7 +847,12 @@ fn isStructMethodCall(
                                 const method_item = crate.items.items[method_id];
                                 if (method_item.kind == .Function) {
                                     const func = method_item.kind.Function;
-                                    if (std.mem.eql(u8, func.name, field.name)) {
+                                    // Method name is mangled as StructName_methodName
+                                    // Check if it ends with _methodName
+                                    const name_matches = std.mem.endsWith(u8, func.name, field.name) and
+                                        func.name.len > field.name.len and
+                                        func.name[func.name.len - field.name.len - 1] == '_';
+                                    if (name_matches) {
                                         // Found the method - return its return type
                                         const ret_ty = func.return_type orelse blk: {
                                             const unknown = ensureType(crate, .Unknown) catch return null;
