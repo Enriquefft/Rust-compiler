@@ -48,6 +48,8 @@ const Parser = struct {
 
     fn parseItem(self: *Parser) ?ast.Item {
         const tok = self.peek();
+
+
         switch (tok.kind) {
             .KwFn => return self.parseFnItem(),
             .KwStruct => return self.parseStructItem(),
@@ -89,6 +91,7 @@ const Parser = struct {
     }
 
     fn parseStructItem(self: *Parser) ?ast.Item {
+
         const kw = self.expectConsume(.KwStruct, "expected 'struct'") orelse return null;
         const name_tok = self.expectConsume(.Identifier, "expected struct name") orelse return null;
         const name = self.makeIdent(name_tok);
@@ -321,6 +324,7 @@ const Parser = struct {
         while (!self.check(.RBrace) and !self.isAtEnd()) {
 
 
+
             if (self.match(.Semicolon)) {
                 stmts.append(self.arena, .{ .tag = .Empty, .span = lbrace.span, .data = .Empty }) catch {};
                 continue;
@@ -370,6 +374,9 @@ const Parser = struct {
     }
 
     fn parseLetStmt(self: *Parser) ?ast.Stmt {
+
+        std.debug.print("Parsing let statement\n", .{});
+
         const kw = self.expectConsume(.KwLet, "expected 'let'") orelse return null;
         const is_mut = self.match(.KwMut);
         const pattern = self.parsePattern() orelse return null;
@@ -799,8 +806,6 @@ const Parser = struct {
                 .RBrace => return,
                 else => {},
             }
-
-                std.debug.print("Skipping token: {}\n", .{self.peek().kind});
 
             _ = self.advance();
         }
