@@ -2,3 +2,5 @@
 zig-cache/
 zig-out/
 codes/*.s
+report.md
+test_report.md

@@ -1,0 +1,34 @@
+# Expected outputs for Rust code files
+# Format: filename=expected_output
+# Lines starting with # are comments
+# Empty lines are ignored
+
+closures_test1.rs=6 11
+closures_test2.rs=6 15
+conditionals_and_ranges_test1.rs=even 12
+conditionals_and_ranges_test2.rs=36 big
+control_flow_test1.rs=4
+control_flow_test2.rs=10
+conversions_test1.rs=-12 -24 5 false
+conversions_test2.rs=true 245 255
+core_language_test1.rs=1 6 10
+core_language_test2.rs=8 14
+dynamic_data_test1.rs=3
+dynamic_data_test2.rs=Alice 30
+expressions_test1.rs=18 1 true
+expressions_test2.rs=65 55 25
+functions_and_methods_test1.rs=16
+functions_and_methods_test2.rs=2
+generics_test1.rs=1 2
+generics_test2.rs=hi 42
+hello_println.rs=hello
+input1.rs=20\n10\n1000000
+input2.rs=10
+input3.rs=46
+input4.rs=21
+macros_test1.rs=hello from println!
+macros_test2.rs=a = 3, b = 4
+statements_and_patterns_test1.rs=2 5
+statements_and_patterns_test2.rs=6
+types_test1.rs=-42 7 3.5 true z hello world
+types_test2.rs=4 11 false 4
