@@ -67,12 +67,11 @@ pub fn compileFile(options: CompileOptions) !CompileResult {
     // Load the source file:
     // - If the caller provided a source_override buffer, use it directly.
     // - Otherwise, read the file contents from disk into memory.
-    const contents = options.source_override
-        orelse try std.fs.cwd().readFileAlloc(
-            options.allocator,
-            options.input_path,
-            std.math.maxInt(usize),
-        );
+    const contents = options.source_override orelse try std.fs.cwd().readFileAlloc(
+        options.allocator,
+        options.input_path,
+        std.math.maxInt(usize),
+    );
 
     // If we allocated the file contents ourselves (no override), free it later.
     defer if (options.source_override == null)
@@ -177,15 +176,15 @@ pub fn compileFile(options: CompileOptions) !CompileResult {
         if (backend_artifact) |artifact| {
             switch (options.emit) {
                 .assembly =>
-                    // Write assembly text into the output file.
-                    try writeArtifact(options.output_path, artifact.assembly),
+                // Write assembly text into the output file.
+                try writeArtifact(options.output_path, artifact.assembly),
 
                 .object =>
-                    // Not implemented – emit diagnostic error in the source file.
-                    diagnostics.reportError(
-                        .{ .file_id = file_id, .start = 0, .end = 0 },
-                        "object emission is not implemented yet",
-                    ),
+                // Not implemented – emit diagnostic error in the source file.
+                diagnostics.reportError(
+                    .{ .file_id = file_id, .start = 0, .end = 0 },
+                    "object emission is not implemented yet",
+                ),
             }
         }
     }
@@ -231,7 +230,6 @@ pub fn compileFile(options: CompileOptions) !CompileResult {
         .backend_artifact = backend_artifact,
     };
 }
-
 
 fn writeArtifact(path: []const u8, contents: []const u8) !void {
     var file = try std.fs.cwd().createFile(path, .{ .truncate = true });

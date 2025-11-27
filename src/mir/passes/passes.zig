@@ -8,7 +8,6 @@ const debug_dump = @import("debug_dump.zig");
 
 pub const debugDumpPass = debug_dump.pass;
 
-
 /// An optimization or analysis pass executed over MIR.
 pub const Pass = struct {
     name: []const u8,
@@ -26,7 +25,6 @@ fn noOpRun(allocator: std.mem.Allocator, mir_crate: *mir.MirCrate, diagnostics: 
     _ = mir_crate;
     _ = diagnostics;
 }
-
 
 pub fn runAll(allocator: std.mem.Allocator, mir_crate: *mir.MirCrate, diagnostics: *diag.Diagnostics) !void {
     const passes = [_]Pass{
@@ -46,7 +44,6 @@ pub fn runAll(allocator: std.mem.Allocator, mir_crate: *mir.MirCrate, diagnostic
         try pass.run(allocator, mir_crate, diagnostics);
     }
 }
-
 
 test "runAll sequences configured passes" {
     var mir_crate = mir.MirCrate.init(std.testing.allocator);

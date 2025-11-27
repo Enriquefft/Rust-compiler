@@ -182,32 +182,9 @@ pub const Expr = struct {
         StructInit: StructInitExpr,
         Paren: *Expr,
         Unsafe: UnsafeExpr,
-
     },
 
-    pub const Tag = enum {
-        Literal,
-        Path,
-        Block,
-        If,
-        While,
-        For,
-        Return,
-        Binary,
-        Unary,
-        Call,
-        Index,
-        Field,
-        MethodCall,
-        Assignment,
-        Cast,
-        Range,
-        Lambda,
-        Array,
-        StructInit,
-        Paren,
-        Unsafe
-    };
+    pub const Tag = enum { Literal, Path, Block, If, While, For, Return, Binary, Unary, Call, Index, Field, MethodCall, Assignment, Cast, Range, Lambda, Array, StructInit, Paren, Unsafe };
 };
 
 pub const Literal = struct {
@@ -358,7 +335,6 @@ pub const Block = struct {
 pub const UnsafeExpr = struct {
     block: Block,
 };
-
 
 pub const Stmt = struct {
     tag: Tag,

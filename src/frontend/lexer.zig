@@ -586,7 +586,7 @@ test "lex samples from codes inputs" {
                 .RBrace,
             },
         },
-    .{
+        .{
             .file_name = "macros_test1.rs",
             .expected_kinds = &[_]TokenKind{
                 .KwFn,
@@ -601,11 +601,8 @@ test "lex samples from codes inputs" {
                 .StringLit,
                 .RParen,
                 .Semicolon,
-
                 .RBrace,
-            }
-
-
+            },
         },
     };
 
