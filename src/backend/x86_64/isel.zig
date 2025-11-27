@@ -255,7 +255,7 @@ fn lowerInst(
             const src = try lowerOperand(ctx, payload.src, vreg_count);
             try insts.append(ctx.allocator, .{ .Mov = .{ .dst = mem, .src = src } });
             
-            // For array types, also store additional elements from rdx, rcx etc.
+            // For array types, also store additional elements from rdx, rcx, r8 etc.
             if (inst.ty) |ty| {
                 if (ty == .Array) {
                     // Store 2nd element from rdx at offset 8
@@ -264,6 +264,9 @@ fn lowerInst(
                     // Store 3rd element from rcx at offset 16
                     const mem3 = machine.MOperand{ .Mem = .{ .base = mem.Mem.base, .offset = mem.Mem.offset - 16 } };
                     try insts.append(ctx.allocator, .{ .Mov = .{ .dst = mem3, .src = .{ .Phys = .rcx } } });
+                    // Store 4th element from r8 at offset 24
+                    const mem4 = machine.MOperand{ .Mem = .{ .base = mem.Mem.base, .offset = mem.Mem.offset - 24 } };
+                    try insts.append(ctx.allocator, .{ .Mov = .{ .dst = mem4, .src = .{ .Phys = .r8 } } });
                 }
             }
         },
@@ -436,18 +439,31 @@ fn lowerInst(
                     const first = try lowerOperand(ctx, payload.elems[0], vreg_count);
                     try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .VReg = dst }, .src = first } });
                     
-                    // For additional elements, use designated registers that StoreLocal will pick up
-                    // rdx for 2nd element, rcx for 3rd element (matches StoreLocal handling)
-                    for (payload.elems[1..], 1..) |elem, idx| {
+                    // For additional elements, first compute all values into VRegs,
+                    // then move to designated physical registers that StoreLocal will pick up
+                    // This avoids clobbering issues from interleaved VReg/PhysReg operations
+                    var elem_vregs: [4]machine.VReg = undefined;
+                    const num_extra = @min(payload.elems.len - 1, 4);
+                    
+                    // Phase 1: Compute all elements into VRegs
+                    for (payload.elems[1..][0..num_extra], 0..) |elem, i| {
                         const elem_op = try lowerOperand(ctx, elem, vreg_count);
                         vreg_count.* += 1;
                         const elem_vreg = vreg_count.* - 1;
                         try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .VReg = elem_vreg }, .src = elem_op } });
-                        if (idx == 1) {
-                            try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .Phys = .rdx }, .src = .{ .VReg = elem_vreg } } });
-                        } else if (idx == 2) {
-                            try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .Phys = .rcx }, .src = .{ .VReg = elem_vreg } } });
-                        }
+                        elem_vregs[i] = elem_vreg;
+                    }
+                    
+                    // Phase 2: Move all values to physical registers
+                    // rdx for 2nd element, rcx for 3rd element, r8 for 4th element
+                    if (num_extra >= 1) {
+                        try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .Phys = .rdx }, .src = .{ .VReg = elem_vregs[0] } } });
+                    }
+                    if (num_extra >= 2) {
+                        try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .Phys = .rcx }, .src = .{ .VReg = elem_vregs[1] } } });
+                    }
+                    if (num_extra >= 3) {
+                        try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .Phys = .r8 }, .src = .{ .VReg = elem_vregs[2] } } });
                     }
                 } else {
                     try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .VReg = dst }, .src = .{ .Imm = 0 } } });

@@ -190,7 +190,12 @@ fn rewriteOperands(
             try rewritten.append(allocator, .{ .Setcc = .{ .cond = payload.cond, .dst = dst } });
         },
         .Test => |*payload| {
-            const op = try materializeRead(payload.operand, map, available, spill_scratch, phys_used, spill_slots, diagnostics);
+            var op = try materializeRead(payload.operand, map, available, spill_scratch, phys_used, spill_slots, diagnostics);
+            // test instruction requires at least one register operand
+            if (isMem(op)) {
+                try rewritten.append(allocator, .{ .Mov = .{ .dst = .{ .Phys = spill_scratch }, .src = op } });
+                op = .{ .Phys = spill_scratch };
+            }
             try rewritten.append(allocator, .{ .Test = .{ .operand = op } });
         },
         .Call => |*payload| {
