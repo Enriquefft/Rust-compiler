@@ -54,83 +54,165 @@ pub const CompileOptions = struct {
     visualize_tokens: bool = false,
     visualize_ast: bool = false,
 };
-
 pub fn compileFile(options: CompileOptions) !CompileResult {
+    // Create a fresh source map. This tracks all loaded files,
+    // their contents, and their mapping between byte offsets and line/column.
     var sm = source_map.SourceMap.init(options.allocator);
+
+    // Central diagnostics accumulator. All stages push errors/warnings here.
     var diagnostics = diag.Diagnostics.init(options.allocator);
 
-    const contents = options.source_override orelse try std.fs.cwd().readFileAlloc(options.allocator, options.input_path, std.math.maxInt(usize));
-    defer if (options.source_override == null) options.allocator.free(contents);
+    // Load the source file:
+    // - If the caller provided a source_override buffer, use it directly.
+    // - Otherwise, read the file contents from disk into memory.
+    const contents = options.source_override
+        orelse try std.fs.cwd().readFileAlloc(
+            options.allocator,
+            options.input_path,
+            std.math.maxInt(usize),
+        );
 
+    // If we allocated the file contents ourselves (no override), free it later.
+    defer if (options.source_override == null)
+        options.allocator.free(contents);
+
+    // Register this file with the source map. This assigns it a file_id
+    // used throughout lexing, parsing, and diagnostics.
     const file_id = try sm.addFile(options.input_path, contents);
 
-    const token_slice = try lexer.lex(options.allocator, file_id, contents, &diagnostics);
+    // Run the lexer. Produces a slice of tokens, stored in temporary memory.
+    // `token_slice` must be freed manually.
+    const token_slice = try lexer.lex(
+        options.allocator,
+        file_id,
+        contents,
+        &diagnostics,
+    );
     defer options.allocator.free(token_slice);
 
+    // Optional debugging: print tokens to stdout.
     if (options.visualize_tokens) {
         printTokens(token_slice);
     }
 
+    // Create an arena for AST allocation. All AST nodes live here.
     var ast_arena = std.heap.ArenaAllocator.init(options.allocator);
+
+    // Parse the token stream into an AST representing the entire crate.
+    // The AST is allocated in the arena so it is freed all at once.
     const crate = parser.parseCrate(ast_arena.allocator(), token_slice, &diagnostics);
 
+    // Optional debugging: pretty-print the AST structure.
     if (options.visualize_ast) {
         try ast_printer.printCrateTree(options.allocator, crate);
     }
 
-    var hir_crate = try hir.lowerFromAst(options.allocator, crate, &diagnostics);
+    // Lower the AST into HIR (High-level Intermediate Representation).
+    // HIR is a simplified, more uniform IR than the raw AST, usually
+    // desugared and annotated with structural information.
+    var hir_crate = try hir.lowerFromAst(
+        options.allocator,
+        crate,
+        &diagnostics,
+    );
+
+    // Declare the MIR crate now. May be filled later or left empty on error.
     var mir_crate: mir.MirCrate = undefined;
 
+    // === NAME RESOLUTION ===
+    // Only proceed if previous stages were diagnostic-free.
     if (!diagnostics.hasErrors()) {
         try hir.performNameResolution(&hir_crate, &diagnostics);
     }
 
+    // === TYPE CHECKING ===
     if (!diagnostics.hasErrors()) {
         try hir.performTypeCheck(&hir_crate, &diagnostics);
     }
 
+    // === HIR → MIR LOWERING ===
     if (!diagnostics.hasErrors()) {
-        mir_crate = try mir_lower.lowerFromHir(options.allocator, &hir_crate, &diagnostics);
+        mir_crate = try mir_lower.lowerFromHir(
+            options.allocator,
+            &hir_crate,
+            &diagnostics,
+        );
     } else {
+        // Initialize an empty MIR crate to keep structure consistent
+        // even if compilation failed earlier.
         mir_crate = mir.MirCrate.init(options.allocator);
     }
 
+    // === MIR OPTIMIZATION PASSES ===
+    // Run if optimizations requested and no errors so far.
     if (!diagnostics.hasErrors() and options.opt_level == .basic) {
-        try mir_passes.runAll(options.allocator, &mir_crate, &diagnostics);
+        try mir_passes.runAll(
+            options.allocator,
+            &mir_crate,
+            &diagnostics,
+        );
     }
 
+    // === BACKEND CODE GENERATION ===
+    // Stores assembly/object output; may remain null if codegen skipped.
     var backend_artifact: ?backend.Artifact = null;
+
     if (!diagnostics.hasErrors()) {
-        backend_artifact = try backend.codegen(&mir_crate, options.allocator, &diagnostics);
+        backend_artifact = try backend.codegen(
+            &mir_crate,
+            options.allocator,
+            &diagnostics,
+        );
     }
 
+    // === OUTPUT EMISSION ===
     if (!diagnostics.hasErrors()) {
         if (backend_artifact) |artifact| {
             switch (options.emit) {
-                .assembly => try writeArtifact(options.output_path, artifact.assembly),
-                .object => diagnostics.reportError(.{ .file_id = file_id, .start = 0, .end = 0 }, "object emission is not implemented yet"),
+                .assembly =>
+                    // Write assembly text into the output file.
+                    try writeArtifact(options.output_path, artifact.assembly),
+
+                .object =>
+                    // Not implemented – emit diagnostic error in the source file.
+                    diagnostics.reportError(
+                        .{ .file_id = file_id, .start = 0, .end = 0 },
+                        "object emission is not implemented yet",
+                    ),
             }
         }
     }
 
-    const status: CompileStatus = if (diagnostics.hasErrors()) .errors else .success;
+    // Produce final compile status based on whether diagnostics collected errors.
+    const status: CompileStatus =
+        if (diagnostics.hasErrors()) .errors else .success;
 
+    // If compilation failed and diagnostics should be printed, emit them now.
     if (status == .errors and options.emit_diagnostics) {
         try diagnostics.emitAll(&sm);
     }
 
+    // Optional behavior: exit the whole process on error.
     if (status == .errors and options.exit_on_error) {
+        // Clean up backend artifact if created.
         if (backend_artifact) |*artifact| {
             artifact.deinit();
         }
+
+        // Clean up all allocated compiler structures.
         diagnostics.deinit();
         sm.deinit();
         ast_arena.deinit();
         hir_crate.deinit();
         mir_crate.deinit();
+
+        // Terminate program with nonzero code.
         std.process.exit(1);
     }
 
+    // Return a full CompileResult containing all internal structures,
+    // regardless of success or failure. The caller owns all of these and
+    // must free them appropriately when done.
     return .{
         .diagnostics = diagnostics,
         .source_map = sm,
@@ -142,6 +224,7 @@ pub fn compileFile(options: CompileOptions) !CompileResult {
         .backend_artifact = backend_artifact,
     };
 }
+
 
 fn writeArtifact(path: []const u8, contents: []const u8) !void {
     var file = try std.fs.cwd().createFile(path, .{ .truncate = true });
