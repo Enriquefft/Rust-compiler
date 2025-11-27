@@ -50,11 +50,11 @@ pub const Diagnostics = struct {
 
     /// Emit diagnostics to stderr with line and column information.
     pub fn emitAll(self: *Diagnostics, source_map_ref: *source_map.SourceMap) !void {
-        var out_buffer = std.ArrayList(u8).init(self.allocator);
+        var out_buffer = std.array_list.Managed(u8).init(self.allocator);
         defer out_buffer.deinit();
 
         try self.emitAllToWriter(source_map_ref, out_buffer.writer());
-        try std.io.getStdErr().writeAll(out_buffer.items);
+        try std.fs.File.stderr().writeAll(out_buffer.items);
     }
 
     pub fn emitAllToWriter(self: *Diagnostics, source_map_ref: *source_map.SourceMap, writer: anytype) !void {
@@ -156,7 +156,7 @@ test "emitAll formats single-line span with caret" {
 
     diags.reportError(.{ .file_id = file_id, .start = 4, .end = 9 }, "unused variable");
 
-    var buffer = std.ArrayList(u8).init(allocator);
+    var buffer = std.array_list.Managed(u8).init(allocator);
     defer buffer.deinit();
 
     try diags.emitAllToWriter(&sm, buffer.writer());
@@ -182,7 +182,7 @@ test "emitAll formats multi-line span with carets per line" {
 
     diags.reportError(.{ .file_id = file_id, .start = 1, .end = 6 }, "spanning lines");
 
-    var buffer = std.ArrayList(u8).init(allocator);
+    var buffer = std.array_list.Managed(u8).init(allocator);
     defer buffer.deinit();
 
     try diags.emitAllToWriter(&sm, buffer.writer());
