@@ -308,7 +308,7 @@ fn lowerInst(
 
                                 // Move index to vreg if needed
                                 switch (idx) {
-                                    .VReg => {},
+                                    .VReg => {}, // VReg is already in the correct form, no action needed
                                     .Phys => |reg| {
                                         try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .VReg = idx_vreg }, .src = .{ .Phys = reg } } });
                                     },

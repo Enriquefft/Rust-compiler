@@ -767,10 +767,7 @@ const FunctionBuilder = struct {
         return null;
     }
 
-    fn lowerArrayMethodCall(self: *FunctionBuilder, target_id: hir.ExprId, method_name: []const u8, array_size: ?i64, args: []const hir.ExprId, expr: hir.Expr) LowerError!?mir.Operand {
-        _ = target_id; // Array is not needed for len()
-        _ = args; // Currently no array methods use arguments
-
+    fn lowerArrayMethodCall(self: *FunctionBuilder, _: hir.ExprId, method_name: []const u8, array_size: ?i64, _: []const hir.ExprId, expr: hir.Expr) LowerError!?mir.Operand {
         if (std.mem.eql(u8, method_name, "len")) {
             // len() returns the static array size
             if (array_size) |size| {

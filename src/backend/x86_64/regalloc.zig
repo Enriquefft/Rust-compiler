@@ -151,8 +151,8 @@ fn rewriteOperands(
         .StoreDeref => |*payload| {
             var addr = try materializeRead(payload.addr, map, available, spill_scratch, phys_used, spill_slots, diagnostics);
             var src = try materializeRead(payload.src, map, available, spill_scratch, phys_used, spill_slots, diagnostics);
-            // Ensure addr is in a register (not memory or immediate)
-            if (addr != .Phys) {
+            // Ensure addr is in a register (not memory or immediate) for proper addressing
+            if (isMem(addr) or addr == .Imm) {
                 try rewritten.append(allocator, .{ .Mov = .{ .dst = .{ .Phys = spill_scratch }, .src = addr } });
                 addr = .{ .Phys = spill_scratch };
             }
