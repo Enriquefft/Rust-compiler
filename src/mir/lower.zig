@@ -14,7 +14,6 @@ pub fn lowerFromHir(allocator: std.mem.Allocator, hir_crate: *const hir.Crate, d
 
     for (hir_crate.items.items) |item| {
 
-        std.debug.print("Lowering item: {s}\n", .{item.kind.Function.name});
 
         switch (item.kind) {
             .Function => |fn_item| {
@@ -30,9 +29,6 @@ pub fn lowerFromHir(allocator: std.mem.Allocator, hir_crate: *const hir.Crate, d
 }
 
 fn lowerFunction(crate: *mir.MirCrate, func: hir.Function, hir_crate: *const hir.Crate, diagnostics: *diag.Diagnostics) LowerError!mir.MirFn {
-    std.debug.print("Lowering function: {s}\n", .{func.name});
-    std.debug.print("Function has {d} params\n", .{func.params.len});
-    std.debug.print("Function return type: {any}\n", .{hir_crate.types.items[func.return_type.?].kind});
 
     var builder = FunctionBuilder{
         .allocator = crate.allocator(),
@@ -98,7 +94,6 @@ fn lowerFunction(crate: *mir.MirCrate, func: hir.Function, hir_crate: *const hir
             const local = next_local + @as(hir.LocalId, @intCast(field_idx));
             try builder.ensureLocal(local, ty, func.span);
 
-            std.debug.print("Mapping param {d} field {d} to local {d}\n", .{param_idx, field_idx, local});
 
             _ = try builder.emitInst(.{ .ty = mapType(hir_crate, ty, func.span, diagnostics), .dest = null, .kind = .{ .StoreLocal = .{ .local = local, .src = .{ .Param = @intCast(arg_idx) } } } });
             arg_idx += 1;
@@ -506,7 +501,6 @@ const FunctionBuilder = struct {
                     null;
 
                 if (array_info == null) {
-                    std.debug.print("For loop iterator kind: {any}\n", .{iter_expr.kind});
                     self.diagnostics.reportError(expr.span, "for loop iterator must be a range or array");
                     return null;
                 }
@@ -1405,7 +1399,6 @@ fn mapType(hir_crate: *const hir.Crate, ty_id: ?hir.TypeId, span: hir.Span, diag
             .Unknown => blk: {
 
 
-                std.debug.print("Warning: unknown type encountered during MIR lowering at span {any}\n", .{span});
                 diagnostics.reportWarning(span, "unknown type information during MIR lowering");
                 break :blk null;
             },

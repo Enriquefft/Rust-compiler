@@ -256,7 +256,6 @@ fn checkExpr(
                     if (callee_ty < crate.types.items.len) {
                         switch (crate.types.items[callee_ty].kind) {
                             .Fn => |fn_ty| {
-                                std.debug.print("Function call detected with callee type {any}\n", .{fn_ty});
                                 if (fn_ty.params.len == 0 and call.args.len > 0) {
                                     const inferred = try crate.allocator().alloc(hir.TypeId, call.args.len);
                                     for (inferred) |*slot| {
@@ -273,7 +272,6 @@ fn checkExpr(
                     }
 
                     if (param_types.len != 0 and param_types.len != call.args.len) {
-                        std.debug.print("Expected {d} args, got {d}\n", .{ param_types.len, call.args.len });
                         diagnostics.reportError(span, "argument count does not match function type");
                     }
 
@@ -306,7 +304,6 @@ fn checkExpr(
             const value_ty = try checkExpr(crate, assign.value, diagnostics, locals, in_unsafe);
 
             if (!typesCompatible(crate, target_ty, value_ty)) {
-                std.debug.print("Assignment type mismatch: target {any}, value {any}\n", .{ crate.types.items[target_ty], crate.types.items[value_ty] });
 
                 diagnostics.reportError(span, "assignment types do not match");
             }
@@ -487,7 +484,6 @@ fn checkStmt(
                     if (!typesCompatible(crate, ty_id.*, value_ty)) {
                         // view types
 
-                        std.debug.print("Declared type: {any}, Value type: {any}\n", .{ crate.types.items[ty_id.*], crate.types.items[value_ty] });
 
                         diagnostics.reportError(stmt.span, "mismatched types in let binding");
                     }
@@ -652,10 +648,8 @@ fn pathsMatch(lhs_segments: [][]const u8, rhs_segments: [][]const u8) bool {
 }
 
 fn getArrayElementType(crate: *hir.Crate, ty: hir.TypeId) union(enum) { ok: hir.TypeId, err: void } {
-    std.debug.print("Getting array element type for type ID {d}\n", .{ty});
 
     if (ty < crate.types.items.len) {
-        std.debug.print("Type kind: {any}\n", .{crate.types.items[ty].kind});
 
         switch (crate.types.items[ty].kind) {
             .Array => |arr| return .{ .ok = arr.elem },

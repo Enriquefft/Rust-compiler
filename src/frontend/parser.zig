@@ -406,7 +406,6 @@ const Parser = struct {
     }
 
     fn parseLetStmt(self: *Parser) ?ast.Stmt {
-        std.debug.print("Parsing let statement\n", .{});
 
         const kw = self.expectConsume(.KwLet, "expected 'let'") orelse return null;
         const is_mut = self.match(.KwMut);
