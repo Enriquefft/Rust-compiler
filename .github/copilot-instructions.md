@@ -29,10 +29,10 @@ zig build
 zig build test
 
 # Run the compiler
-zig build run -- <compiler-args>
+zig build run -- <file to compile from codes/>
 
-# Format code
-zig fmt src/
+# Run a compiled file
+run_asm.sh codes/<file_to_test.s>
 ```
 
 ## Key Directories
