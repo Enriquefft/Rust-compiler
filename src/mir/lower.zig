@@ -518,6 +518,8 @@ const FunctionBuilder = struct {
     }
 
     fn lowerPointerMethodCall(self: *FunctionBuilder, target_id: hir.ExprId, method_name: []const u8, args: []const hir.ExprId, expr: hir.Expr) LowerError!?mir.Operand {
+        _ = args; // Currently no pointer methods use arguments
+        
         if (std.mem.eql(u8, method_name, "is_null")) {
             // is_null() returns true if pointer is null (0), false otherwise
             const ptr_op = try self.lowerExpr(target_id) orelse return null;
@@ -529,7 +531,6 @@ const FunctionBuilder = struct {
             self.diagnostics.reportError(expr.span, "unknown pointer method");
             return null;
         }
-        _ = args;
     }
 
     fn lowerPrintlnMacro(self: *FunctionBuilder, args_ids: []const hir.ExprId, span: hir.Span) LowerError!?mir.Operand {
