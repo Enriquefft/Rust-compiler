@@ -7,6 +7,7 @@ const ast = @import("frontend/ast.zig");
 const tokens = @import("frontend/tokens.zig");
 const ast_printer = @import("frontend/ast_printer.zig");
 const hir = @import("hir/hir.zig");
+const hir_printer = @import("hir/hir_printer.zig");
 const mir = @import("mir/mir.zig");
 const mir_lower = @import("mir/lower.zig");
 const mir_passes = @import("mir/passes/passes.zig");
@@ -53,6 +54,7 @@ pub const CompileOptions = struct {
     source_override: ?[]const u8 = null,
     visualize_tokens: bool = false,
     visualize_ast: bool = false,
+    visualize_hir: bool = false,
 };
 pub fn compileFile(options: CompileOptions) !CompileResult {
     // Create a fresh source map. This tracks all loaded files,
@@ -128,6 +130,11 @@ pub fn compileFile(options: CompileOptions) !CompileResult {
     // === TYPE CHECKING ===
     if (!diagnostics.hasErrors()) {
         try hir.performTypeCheck(&hir_crate, &diagnostics);
+    }
+
+    // Optional debugging: pretty-print the HIR structure.
+    if (options.visualize_hir) {
+        try hir_printer.printCrateTree(options.allocator, &hir_crate);
     }
 
     // === HIR → MIR LOWERING ===
