@@ -26,22 +26,18 @@ fn noOpRun(allocator: std.mem.Allocator, mir_crate: *mir.MirCrate, diagnostics: 
     _ = diagnostics;
 }
 
-pub fn runAll(allocator: std.mem.Allocator, mir_crate: *mir.MirCrate, diagnostics: *diag.Diagnostics) !void {
+pub fn runAll(allocator: std.mem.Allocator, mir_crate: *mir.MirCrate, diagnostics: *diag.Diagnostics, dump_passes: bool) !void {
     const passes = [_]Pass{
         noOpPass,
-        debugDumpPass,
-
         constantFoldingPass,
-        debugDumpPass,
-
         deadCodeEliminationPass,
-        debugDumpPass,
-
         cfgSimplifyPass,
-        debugDumpPass,
     };
     for (passes) |pass| {
         try pass.run(allocator, mir_crate, diagnostics);
+        if (dump_passes) {
+            try debug_dump.pass.run(allocator, mir_crate, diagnostics);
+        }
     }
 }
 
@@ -75,7 +71,7 @@ test "runAll sequences configured passes" {
     var diagnostics = diag.Diagnostics.init(std.testing.allocator);
     defer diagnostics.deinit();
 
-    try runAll(std.testing.allocator, &mir_crate, &diagnostics);
+    try runAll(std.testing.allocator, &mir_crate, &diagnostics, false);
     try std.testing.expect(!diagnostics.hasErrors());
 
     const func = mir_crate.fns.items[0];
