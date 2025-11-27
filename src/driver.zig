@@ -11,6 +11,7 @@ const hir_printer = @import("hir/hir_printer.zig");
 const mir = @import("mir/mir.zig");
 const mir_lower = @import("mir/lower.zig");
 const mir_passes = @import("mir/passes/passes.zig");
+const mir_printer = @import("mir/mir_printer.zig");
 const backend = @import("backend/backend.zig");
 
 pub const CompileStatus = enum {
@@ -55,6 +56,7 @@ pub const CompileOptions = struct {
     visualize_tokens: bool = false,
     visualize_ast: bool = false,
     visualize_hir: bool = false,
+    visualize_mir: bool = false,
 };
 pub fn compileFile(options: CompileOptions) !CompileResult {
     // Create a fresh source map. This tracks all loaded files,
@@ -160,6 +162,11 @@ pub fn compileFile(options: CompileOptions) !CompileResult {
             &mir_crate,
             &diagnostics,
         );
+    }
+
+    // Optional debugging: pretty-print the MIR structure.
+    if (options.visualize_mir) {
+        try mir_printer.printCrateTree(options.allocator, &mir_crate);
     }
 
     // === BACKEND CODE GENERATION ===
