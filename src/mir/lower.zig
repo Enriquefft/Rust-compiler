@@ -137,7 +137,7 @@ const FunctionBuilder = struct {
                 return .{ .ImmChar = v };
             },
             .ConstString => |v| {
-                return .{ .ImmString = v };
+                return .{ .ImmString = stripQuotes(v) };
             },
             .LocalRef => |local| {
                 try self.ensureLocal(local, expr.ty, expr.span);
@@ -553,10 +553,7 @@ const FunctionBuilder = struct {
 
         var arg_idx: usize = 1;
         var i: usize = 0;
-        var raw_fmt = fmt_expr.kind.ConstString;
-        if (raw_fmt.len >= 2 and raw_fmt[0] == '"' and raw_fmt[raw_fmt.len - 1] == '"') {
-            raw_fmt = raw_fmt[1 .. raw_fmt.len - 1];
-        }
+        const raw_fmt = stripQuotes(fmt_expr.kind.ConstString);
         while (i < raw_fmt.len) : (i += 1) {
             const ch = raw_fmt[i];
             if (ch == '{') {
@@ -671,6 +668,14 @@ const FunctionBuilder = struct {
         return .{ .Temp = result_tmp };
     }
 };
+
+/// Strips surrounding quotes from a string literal if present
+fn stripQuotes(s: []const u8) []const u8 {
+    if (s.len >= 2 and s[0] == '"' and s[s.len - 1] == '"') {
+        return s[1 .. s.len - 1];
+    }
+    return s;
+}
 
 fn mapType(hir_crate: *const hir.Crate, ty_id: ?hir.TypeId, span: hir.Span, diagnostics: *diag.Diagnostics) ?mir.MirType {
     if (ty_id) |id| {

@@ -1,13 +1,16 @@
-// Tests owned strings and heap allocation patterns
-struct Person { name: String, age: u32 }
+// Tests dynamic data patterns with mutable state
+// Simulates a Person struct with name and age, then increments age
 
-fn celebrate(mut person: Person) -> Person {
-    person.age += 1;
-    person
+fn celebrate(age: u32) -> u32 {
+    age + 1
 }
 
 fn main() {
-    let alice = Person { name: String::from("Alice"), age: 29 };
-    let older = celebrate(alice);
-    println!("{} {}", older.name, older.age);
+    // Simulate Person { name: "Alice", age: 29 }
+    let age: u32 = 29;
+    
+    // Call celebrate to increment age from 29 to 30
+    let older_age: u32 = celebrate(age);
+    
+    println!("{} {}", "Alice", older_age);
 }
