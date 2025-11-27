@@ -373,8 +373,13 @@ const FunctionBuilder = struct {
                 const end_op = try self.lowerExpr(iter_expr.kind.Range.end) orelse return null;
 
                 const mir_ty = mapType(self.hir_crate, iter_expr.ty, expr.span, self.diagnostics);
-                try self.ensureLocal(for_expr.pat.id, iter_expr.ty, expr.span);
-                _ = try self.emitInst(.{ .ty = mir_ty, .dest = null, .kind = .{ .StoreLocal = .{ .local = for_expr.pat.id, .src = start_op } } });
+                
+                // Allocate a local for the loop variable from next_local and map the pattern ID
+                const loop_local = self.next_local;
+                self.next_local += 1;
+                try self.param_local_map.put(for_expr.pat.id, loop_local);
+                try self.ensureLocal(loop_local, iter_expr.ty, expr.span);
+                _ = try self.emitInst(.{ .ty = mir_ty, .dest = null, .kind = .{ .StoreLocal = .{ .local = loop_local, .src = start_op } } });
 
                 const cond_block = try self.newBlock();
                 const body_block = try self.newBlock();
@@ -383,7 +388,7 @@ const FunctionBuilder = struct {
 
                 self.switchTo(cond_block);
                 const cur_tmp = self.newTemp();
-                _ = try self.emitInst(.{ .ty = mir_ty, .dest = cur_tmp, .kind = .{ .LoadLocal = .{ .local = for_expr.pat.id } } });
+                _ = try self.emitInst(.{ .ty = mir_ty, .dest = cur_tmp, .kind = .{ .LoadLocal = .{ .local = loop_local } } });
                 const cmp_tmp = self.newTemp();
                 const cmp_op = if (iter_expr.kind.Range.inclusive) mir.CmpOp.Le else mir.CmpOp.Lt;
                 _ = try self.emitInst(.{
@@ -400,9 +405,9 @@ const FunctionBuilder = struct {
                 _ = try self.emitInst(.{
                     .ty = mir_ty,
                     .dest = incr_tmp,
-                    .kind = .{ .Bin = .{ .op = .Add, .lhs = .{ .Local = for_expr.pat.id }, .rhs = .{ .ImmInt = 1 } } },
+                    .kind = .{ .Bin = .{ .op = .Add, .lhs = .{ .Local = loop_local }, .rhs = .{ .ImmInt = 1 } } },
                 });
-                _ = try self.emitInst(.{ .ty = mir_ty, .dest = null, .kind = .{ .StoreLocal = .{ .local = for_expr.pat.id, .src = .{ .Temp = incr_tmp } } } });
+                _ = try self.emitInst(.{ .ty = mir_ty, .dest = null, .kind = .{ .StoreLocal = .{ .local = loop_local, .src = .{ .Temp = incr_tmp } } } });
                 self.setTerm(.{ .Goto = cond_block });
 
                 self.switchTo(exit_block);
