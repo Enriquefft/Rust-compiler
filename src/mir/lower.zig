@@ -202,6 +202,11 @@ const FunctionBuilder = struct {
                     return try self.lowerPointerMethodCall(ptr_method.target_id, ptr_method.method_name, call.args, expr);
                 }
                 
+                // Check if this is a struct method call like point.offset(1, 2)
+                if (self.isStructMethodCall(call.callee)) |struct_method| {
+                    return try self.lowerStructMethodCall(struct_method.target_id, struct_method.method_name, struct_method.method_def_id, call.args, expr);
+                }
+                
                 const callee_op = try self.lowerExpr(call.callee) orelse {
                     self.diagnostics.reportError(expr.span, "missing callee while lowering call");
                     return null;
@@ -533,6 +538,140 @@ const FunctionBuilder = struct {
         }
     }
 
+    const StructMethodInfo = struct {
+        target_id: hir.ExprId,
+        method_name: []const u8,
+        method_def_id: hir.DefId,
+    };
+
+    fn isStructMethodCall(self: *FunctionBuilder, callee_id: hir.ExprId) ?StructMethodInfo {
+        if (callee_id >= self.hir_crate.exprs.items.len) return null;
+        const callee = self.hir_crate.exprs.items[callee_id];
+        
+        // Check if the callee is a Field expression (method call syntax)
+        if (callee.kind != .Field) return null;
+        
+        const field = callee.kind.Field;
+        const target_expr = self.hir_crate.exprs.items[field.target];
+        
+        // Check if the target is a struct type
+        if (target_expr.ty >= self.hir_crate.types.items.len) return null;
+        const target_type = self.hir_crate.types.items[target_expr.ty];
+        
+        const struct_def_id: ?hir.DefId = switch (target_type.kind) {
+            .Struct => |info| info.def_id,
+            .Path => |path| blk: {
+                // Look up the struct by path name
+                if (path.segments.len == 1) {
+                    const struct_name = path.segments[0];
+                    for (self.hir_crate.items.items, 0..) |item, idx| {
+                        if (item.kind == .Struct) {
+                            if (std.mem.eql(u8, item.kind.Struct.name, struct_name)) {
+                                break :blk @intCast(idx);
+                            }
+                        }
+                    }
+                }
+                break :blk null;
+            },
+            else => null,
+        };
+        
+        if (struct_def_id == null) return null;
+        
+        // Look for a method with this name in impl blocks
+        for (self.hir_crate.items.items) |item| {
+            if (item.kind == .Impl) {
+                const impl_item = item.kind.Impl;
+                // Check if this impl is for our struct
+                var matches = false;
+                if (impl_item.target < self.hir_crate.types.items.len) {
+                    const impl_target = self.hir_crate.types.items[impl_item.target].kind;
+                    switch (impl_target) {
+                        .Struct => |info| matches = info.def_id == struct_def_id.?,
+                        .Path => |path| {
+                            if (path.segments.len == 1) {
+                                const struct_item = self.hir_crate.items.items[struct_def_id.?];
+                                if (struct_item.kind == .Struct) {
+                                    matches = std.mem.eql(u8, path.segments[0], struct_item.kind.Struct.name);
+                                }
+                            }
+                        },
+                        else => {},
+                    }
+                }
+                
+                if (matches) {
+                    // Look for the method
+                    for (impl_item.methods) |method_id| {
+                        if (method_id < self.hir_crate.items.items.len) {
+                            const method_item = self.hir_crate.items.items[method_id];
+                            if (method_item.kind == .Function) {
+                                const func = method_item.kind.Function;
+                                if (std.mem.eql(u8, func.name, field.name)) {
+                                    return StructMethodInfo{
+                                        .target_id = field.target,
+                                        .method_name = field.name,
+                                        .method_def_id = method_id,
+                                    };
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    fn lowerStructMethodCall(self: *FunctionBuilder, target_id: hir.ExprId, method_name: []const u8, method_def_id: hir.DefId, args: []const hir.ExprId, expr: hir.Expr) LowerError!?mir.Operand {
+        _ = method_name;
+        
+        // Lower the target (self) expression
+        const self_op = try self.lowerExpr(target_id) orelse return null;
+        
+        // Create call arguments starting with self
+        var call_args = std.ArrayListUnmanaged(mir.Operand){};
+        defer call_args.deinit(self.allocator);
+        try call_args.append(self.allocator, self_op);
+        
+        // Add the rest of the arguments
+        for (args) |arg_id| {
+            if (try self.lowerExpr(arg_id)) |arg_op| {
+                try call_args.append(self.allocator, arg_op);
+            }
+        }
+        
+        // Create a call to the method function using its global name
+        const method_item = self.hir_crate.items.items[method_def_id];
+        if (method_item.kind != .Function) {
+            self.diagnostics.reportError(expr.span, "method is not a function");
+            return null;
+        }
+        
+        const method_func = method_item.kind.Function;
+        
+        // Find the method's MIR function index or create a reference to it
+        var method_fn_idx: ?mir.LocalId = null;
+        for (self.crate.fns.items, 0..) |fn_item, idx| {
+            if (std.mem.eql(u8, fn_item.name, method_func.name)) {
+                method_fn_idx = @intCast(idx);
+                break;
+            }
+        }
+        
+        const tmp = self.newTemp();
+        if (method_fn_idx) |fn_idx| {
+            _ = try self.emitInst(.{ .ty = mapType(self.hir_crate, expr.ty, expr.span, self.diagnostics), .dest = tmp, .kind = .{ .Call = .{ .target = .{ .Global = fn_idx }, .args = try call_args.toOwnedSlice(self.allocator) } } });
+        } else {
+            // Method not yet lowered - we need to use a symbol reference
+            // For now, create a Call with a named function reference
+            self.diagnostics.reportWarning(expr.span, "method call requires function to be lowered first");
+            return null;
+        }
+        return .{ .Temp = tmp };
+    }
+
     fn lowerPrintlnMacro(self: *FunctionBuilder, args_ids: []const hir.ExprId, span: hir.Span) LowerError!?mir.Operand {
         if (args_ids.len == 0) {
             self.diagnostics.reportError(span, "println! requires a format string");
@@ -702,7 +841,28 @@ fn mapType(hir_crate: *const hir.Crate, ty_id: ?hir.TypeId, span: hir.Span, diag
             .Array => .Array,
             .Pointer, .Ref, .Fn => .Pointer,
             .Struct => .Struct,
-            .Path => blk: {
+            .Path => |path| blk: {
+                // Try to resolve the path type
+                if (path.segments.len == 1) {
+                    const name = path.segments[0];
+                    // Look for a type alias or struct with this name
+                    for (hir_crate.items.items) |item| {
+                        switch (item.kind) {
+                            .TypeAlias => |alias| {
+                                if (std.mem.eql(u8, alias.name, name)) {
+                                    // Recursively resolve the aliased type
+                                    return mapType(hir_crate, alias.target, span, diagnostics);
+                                }
+                            },
+                            .Struct => |struct_item| {
+                                if (std.mem.eql(u8, struct_item.name, name)) {
+                                    break :blk .Struct;
+                                }
+                            },
+                            else => {},
+                        }
+                    }
+                }
                 diagnostics.reportWarning(span, "type not supported in MIR lowering");
                 break :blk null;
             },
