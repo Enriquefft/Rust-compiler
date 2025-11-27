@@ -26,6 +26,8 @@ pub const TokenKind = enum {
     KwSelf,
     KwTrue,
     KwFalse,
+    KwConst,
+    KwUnsafe,
 
     // Punctuation / operators
     LParen,
@@ -89,6 +91,8 @@ pub fn keywordKind(ident: []const u8) ?TokenKind {
         .{ .name = "self", .kind = .KwSelf },
         .{ .name = "true", .kind = .KwTrue },
         .{ .name = "false", .kind = .KwFalse },
+        .{ .name = "const", .kind = .KwConst },
+        .{ .name = "unsafe", .kind = .KwUnsafe },
     };
 
     for (keywords) |kw| {

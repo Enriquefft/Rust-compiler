@@ -123,6 +123,8 @@ fn checkExpr(
             expr.ty = try ensureType(crate, .Unknown);
         },
         .Cast => |c| {
+            // Type check the inner expression first
+            _ = try checkExpr(crate, c.expr, diagnostics, locals);
             expr.ty = c.ty;
         },
         .Binary => |bin| {
@@ -188,54 +190,69 @@ fn checkExpr(
             }
         },
         .Call => |call| {
-            const callee_ty = try checkExpr(crate, call.callee, diagnostics, locals);
-            var param_types: []hir.TypeId = &[_]hir.TypeId{};
-            var ret_ty: hir.TypeId = try ensureType(crate, .Unknown);
-
-            if (isBuiltinPrintln(crate, call.callee)) {
-                for (call.args) |arg_id| {
-                    _ = try checkExpr(crate, arg_id, diagnostics, locals);
-                }
-                expr.ty = ret_ty;
-            } else {
-                if (callee_ty < crate.types.items.len) {
-                    switch (crate.types.items[callee_ty].kind) {
-                        .Fn => |fn_ty| {
-                            std.debug.print("Function call detected with callee type {any}\n", .{fn_ty});
-                            if (fn_ty.params.len == 0 and call.args.len > 0) {
-                                const inferred = try crate.allocator().alloc(hir.TypeId, call.args.len);
-                                for (inferred) |*slot| {
-                                    slot.* = try ensureType(crate, .Unknown);
-                                }
-                                param_types = inferred;
-                            } else {
-                                param_types = fn_ty.params;
-                            }
-                            ret_ty = fn_ty.ret;
-                        },
-                        else => {},
+            // Check if this is a pointer method call (e.g., ptr.is_null())
+            if (isPointerMethodCall(crate, call.callee, diagnostics, locals)) |method_info| {
+                // Handle pointer method calls
+                if (std.mem.eql(u8, method_info.method_name, "is_null")) {
+                    // is_null() takes no arguments and returns bool
+                    if (call.args.len != 0) {
+                        diagnostics.reportError(span, "is_null() takes no arguments");
                     }
+                    expr.ty = try ensureType(crate, .Bool);
+                } else {
+                    diagnostics.reportError(span, "unknown pointer method");
+                    expr.ty = try ensureType(crate, .Unknown);
                 }
+            } else {
+                const callee_ty = try checkExpr(crate, call.callee, diagnostics, locals);
+                var param_types: []hir.TypeId = &[_]hir.TypeId{};
+                var ret_ty: hir.TypeId = try ensureType(crate, .Unknown);
 
-                if (param_types.len != 0 and param_types.len != call.args.len) {
-                    std.debug.print("Expected {d} args, got {d}\n", .{ param_types.len, call.args.len });
-                    diagnostics.reportError(span, "argument count does not match function type");
-                }
-
-                for (call.args, 0..) |arg_id, idx| {
-                    const arg_ty = try checkExpr(crate, arg_id, diagnostics, locals);
-                    if (idx < param_types.len) {
-                        const expected = param_types[idx];
-                        const expected_kind = if (expected < crate.types.items.len)
-                            crate.types.items[expected].kind
-                        else
-                            .Unknown;
-                        if (expected_kind != .Fn and !typesCompatible(crate, arg_ty, expected)) {
-                            diagnostics.reportError(span, "argument type does not match parameter");
+                if (isBuiltinPrintln(crate, call.callee)) {
+                    for (call.args) |arg_id| {
+                        _ = try checkExpr(crate, arg_id, diagnostics, locals);
+                    }
+                    expr.ty = ret_ty;
+                } else {
+                    if (callee_ty < crate.types.items.len) {
+                        switch (crate.types.items[callee_ty].kind) {
+                            .Fn => |fn_ty| {
+                                std.debug.print("Function call detected with callee type {any}\n", .{fn_ty});
+                                if (fn_ty.params.len == 0 and call.args.len > 0) {
+                                    const inferred = try crate.allocator().alloc(hir.TypeId, call.args.len);
+                                    for (inferred) |*slot| {
+                                        slot.* = try ensureType(crate, .Unknown);
+                                    }
+                                    param_types = inferred;
+                                } else {
+                                    param_types = fn_ty.params;
+                                }
+                                ret_ty = fn_ty.ret;
+                            },
+                            else => {},
                         }
                     }
+
+                    if (param_types.len != 0 and param_types.len != call.args.len) {
+                        std.debug.print("Expected {d} args, got {d}\n", .{ param_types.len, call.args.len });
+                        diagnostics.reportError(span, "argument count does not match function type");
+                    }
+
+                    for (call.args, 0..) |arg_id, idx| {
+                        const arg_ty = try checkExpr(crate, arg_id, diagnostics, locals);
+                        if (idx < param_types.len) {
+                            const expected = param_types[idx];
+                            const expected_kind = if (expected < crate.types.items.len)
+                                crate.types.items[expected].kind
+                            else
+                                .Unknown;
+                            if (expected_kind != .Fn and !typesCompatible(crate, arg_ty, expected)) {
+                                diagnostics.reportError(span, "argument type does not match parameter");
+                            }
+                        }
+                    }
+                    expr.ty = ret_ty;
                 }
-                expr.ty = ret_ty;
             }
         },
         .MethodCall => |call| {
@@ -471,6 +488,16 @@ fn typesCompatible(crate: *hir.Crate, lhs: hir.TypeId, rhs: hir.TypeId) bool {
             .Fn => true,
             else => false,
         },
+        .Pointer => |lhs_ptr| switch (rhs_kind) {
+            .Pointer => |rhs_ptr| lhs_ptr.mutable == rhs_ptr.mutable and typesCompatible(crate, lhs_ptr.inner, rhs_ptr.inner),
+            // Allow Ref to Pointer coercion (like Rust's implicit conversion)
+            .Ref => |rhs_ref| !lhs_ptr.mutable or rhs_ref.mutable and typesCompatible(crate, lhs_ptr.inner, rhs_ref.inner),
+            else => false,
+        },
+        .Ref => |lhs_ref| switch (rhs_kind) {
+            .Ref => |rhs_ref| lhs_ref.mutable == rhs_ref.mutable and typesCompatible(crate, lhs_ref.inner, rhs_ref.inner),
+            else => false,
+        },
         else => false,
     };
 }
@@ -538,6 +565,12 @@ fn resolveFieldType(crate: *hir.Crate, ty: hir.TypeId, name: []const u8, span: h
             diagnostics.reportError(span, "invalid struct reference in type");
             return ensureType(crate, .Unknown);
         },
+        // Pointer types can have methods like is_null()
+        .Pointer => {
+            // For pointer methods, we return Unknown here and let the Call handling resolve it
+            // This field access will be treated as a method reference
+            return ensureType(crate, .Unknown);
+        },
         else => {
             diagnostics.reportError(span, "field access on non-struct type");
             return ensureType(crate, .Unknown);
@@ -553,6 +586,40 @@ fn isBuiltinPrintln(crate: *hir.Crate, callee_id: hir.ExprId) bool {
     if (def_id >= crate.items.items.len) return false;
     const item = crate.items.items[def_id];
     return item.kind == .Function and std.mem.eql(u8, item.kind.Function.name, "println");
+}
+
+const PointerMethodInfo = struct {
+    target_ty: hir.TypeId,
+    method_name: []const u8,
+};
+
+fn isPointerMethodCall(
+    crate: *hir.Crate,
+    callee_id: hir.ExprId,
+    diagnostics: *diag.Diagnostics,
+    locals: *std.AutoHashMap(hir.LocalId, hir.TypeId),
+) ?PointerMethodInfo {
+    if (callee_id >= crate.exprs.items.len) return null;
+    const callee_expr = crate.exprs.items[callee_id];
+    
+    // Check if the callee is a Field expression
+    if (callee_expr.kind != .Field) return null;
+    
+    const field = callee_expr.kind.Field;
+    
+    // Check if the target is a pointer type
+    const target_ty = checkExpr(crate, field.target, diagnostics, locals) catch return null;
+    if (target_ty >= crate.types.items.len) return null;
+    
+    switch (crate.types.items[target_ty].kind) {
+        .Pointer => {
+            return PointerMethodInfo{
+                .target_ty = target_ty,
+                .method_name = field.name,
+            };
+        },
+        else => return null,
+    }
 }
 
 test "typechecker assigns literal types and detects mismatches" {

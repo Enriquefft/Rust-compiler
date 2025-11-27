@@ -218,10 +218,16 @@ const Parser = struct {
         switch (tok.kind) {
             .Star => {
                 const star = self.advance();
-                const mut_tok = self.match(.KwMut);
+                // Handle *mut T or *const T - if neither, treat as mutable by default (like Rust's raw pointers)
+                var is_mut = false;
+                if (self.match(.KwMut)) {
+                    is_mut = true;
+                } else if (self.match(.KwConst)) {
+                    is_mut = false;
+                }
                 const child = self.parseType() orelse return null;
                 const span = Span{ .file_id = star.span.file_id, .start = star.span.start, .end = child.span.end };
-                const node = ast.Type{ .tag = .Pointer, .span = span, .data = .{ .Pointer = .{ .is_mut = mut_tok, .child = self.copyType(child) } } };
+                const node = ast.Type{ .tag = .Pointer, .span = span, .data = .{ .Pointer = .{ .is_mut = is_mut, .child = self.copyType(child) } } };
                 return node;
             },
             .Amp => {
@@ -650,6 +656,15 @@ const Parser = struct {
             .LBrace => {
                 if (self.parseBlock()) |blk| {
                     return self.allocExpr(.{ .tag = .Block, .span = blk.span, .data = .{ .Block = blk } });
+                }
+                return null;
+            },
+            .KwUnsafe => {
+                // unsafe blocks are parsed as regular blocks for now (we don't enforce safety)
+                const unsafe_tok = self.advance();
+                if (self.parseBlock()) |blk| {
+                    const span = Span{ .file_id = unsafe_tok.span.file_id, .start = unsafe_tok.span.start, .end = blk.span.end };
+                    return self.allocExpr(.{ .tag = .Block, .span = span, .data = .{ .Block = blk } });
                 }
                 return null;
             },

@@ -196,6 +196,12 @@ const FunctionBuilder = struct {
                 if (self.isBuiltinPrintln(call.callee)) {
                     return try self.lowerPrintlnMacro(call.args, expr.span);
                 }
+                
+                // Check if this is a pointer method call like ptr.is_null()
+                if (self.isPointerMethodCall(call.callee)) |ptr_method| {
+                    return try self.lowerPointerMethodCall(ptr_method.target_id, ptr_method.method_name, call.args, expr);
+                }
+                
                 const callee_op = try self.lowerExpr(call.callee) orelse {
                     self.diagnostics.reportError(expr.span, "missing callee while lowering call");
                     return null;
@@ -338,8 +344,20 @@ const FunctionBuilder = struct {
                 return null;
             },
             .Cast => |c| {
-                self.diagnostics.reportWarning(expr.span, "casts lowered as no-op in MIR");
-                return try self.lowerExpr(c.expr);
+                const inner = try self.lowerExpr(c.expr) orelse return null;
+                const inner_expr = self.hir_crate.exprs.items[c.expr];
+                const from_ty = mapType(self.hir_crate, inner_expr.ty, expr.span, self.diagnostics) orelse .Unknown;
+                const to_ty = mapType(self.hir_crate, c.ty, expr.span, self.diagnostics) orelse .Unknown;
+                
+                // If types are the same or both integer types, just copy
+                if (from_ty == to_ty or (isIntegerType(from_ty) and isIntegerType(to_ty))) {
+                    return inner;
+                }
+                
+                // Need actual conversion (e.g., float to int)
+                const tmp = self.newTemp();
+                _ = try self.emitInst(.{ .ty = to_ty, .dest = tmp, .kind = .{ .Cast = .{ .src = inner, .from_ty = from_ty, .to_ty = to_ty } } });
+                return .{ .Temp = tmp };
             },
             .Range => |range| {
                 const start = try self.lowerExpr(range.start) orelse return null;
@@ -467,6 +485,52 @@ const FunctionBuilder = struct {
         if (def_id >= self.hir_crate.items.items.len) return false;
         const item = self.hir_crate.items.items[def_id];
         return item.kind == .Function and std.mem.eql(u8, item.kind.Function.name, "println");
+    }
+
+    const PointerMethodInfo = struct {
+        target_id: hir.ExprId,
+        method_name: []const u8,
+    };
+
+    fn isPointerMethodCall(self: *FunctionBuilder, callee_id: hir.ExprId) ?PointerMethodInfo {
+        if (callee_id >= self.hir_crate.exprs.items.len) return null;
+        const callee = self.hir_crate.exprs.items[callee_id];
+        
+        // Check if the callee is a Field expression (method call syntax)
+        if (callee.kind != .Field) return null;
+        
+        const field = callee.kind.Field;
+        const target_expr = self.hir_crate.exprs.items[field.target];
+        
+        // Check if the target is a pointer type
+        if (target_expr.ty >= self.hir_crate.types.items.len) return null;
+        const target_type = self.hir_crate.types.items[target_expr.ty];
+        
+        switch (target_type.kind) {
+            .Pointer => {
+                return PointerMethodInfo{
+                    .target_id = field.target,
+                    .method_name = field.name,
+                };
+            },
+            else => return null,
+        }
+    }
+
+    fn lowerPointerMethodCall(self: *FunctionBuilder, target_id: hir.ExprId, method_name: []const u8, args: []const hir.ExprId, expr: hir.Expr) LowerError!?mir.Operand {
+        _ = args; // Currently no pointer methods use arguments
+        
+        if (std.mem.eql(u8, method_name, "is_null")) {
+            // is_null() returns true if pointer is null (0), false otherwise
+            const ptr_op = try self.lowerExpr(target_id) orelse return null;
+            const tmp = self.newTemp();
+            // Compare pointer to 0 and return bool result
+            _ = try self.emitInst(.{ .ty = .Bool, .dest = tmp, .kind = .{ .Cmp = .{ .op = .Eq, .lhs = ptr_op, .rhs = .{ .ImmInt = 0 } } } });
+            return .{ .Temp = tmp };
+        } else {
+            self.diagnostics.reportError(expr.span, "unknown pointer method");
+            return null;
+        }
     }
 
     fn lowerPrintlnMacro(self: *FunctionBuilder, args_ids: []const hir.ExprId, span: hir.Span) LowerError!?mir.Operand {
@@ -684,7 +748,15 @@ fn mapUnary(op: hir.UnaryOp) ?mir.UnaryOp {
     return switch (op) {
         .Not => .Not,
         .Neg => .Neg,
-        .Deref, .Ref, .RefMut => null,
+        .Deref => .Deref,
+        .Ref, .RefMut => .Ref,
+    };
+}
+
+fn isIntegerType(ty: mir.MirType) bool {
+    return switch (ty) {
+        .I32, .I64, .U32, .U64, .Usize => true,
+        else => false,
     };
 }
 

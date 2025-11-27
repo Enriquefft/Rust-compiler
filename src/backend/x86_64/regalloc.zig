@@ -69,6 +69,22 @@ fn rewriteOperands(
 ) AllocError!void {
     switch (inst.*) {
         .Mov => |*payload| {
+            // If destination is a physical register, check if any VReg was assigned to it and spill if needed
+            if (payload.dst == .Phys) {
+                const dst_reg = payload.dst.Phys;
+                var it = map.iterator();
+                while (it.next()) |entry| {
+                    if (entry.value_ptr.* == .phys and entry.value_ptr.phys == dst_reg) {
+                        // Spill this VReg before we clobber its register
+                        spill_slots.* += 1;
+                        const offset: i32 = -@as(i32, @intCast(spill_slots.*)) * @as(i32, @intCast(@sizeOf(i64)));
+                        try rewritten.append(allocator, .{ .Mov = .{ .dst = .{ .Mem = .{ .base = .rbp, .offset = offset } }, .src = .{ .Phys = dst_reg } } });
+                        entry.value_ptr.* = .{ .spill = offset };
+                        break;
+                    }
+                }
+            }
+            
             const dst = try materializeWrite(payload.dst, map, available, spill_scratch, phys_used, spill_slots, diagnostics);
             var src = try materializeRead(payload.src, map, available, spill_scratch, phys_used, spill_slots, diagnostics);
 
@@ -95,6 +111,25 @@ fn rewriteOperands(
             const dst = try materializeWrite(payload.dst, map, available, spill_scratch, phys_used, spill_slots, diagnostics);
             const src = try materializeRead(payload.src, map, available, spill_scratch, phys_used, spill_slots, diagnostics);
             try rewritten.append(allocator, .{ .Unary = .{ .op = payload.op, .dst = dst, .src = src } });
+        },
+        .Lea => |*payload| {
+            const dst = try materializeWrite(payload.dst, map, available, spill_scratch, phys_used, spill_slots, diagnostics);
+            try rewritten.append(allocator, .{ .Lea = .{ .dst = dst, .mem = payload.mem } });
+        },
+        .Deref => |*payload| {
+            const dst = try materializeWrite(payload.dst, map, available, spill_scratch, phys_used, spill_slots, diagnostics);
+            const addr = try materializeRead(payload.addr, map, available, spill_scratch, phys_used, spill_slots, diagnostics);
+            try rewritten.append(allocator, .{ .Deref = .{ .dst = dst, .addr = addr } });
+        },
+        .Cvttsd2si => |*payload| {
+            const dst = try materializeWrite(payload.dst, map, available, spill_scratch, phys_used, spill_slots, diagnostics);
+            const src = try materializeRead(payload.src, map, available, spill_scratch, phys_used, spill_slots, diagnostics);
+            try rewritten.append(allocator, .{ .Cvttsd2si = .{ .dst = dst, .src = src } });
+        },
+        .Cvtsi2sd => |*payload| {
+            const dst = try materializeWrite(payload.dst, map, available, spill_scratch, phys_used, spill_slots, diagnostics);
+            const src = try materializeRead(payload.src, map, available, spill_scratch, phys_used, spill_slots, diagnostics);
+            try rewritten.append(allocator, .{ .Cvtsi2sd = .{ .dst = dst, .src = src } });
         },
         .Cmp => |*payload| {
             const lhs = try materializeRead(payload.lhs, map, available, spill_scratch, phys_used, spill_slots, diagnostics);

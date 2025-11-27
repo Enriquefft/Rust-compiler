@@ -75,11 +75,24 @@ fn emitInst(writer: anytype, inst: machine.InstKind, fn_name: []const u8) !void 
                 try writeOperand(writer, payload.dst);
                 try writer.print(", [rip + {s}]\n", .{payload.src.Label});
             } else if (payload.dst == .Mem and payload.src == .Imm) {
-                try writer.writeAll("    mov qword ptr ");
-                try writeMem(writer, payload.dst.Mem);
-                try writer.writeAll(", ");
-                try writeOperand(writer, payload.src);
-                try writer.writeByte('\n');
+                const imm_val = payload.src.Imm;
+                // x86_64 only allows 32-bit signed immediates for memory stores
+                // For larger values, we need to use a register
+                if (imm_val >= -2147483648 and imm_val <= 2147483647) {
+                    try writer.writeAll("    mov qword ptr ");
+                    try writeMem(writer, payload.dst.Mem);
+                    try writer.writeAll(", ");
+                    try writeOperand(writer, payload.src);
+                    try writer.writeByte('\n');
+                } else {
+                    // Need to move through a register for 64-bit immediate
+                    try writer.writeAll("    mov r11, ");
+                    try writeOperand(writer, payload.src);
+                    try writer.writeByte('\n');
+                    try writer.writeAll("    mov qword ptr ");
+                    try writeMem(writer, payload.dst.Mem);
+                    try writer.writeAll(", r11\n");
+                }
             } else {
                 try writer.writeAll("    mov ");
                 try writeOperand(writer, payload.dst);
@@ -157,6 +170,42 @@ fn emitInst(writer: anytype, inst: machine.InstKind, fn_name: []const u8) !void 
             try writer.print("    {s} ", .{unaryMnemonic(payload.op)});
             try writeOperand(writer, payload.dst);
             try writer.writeByte('\n');
+        },
+        .Lea => |payload| {
+            try writer.writeAll("    lea ");
+            try writeOperand(writer, payload.dst);
+            try writer.writeAll(", ");
+            try writeMem(writer, payload.mem);
+            try writer.writeByte('\n');
+        },
+        .Cvttsd2si => |payload| {
+            // cvttsd2si - truncate double to signed integer
+            try writer.writeAll("    cvttsd2si ");
+            try writeOperand(writer, payload.dst);
+            try writer.writeAll(", ");
+            try writeOperand(writer, payload.src);
+            try writer.writeByte('\n');
+        },
+        .Cvtsi2sd => |payload| {
+            // cvtsi2sd - convert signed integer to double
+            try writer.writeAll("    cvtsi2sd ");
+            try writeOperand(writer, payload.dst);
+            try writer.writeAll(", ");
+            try writeOperand(writer, payload.src);
+            try writer.writeByte('\n');
+        },
+        .Deref => |payload| {
+            // Dereference: load from the address in addr operand
+            // mov dst, [addr]
+            try writer.writeAll("    mov ");
+            try writeOperand(writer, payload.dst);
+            try writer.writeAll(", [");
+            switch (payload.addr) {
+                .Phys => |reg| try writer.print("{s}", .{physName(reg)}),
+                .Mem => |mem| try writer.print("{s}+{d}", .{ physName(mem.base), mem.offset }),
+                else => try writeOperand(writer, payload.addr),
+            }
+            try writer.writeAll("]\n");
         },
         .Cmp => |payload| {
             // try writer.writeAll("    cmp ");
