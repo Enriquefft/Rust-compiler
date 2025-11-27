@@ -417,6 +417,7 @@ const Parser = struct {
         return ast.Stmt{ .tag = .Return, .span = span, .data = .{ .Return = .{ .value = value } } };
     }
 
+    /// Main entry point for parsing expressions. Delegates to the assignment parser.
     fn parseExpr(self: *Parser) ?*ast.Expr {
         return self.parseAssign();
     }
@@ -424,9 +425,9 @@ const Parser = struct {
     /// Parse an expression in a context where struct literals are not allowed
     /// (e.g., condition of if/while, iterator of for).
     fn parseExprNoStructLiteral(self: *Parser) ?*ast.Expr {
-        const old = self.no_struct_literal;
+        const prev_no_struct_literal = self.no_struct_literal;
         self.no_struct_literal = true;
-        defer self.no_struct_literal = old;
+        defer self.no_struct_literal = prev_no_struct_literal;
         return self.parseAssign();
     }
 
