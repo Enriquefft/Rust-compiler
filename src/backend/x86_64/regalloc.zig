@@ -105,7 +105,15 @@ fn rewriteOperands(
                 rhs = .{ .Phys = spill_scratch };
             }
 
-            try rewritten.append(allocator, .{ .Bin = .{ .op = payload.op, .dst = dst, .lhs = dst, .rhs = rhs } });
+            // imul requires a register destination
+            if (payload.op == .imul and isMem(dst)) {
+                // Move dst value to a temp register, do imul, then store back
+                try rewritten.append(allocator, .{ .Mov = .{ .dst = .{ .Phys = .rax }, .src = dst } });
+                try rewritten.append(allocator, .{ .Bin = .{ .op = payload.op, .dst = .{ .Phys = .rax }, .lhs = .{ .Phys = .rax }, .rhs = rhs } });
+                try rewritten.append(allocator, .{ .Mov = .{ .dst = dst, .src = .{ .Phys = .rax } } });
+            } else {
+                try rewritten.append(allocator, .{ .Bin = .{ .op = payload.op, .dst = dst, .lhs = dst, .rhs = rhs } });
+            }
         },
         .Unary => |*payload| {
             const dst = try materializeWrite(payload.dst, map, available, spill_scratch, phys_used, spill_slots, diagnostics);
@@ -114,12 +122,31 @@ fn rewriteOperands(
         },
         .Lea => |*payload| {
             const dst = try materializeWrite(payload.dst, map, available, spill_scratch, phys_used, spill_slots, diagnostics);
-            try rewritten.append(allocator, .{ .Lea = .{ .dst = dst, .mem = payload.mem } });
+            // LEA requires a register destination
+            if (isMem(dst)) {
+                // Use spill_scratch as temp, then store to memory
+                try rewritten.append(allocator, .{ .Lea = .{ .dst = .{ .Phys = spill_scratch }, .mem = payload.mem } });
+                try rewritten.append(allocator, .{ .Mov = .{ .dst = dst, .src = .{ .Phys = spill_scratch } } });
+            } else {
+                try rewritten.append(allocator, .{ .Lea = .{ .dst = dst, .mem = payload.mem } });
+            }
         },
         .Deref => |*payload| {
             const dst = try materializeWrite(payload.dst, map, available, spill_scratch, phys_used, spill_slots, diagnostics);
-            const addr = try materializeRead(payload.addr, map, available, spill_scratch, phys_used, spill_slots, diagnostics);
-            try rewritten.append(allocator, .{ .Deref = .{ .dst = dst, .addr = addr } });
+            var addr = try materializeRead(payload.addr, map, available, spill_scratch, phys_used, spill_slots, diagnostics);
+            // Deref requires register operands for the addressing mode
+            // If addr is memory, load it to a register first
+            if (isMem(addr)) {
+                try rewritten.append(allocator, .{ .Mov = .{ .dst = .{ .Phys = spill_scratch }, .src = addr } });
+                addr = .{ .Phys = spill_scratch };
+            }
+            // If dst is memory, deref to temp then store
+            if (isMem(dst)) {
+                try rewritten.append(allocator, .{ .Deref = .{ .dst = .{ .Phys = .rax }, .addr = addr } });
+                try rewritten.append(allocator, .{ .Mov = .{ .dst = dst, .src = .{ .Phys = .rax } } });
+            } else {
+                try rewritten.append(allocator, .{ .Deref = .{ .dst = dst, .addr = addr } });
+            }
         },
         .StoreDeref => |*payload| {
             var addr = try materializeRead(payload.addr, map, available, spill_scratch, phys_used, spill_slots, diagnostics);
