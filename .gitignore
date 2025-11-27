@@ -1,6 +1,7 @@
 .zig-cache/
 zig-cache/
 zig-out/
+s.s
 codes/*.s
 report.md
 test_report.md
