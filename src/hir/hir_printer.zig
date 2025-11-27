@@ -337,6 +337,14 @@ fn printExpr(printer: *TreePrinter, crate: *const hir.Crate, expr_id: hir.ExprId
             }
             printer.pop();
         },
+
+        .Unsafe => |unsafe_expr| {
+            try printer.printNode(is_last, "Unsafe");
+            try printer.push(is_last);
+            try printExpr(printer, crate, unsafe_expr.body, true);
+            printer.pop();
+        },
+
         .Unknown => {
             try printer.printNode(is_last, "Unknown");
         },
