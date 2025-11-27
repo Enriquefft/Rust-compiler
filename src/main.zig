@@ -12,6 +12,7 @@ pub fn main() !void {
     var visualize_tokens = false;
     var visualize_ast = false;
     var visualize_hir = false;
+    var visualize_passes = false;
     var opt_level: driver.OptLevel = .basic;
     var emit: driver.Emit = .assembly;
     var output_path: ?[]u8 = null;
@@ -24,6 +25,8 @@ pub fn main() !void {
             visualize_ast = true;
         } else if (std.mem.eql(u8, arg, "--print-hir")) {
             visualize_hir = true;
+        } else if (std.mem.eql(u8, arg, "--print-passes-changes")) {
+            visualize_passes = true;
         } else if (std.mem.startsWith(u8, arg, "--opt=")) {
             const value = arg["--opt=".len..];
             const parsed = parseOptLevel(value) orelse {
@@ -77,6 +80,7 @@ pub fn main() !void {
         .visualize_tokens = visualize_tokens,
         .visualize_ast = visualize_ast,
         .visualize_hir = visualize_hir,
+        .visualize_passes = visualize_passes,
     });
     defer result.deinit();
 
@@ -92,7 +96,7 @@ test "Run all tests" {
 
 fn printUsage() void {
     std.debug.print(
-        "usage: {s} [--print-tokens] [--print-ast] [--print-hir] [--opt=none|basic] [--emit=asm|obj] [-o <path>] <file>\n",
+        "usage: {s} [--print-tokens] [--print-ast] [--print-hir] [--print-passes-changes] [--opt=none|basic] [--emit=asm|obj] [-o <path>] <file>\n",
         .{"rust-compiler"},
     );
 }
