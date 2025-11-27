@@ -137,7 +137,12 @@ const FunctionBuilder = struct {
                 return .{ .ImmChar = v };
             },
             .ConstString => |v| {
-                return .{ .ImmString = v };
+                // Strip quotes if present
+                var str = v;
+                if (str.len >= 2 and str[0] == '"' and str[str.len - 1] == '"') {
+                    str = str[1 .. str.len - 1];
+                }
+                return .{ .ImmString = str };
             },
             .LocalRef => |local| {
                 try self.ensureLocal(local, expr.ty, expr.span);
