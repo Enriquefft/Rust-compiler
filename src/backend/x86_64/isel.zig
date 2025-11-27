@@ -166,12 +166,49 @@ fn lowerInst(
         .Unary => |payload| {
             if (dest_vreg) |dst| {
                 const src = try lowerOperand(ctx, payload.operand, vreg_count);
-                const op = switch (payload.op) {
-                    .Not => machine.UnaryOpcode.not_,
-                    .Neg => machine.UnaryOpcode.neg,
-                };
-                try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .VReg = dst }, .src = src } });
-                try insts.append(ctx.allocator, .{ .Unary = .{ .op = op, .dst = .{ .VReg = dst }, .src = .{ .VReg = dst } } });
+                switch (payload.op) {
+                    .Not => {
+                        try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .VReg = dst }, .src = src } });
+                        try insts.append(ctx.allocator, .{ .Unary = .{ .op = machine.UnaryOpcode.not_, .dst = .{ .VReg = dst }, .src = .{ .VReg = dst } } });
+                    },
+                    .Neg => {
+                        try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .VReg = dst }, .src = src } });
+                        try insts.append(ctx.allocator, .{ .Unary = .{ .op = machine.UnaryOpcode.neg, .dst = .{ .VReg = dst }, .src = .{ .VReg = dst } } });
+                    },
+                    .Ref => {
+                        // Address-of operation: get the address of the operand
+                        switch (src) {
+                            .Mem => |mem| {
+                                try insts.append(ctx.allocator, .{ .Lea = .{ .dst = .{ .VReg = dst }, .mem = mem } });
+                            },
+                            else => {
+                                // For non-memory operands, just copy (simplified)
+                                try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .VReg = dst }, .src = src } });
+                            },
+                        }
+                    },
+                    .Deref => {
+                        // Dereference: load from the address in the operand
+                        // We need to get the address value into a register, then load from it
+                        switch (src) {
+                            .Mem => |mem| {
+                                // Source is in memory - first load address to scratch, then deref
+                                // Use a temp vreg to hold the address
+                                const addr_vreg = destRegister(vreg_count.*, vreg_count);
+                                try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .VReg = addr_vreg }, .src = .{ .Mem = mem } } });
+                                // Now load from the address. We need Deref instruction support.
+                                try insts.append(ctx.allocator, .{ .Deref = .{ .dst = .{ .VReg = dst }, .addr = .{ .VReg = addr_vreg } } });
+                            },
+                            .VReg => {
+                                // Source is a vreg containing the address
+                                try insts.append(ctx.allocator, .{ .Deref = .{ .dst = .{ .VReg = dst }, .addr = src } });
+                            },
+                            else => {
+                                try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .VReg = dst }, .src = src } });
+                            },
+                        }
+                    },
+                }
             }
         },
         .LoadLocal => |payload| {
@@ -184,6 +221,27 @@ fn lowerInst(
             const mem = localMem(payload.local);
             const src = try lowerOperand(ctx, payload.src, vreg_count);
             try insts.append(ctx.allocator, .{ .Mov = .{ .dst = mem, .src = src } });
+        },
+        .Cast => |payload| {
+            if (dest_vreg) |dst| {
+                const src = try lowerOperand(ctx, payload.src, vreg_count);
+                const from_ty = payload.from_ty;
+                const to_ty = payload.to_ty;
+                
+                // Handle float to int conversion
+                if ((from_ty == .F32 or from_ty == .F64) and (to_ty == .I32 or to_ty == .I64 or to_ty == .U32 or to_ty == .U64)) {
+                    // cvttsd2si - truncate double/float to signed integer
+                    // First load float into xmm register (if not already), then convert
+                    // For simplicity, we use a direct conversion instruction
+                    try insts.append(ctx.allocator, .{ .Cvttsd2si = .{ .dst = .{ .VReg = dst }, .src = src } });
+                } else if ((from_ty == .I32 or from_ty == .I64 or from_ty == .U32 or from_ty == .U64) and (to_ty == .F32 or to_ty == .F64)) {
+                    // cvtsi2sd - convert integer to double/float
+                    try insts.append(ctx.allocator, .{ .Cvtsi2sd = .{ .dst = .{ .VReg = dst }, .src = src } });
+                } else {
+                    // Default: just copy
+                    try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .VReg = dst }, .src = src } });
+                }
+            }
         },
         .Call => |payload| {
             const target = resolveCallTarget(ctx, payload.target, vreg_count) catch |err| return err;
@@ -254,7 +312,7 @@ fn lowerInst(
                     .Mem => |base_mem| blk: {
                         // Basic field layout: assume packed i64 fields and use a deterministic pseudo-offset based on the name.
                         var hash: u32 = 0;
-                        for (payload.name) |ch| hash = hash * 31 + ch;
+                        for (payload.name) |ch| hash = hash *% 31 +% ch;
                         const field_index: i32 = @intCast(hash % 4); // limit offset growth
                         const offset = base_mem.offset + field_index * @as(i32, @intCast(@sizeOf(i64)));
                         break :blk machine.MOperand{ .Mem = .{ .base = base_mem.base, .offset = offset } };

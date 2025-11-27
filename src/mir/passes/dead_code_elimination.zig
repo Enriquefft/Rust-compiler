@@ -95,6 +95,7 @@ fn markMaxTemp(kind: mir.InstKind, max_temp: *mir.TempId) void {
             markOperandMax(cmp.rhs, max_temp);
         },
         .Unary => |un| markOperandMax(un.operand, max_temp),
+        .Cast => |cast| markOperandMax(cast.src, max_temp),
         .StoreLocal => |store| markOperandMax(store.src, max_temp),
         .Call => |call| {
             markOperandMax(call.target, max_temp);
@@ -139,6 +140,7 @@ fn markUsesInInst(inst: mir.Inst, used: []bool) void {
             markOperand(cmp.rhs, used);
         },
         .Unary => |un| markOperand(un.operand, used),
+        .Cast => |cast| markOperand(cast.src, used),
         .LoadLocal => {},
         .StoreLocal => |store| markOperand(store.src, used),
         .Call => |call| {
