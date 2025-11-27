@@ -10,6 +10,10 @@ const zero_span = source_map.Span{ .file_id = 0, .start = 0, .end = 0 };
 /// This limits the field layout to avoid collisions in the hash-based approach.
 const MAX_STRUCT_FIELDS: u32 = 4;
 
+/// Multiplier for local variable stack allocation.
+/// Each local gets this many 8-byte slots to accommodate arrays.
+const LOCAL_STACK_MULTIPLIER: u32 = 4;
+
 pub const LowerError = error{ Unsupported, OutOfMemory };
 
 const DataTable = struct {
@@ -127,7 +131,7 @@ fn lowerFn(ctx: *LowerContext, func: mir.MirFn) LowerError!machine.MachineFn {
         });
     }
 
-    const stack_size = func.locals.len * @sizeOf(i64) * 4; // Allocate extra space for arrays
+    const stack_size = func.locals.len * @sizeOf(i64) * LOCAL_STACK_MULTIPLIER;
 
     return .{
         .name = func.name,
@@ -380,12 +384,11 @@ fn lowerInst(
                                 // Load value from computed address into dst
                                 try insts.append(ctx.allocator, .{ .Deref = .{ .dst = .{ .VReg = dst }, .addr = .{ .VReg = base_vreg } } });
                                 
-                                // Record that dst came from dynamic indexing - store base_vreg as the address VReg
-                                // We use a special convention: store the address vreg as a negative offset to signal dynamic
-                                // Actually, we need a different approach - track dynamic index address VRegs
+                                // Track that this VReg holds a value from dynamic indexing
+                                // When Ref is applied to this VReg, we use base_vreg (the address) instead
                                 try ctx.dynamic_index_addr_map.put(dst, base_vreg);
                                 
-                                return null; // Already added the mov instruction
+                                return null;
                             },
                             else => {
                                 ctx.diagnostics.reportError(zero_span, "indexing currently supports only immediate indices or variables");
@@ -433,14 +436,13 @@ fn lowerInst(
                     const first = try lowerOperand(ctx, payload.elems[0], vreg_count);
                     try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .VReg = dst }, .src = first } });
                     
-                    // For additional elements, we need to store them after the first
+                    // For additional elements, use designated registers that StoreLocal will pick up
+                    // rdx for 2nd element, rcx for 3rd element (matches StoreLocal handling)
                     for (payload.elems[1..], 1..) |elem, idx| {
                         const elem_op = try lowerOperand(ctx, elem, vreg_count);
                         vreg_count.* += 1;
                         const elem_vreg = vreg_count.* - 1;
                         try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .VReg = elem_vreg }, .src = elem_op } });
-                        // Store to offset idx * 8 from base (will be handled by regalloc/emitter)
-                        // We use RetSecond for 2nd element, otherwise we need additional mechanism
                         if (idx == 1) {
                             try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .Phys = .rdx }, .src = .{ .VReg = elem_vreg } } });
                         } else if (idx == 2) {
@@ -569,8 +571,7 @@ fn destRegister(temp: mir.TempId, vreg_count: ?*machine.VReg) machine.VReg {
 }
 
 fn localMem(local: mir.LocalId) machine.MOperand {
-    // Each local gets 32 bytes (4 * 8) to accommodate arrays
-    const offset: i32 = -@as(i32, @intCast((local + 1) * @sizeOf(i64) * 4));
+    const offset: i32 = -@as(i32, @intCast((local + 1) * @sizeOf(i64) * LOCAL_STACK_MULTIPLIER));
     return .{ .Mem = .{ .base = .rbp, .offset = offset } };
 }
 
