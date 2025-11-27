@@ -14,6 +14,11 @@ const MAX_STRUCT_FIELDS: u32 = 4;
 /// Each local gets this many 8-byte slots to accommodate arrays.
 const LOCAL_STACK_MULTIPLIER: u32 = 4;
 
+/// Maximum number of additional array elements (beyond the first) that can be
+/// stored via physical registers during array initialization.
+/// Element 1 -> rdx, element 2 -> rcx, element 3 -> r8
+const MAX_EXTRA_ARRAY_ELEMENTS: usize = 3;
+
 pub const LowerError = error{ Unsupported, OutOfMemory };
 
 const DataTable = struct {
@@ -442,8 +447,8 @@ fn lowerInst(
                     // For additional elements, first compute all values into VRegs,
                     // then move to designated physical registers that StoreLocal will pick up
                     // This avoids clobbering issues from interleaved VReg/PhysReg operations
-                    var elem_vregs: [4]machine.VReg = undefined;
-                    const num_extra = @min(payload.elems.len - 1, 4);
+                    var elem_vregs: [MAX_EXTRA_ARRAY_ELEMENTS]machine.VReg = .{ 0, 0, 0 };
+                    const num_extra = @min(payload.elems.len - 1, MAX_EXTRA_ARRAY_ELEMENTS);
                     
                     // Phase 1: Compute all elements into VRegs
                     for (payload.elems[1..][0..num_extra], 0..) |elem, i| {
