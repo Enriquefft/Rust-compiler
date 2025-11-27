@@ -202,10 +202,39 @@ fn emitInst(writer: anytype, inst: machine.InstKind, fn_name: []const u8) !void 
             try writer.writeAll(", [");
             switch (payload.addr) {
                 .Phys => |reg| try writer.print("{s}", .{physName(reg)}),
-                .Mem => |mem| try writer.print("{s}+{d}", .{ physName(mem.base), mem.offset }),
+                .Mem => |mem| {
+                    try writer.writeAll(physName(mem.base));
+                    if (mem.offset != 0) {
+                        const sign: u8 = if (mem.offset < 0) '-' else '+';
+                        try writer.writeByte(sign);
+                        const magnitude: i32 = if (mem.offset < 0) -mem.offset else mem.offset;
+                        try writer.print("{d}", .{magnitude});
+                    }
+                },
                 else => try writeOperand(writer, payload.addr),
             }
             try writer.writeAll("]\n");
+        },
+        .StoreDeref => |payload| {
+            // Store to dereference: [addr] = src
+            // mov [addr], src
+            try writer.writeAll("    mov qword ptr [");
+            switch (payload.addr) {
+                .Phys => |reg| try writer.print("{s}", .{physName(reg)}),
+                .Mem => |mem| {
+                    try writer.writeAll(physName(mem.base));
+                    if (mem.offset != 0) {
+                        const sign: u8 = if (mem.offset < 0) '-' else '+';
+                        try writer.writeByte(sign);
+                        const magnitude: i32 = if (mem.offset < 0) -mem.offset else mem.offset;
+                        try writer.print("{d}", .{magnitude});
+                    }
+                },
+                else => try writeOperand(writer, payload.addr),
+            }
+            try writer.writeAll("], ");
+            try writeOperand(writer, payload.src);
+            try writer.writeByte('\n');
         },
         .Cmp => |payload| {
             // try writer.writeAll("    cmp ");

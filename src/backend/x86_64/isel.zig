@@ -226,6 +226,12 @@ fn lowerInst(
             const src = try lowerOperand(ctx, payload.src, vreg_count);
             try insts.append(ctx.allocator, .{ .Mov = .{ .dst = mem, .src = src } });
         },
+        .StorePtr => |payload| {
+            // Store to a pointer: *ptr = value
+            const ptr = try lowerOperand(ctx, payload.ptr, vreg_count);
+            const src = try lowerOperand(ctx, payload.src, vreg_count);
+            try insts.append(ctx.allocator, .{ .StoreDeref = .{ .addr = ptr, .src = src } });
+        },
         .Cast => |payload| {
             if (dest_vreg) |dst| {
                 const src = try lowerOperand(ctx, payload.src, vreg_count);
@@ -294,8 +300,51 @@ fn lowerInst(
                                 const scaled: i32 = @intCast(imm * @as(i64, @intCast(@sizeOf(i64))));
                                 break :blk2 base_mem.offset + scaled;
                             },
+                            .VReg, .Phys, .Mem => {
+                                // For variable indices, we need to compute the address dynamically
+                                // Load the index into a register, multiply by element size, add to base
+                                vreg_count.* += 1;
+                                const idx_vreg = vreg_count.* - 1;
+
+                                // Move index to vreg if needed
+                                switch (idx) {
+                                    .VReg => {},
+                                    .Phys => |reg| {
+                                        try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .VReg = idx_vreg }, .src = .{ .Phys = reg } } });
+                                    },
+                                    .Mem => |mem| {
+                                        try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .VReg = idx_vreg }, .src = .{ .Mem = mem } } });
+                                    },
+                                    else => unreachable,
+                                }
+
+                                // Use the vreg if we had to move, otherwise use the original
+                                const idx_as_vreg: machine.MOperand = switch (idx) {
+                                    .VReg => idx,
+                                    .Phys, .Mem => .{ .VReg = idx_vreg },
+                                    else => unreachable,
+                                };
+
+                                // Multiply index by element size (8 bytes for i64)
+                                vreg_count.* += 1;
+                                const scaled_vreg = vreg_count.* - 1;
+                                try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .VReg = scaled_vreg }, .src = idx_as_vreg } });
+                                try insts.append(ctx.allocator, .{ .Bin = .{ .op = .imul, .dst = .{ .VReg = scaled_vreg }, .lhs = .{ .VReg = scaled_vreg }, .rhs = .{ .Imm = @sizeOf(i64) } } });
+
+                                // Load base address into a register
+                                vreg_count.* += 1;
+                                const base_vreg = vreg_count.* - 1;
+                                try insts.append(ctx.allocator, .{ .Lea = .{ .dst = .{ .VReg = base_vreg }, .mem = base_mem } });
+
+                                // Add scaled index to base
+                                try insts.append(ctx.allocator, .{ .Bin = .{ .op = .add, .dst = .{ .VReg = base_vreg }, .lhs = .{ .VReg = base_vreg }, .rhs = .{ .VReg = scaled_vreg } } });
+
+                                // Load value from computed address
+                                try insts.append(ctx.allocator, .{ .Deref = .{ .dst = .{ .VReg = dst }, .addr = .{ .VReg = base_vreg } } });
+                                return null; // Already added the mov instruction
+                            },
                             else => {
-                                ctx.diagnostics.reportError(zero_span, "indexing currently supports only immediate indices");
+                                ctx.diagnostics.reportError(zero_span, "indexing currently supports only immediate indices or variables");
                                 return error.Unsupported;
                             },
                         };

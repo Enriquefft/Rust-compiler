@@ -121,6 +121,22 @@ fn rewriteOperands(
             const addr = try materializeRead(payload.addr, map, available, spill_scratch, phys_used, spill_slots, diagnostics);
             try rewritten.append(allocator, .{ .Deref = .{ .dst = dst, .addr = addr } });
         },
+        .StoreDeref => |*payload| {
+            var addr = try materializeRead(payload.addr, map, available, spill_scratch, phys_used, spill_slots, diagnostics);
+            var src = try materializeRead(payload.src, map, available, spill_scratch, phys_used, spill_slots, diagnostics);
+            // Ensure addr is in a register (not memory or immediate)
+            if (addr != .Phys) {
+                try rewritten.append(allocator, .{ .Mov = .{ .dst = .{ .Phys = spill_scratch }, .src = addr } });
+                addr = .{ .Phys = spill_scratch };
+            }
+            // If src is memory, we need to use a different scratch register
+            if (isMem(src)) {
+                // Use rax as a second scratch register
+                try rewritten.append(allocator, .{ .Mov = .{ .dst = .{ .Phys = .rax }, .src = src } });
+                src = .{ .Phys = .rax };
+            }
+            try rewritten.append(allocator, .{ .StoreDeref = .{ .addr = addr, .src = src } });
+        },
         .Cvttsd2si => |*payload| {
             const dst = try materializeWrite(payload.dst, map, available, spill_scratch, phys_used, spill_slots, diagnostics);
             const src = try materializeRead(payload.src, map, available, spill_scratch, phys_used, spill_slots, diagnostics);

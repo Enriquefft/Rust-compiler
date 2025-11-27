@@ -49,6 +49,7 @@ pub const InstKind = union(enum) {
     Unary: struct { op: UnaryOpcode, dst: MOperand, src: MOperand },
     Lea: struct { dst: MOperand, mem: MemRef },
     Deref: struct { dst: MOperand, addr: MOperand },
+    StoreDeref: struct { addr: MOperand, src: MOperand },
     Cvttsd2si: struct { dst: MOperand, src: MOperand },
     Cvtsi2sd: struct { dst: MOperand, src: MOperand },
     Cmp: struct { lhs: MOperand, rhs: MOperand },

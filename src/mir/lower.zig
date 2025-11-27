@@ -262,6 +262,11 @@ const FunctionBuilder = struct {
                     return try self.lowerPrintlnMacro(call.args, expr.span);
                 }
 
+                // Check if this is an array method call like data.len()
+                if (self.isArrayMethodCall(call.callee)) |array_method| {
+                    return try self.lowerArrayMethodCall(array_method.target_id, array_method.method_name, array_method.array_size, call.args, expr);
+                }
+
                 // Check if this is a pointer method call like ptr.is_null()
                 if (self.isPointerMethodCall(call.callee)) |ptr_method| {
                     return try self.lowerPointerMethodCall(ptr_method.target_id, ptr_method.method_name, call.args, expr);
@@ -308,6 +313,34 @@ const FunctionBuilder = struct {
                         }
 
                         _ = try self.emitInst(.{ .ty = mapType(self.hir_crate, target_expr.ty, expr.span, self.diagnostics), .dest = null, .kind = .{ .StoreLocal = .{ .local = local, .src = final_val } } });
+                    }
+                } else if (target_expr.kind == .Unary and target_expr.kind.Unary.op == .Deref) {
+                    // Handle dereference assignment: *ptr = value or *ptr += value
+                    const ptr_expr_id = target_expr.kind.Unary.expr;
+                    const ptr_op = try self.lowerExpr(ptr_expr_id) orelse {
+                        self.diagnostics.reportError(expr.span, "could not lower pointer for dereference assignment");
+                        return null;
+                    };
+
+                    if (value_op) |val| {
+                        var final_val = val;
+                        if (assign.op != .Assign) {
+                            // For compound assignment (*ptr += val), we need to:
+                            // 1. Load the current value from the pointer
+                            // 2. Perform the binary operation
+                            // 3. Store the result back
+                            const loaded_tmp = self.newTemp();
+                            const mir_ty = mapType(self.hir_crate, target_expr.ty, expr.span, self.diagnostics);
+                            _ = try self.emitInst(.{ .ty = mir_ty, .dest = loaded_tmp, .kind = .{ .Unary = .{ .op = .Deref, .operand = ptr_op } } });
+
+                            if (mapAssignBin(assign.op)) |bin_op| {
+                                const bin_tmp = self.newTemp();
+                                _ = try self.emitInst(.{ .ty = mir_ty, .dest = bin_tmp, .kind = .{ .Bin = .{ .op = bin_op, .lhs = .{ .Temp = loaded_tmp }, .rhs = val } } });
+                                final_val = .{ .Temp = bin_tmp };
+                            }
+                        }
+
+                        _ = try self.emitInst(.{ .ty = mapType(self.hir_crate, target_expr.ty, expr.span, self.diagnostics), .dest = null, .kind = .{ .StorePtr = .{ .ptr = ptr_op, .src = final_val } } });
                     }
                 } else {
                     self.diagnostics.reportError(expr.span, "assignment target not supported in MIR lowering");
@@ -678,6 +711,78 @@ const FunctionBuilder = struct {
             return .{ .Temp = tmp };
         } else {
             self.diagnostics.reportError(expr.span, "unknown pointer method");
+            return null;
+        }
+    }
+
+    const ArrayMethodInfo = struct {
+        target_id: hir.ExprId,
+        method_name: []const u8,
+        array_size: ?i64,
+    };
+
+    fn isArrayMethodCall(self: *FunctionBuilder, callee_id: hir.ExprId) ?ArrayMethodInfo {
+        if (callee_id >= self.hir_crate.exprs.items.len) return null;
+        const callee = self.hir_crate.exprs.items[callee_id];
+
+        // Check if the callee is a Field expression (method call syntax)
+        if (callee.kind != .Field) return null;
+
+        const field = callee.kind.Field;
+        const target_expr = self.hir_crate.exprs.items[field.target];
+
+        // Check if the target is an array type
+        if (target_expr.ty >= self.hir_crate.types.items.len) return null;
+        const target_type = self.hir_crate.types.items[target_expr.ty];
+
+        // Check for array or ref/pointer to array
+        const array_size: ?i64 = switch (target_type.kind) {
+            .Array => |arr| arr.size_const,
+            .Ref => |ref| blk: {
+                if (ref.inner >= self.hir_crate.types.items.len) break :blk null;
+                const inner_type = self.hir_crate.types.items[ref.inner];
+                if (inner_type.kind == .Array) {
+                    break :blk inner_type.kind.Array.size_const;
+                }
+                break :blk null;
+            },
+            .Pointer => |ptr| blk: {
+                if (ptr.inner >= self.hir_crate.types.items.len) break :blk null;
+                const inner_type = self.hir_crate.types.items[ptr.inner];
+                if (inner_type.kind == .Array) {
+                    break :blk inner_type.kind.Array.size_const;
+                }
+                break :blk null;
+            },
+            else => null,
+        };
+
+        if (array_size != null) {
+            return ArrayMethodInfo{
+                .target_id = field.target,
+                .method_name = field.name,
+                .array_size = array_size,
+            };
+        }
+        return null;
+    }
+
+    fn lowerArrayMethodCall(self: *FunctionBuilder, target_id: hir.ExprId, method_name: []const u8, array_size: ?i64, args: []const hir.ExprId, expr: hir.Expr) LowerError!?mir.Operand {
+        _ = target_id; // Array is not needed for len()
+        _ = args; // Currently no array methods use arguments
+
+        if (std.mem.eql(u8, method_name, "len")) {
+            // len() returns the static array size
+            if (array_size) |size| {
+                const tmp = self.newTemp();
+                _ = try self.emitInst(.{ .ty = .Usize, .dest = tmp, .kind = .{ .Copy = .{ .src = .{ .ImmInt = size } } } });
+                return .{ .Temp = tmp };
+            } else {
+                self.diagnostics.reportError(expr.span, "array size is unknown for len()");
+                return null;
+            }
+        } else {
+            self.diagnostics.reportError(expr.span, "unknown array method");
             return null;
         }
     }
