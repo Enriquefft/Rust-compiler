@@ -203,6 +203,14 @@ fn checkExpr(
                     diagnostics.reportError(span, "unknown pointer method");
                     expr.ty = try ensureType(crate, .Unknown);
                 }
+            } else if (isStructMethodCall(crate, call.callee, diagnostics, locals)) |method_info| {
+                // Handle struct method calls (e.g., point.offset(1, 2))
+                // Type check all arguments
+                for (call.args) |arg_id| {
+                    _ = try checkExpr(crate, arg_id, diagnostics, locals);
+                }
+                // Set the return type from the method
+                expr.ty = method_info.ret_ty;
             } else {
                 const callee_ty = try checkExpr(crate, call.callee, diagnostics, locals);
                 var param_types: []hir.TypeId = &[_]hir.TypeId{};
@@ -472,14 +480,45 @@ fn typesEqual(crate: *hir.Crate, lhs: hir.TypeId, rhs: hir.TypeId) bool {
     return std.meta.eql(crate.types.items[lhs].kind, crate.types.items[rhs].kind);
 }
 
+/// Resolves a type through type aliases. If the type is a Path that refers to a type alias,
+/// returns the underlying type. Otherwise returns the original type.
+fn resolveType(crate: *hir.Crate, ty: hir.TypeId) hir.TypeId {
+    if (ty >= crate.types.items.len) return ty;
+    
+    const kind = crate.types.items[ty].kind;
+    switch (kind) {
+        .Path => |path| {
+            // Look up the type alias by name
+            if (path.segments.len == 1) {
+                const name = path.segments[0];
+                for (crate.items.items) |item| {
+                    if (item.kind == .TypeAlias) {
+                        const alias = item.kind.TypeAlias;
+                        if (std.mem.eql(u8, alias.name, name)) {
+                            // Recursively resolve in case of chained aliases
+                            return resolveType(crate, alias.target);
+                        }
+                    }
+                }
+            }
+            return ty;
+        },
+        else => return ty,
+    }
+}
+
 fn typesCompatible(crate: *hir.Crate, lhs: hir.TypeId, rhs: hir.TypeId) bool {
-    if (typesEqual(crate, lhs, rhs)) return true;
-    if (lhs >= crate.types.items.len or rhs >= crate.types.items.len) return false;
+    // Resolve type aliases before comparing
+    const resolved_lhs = resolveType(crate, lhs);
+    const resolved_rhs = resolveType(crate, rhs);
+    
+    if (typesEqual(crate, resolved_lhs, resolved_rhs)) return true;
+    if (resolved_lhs >= crate.types.items.len or resolved_rhs >= crate.types.items.len) return false;
 
-    if (isUnknown(crate, lhs) or isUnknown(crate, rhs)) return true;
+    if (isUnknown(crate, resolved_lhs) or isUnknown(crate, resolved_rhs)) return true;
 
-    const lhs_kind = crate.types.items[lhs].kind;
-    const rhs_kind = crate.types.items[rhs].kind;
+    const lhs_kind = crate.types.items[resolved_lhs].kind;
+    const rhs_kind = crate.types.items[resolved_rhs].kind;
 
     return switch (lhs_kind) {
         .PrimInt => rhs_kind == .PrimInt,
@@ -498,20 +537,52 @@ fn typesCompatible(crate: *hir.Crate, lhs: hir.TypeId, rhs: hir.TypeId) bool {
             .Ref => |rhs_ref| lhs_ref.mutable == rhs_ref.mutable and typesCompatible(crate, lhs_ref.inner, rhs_ref.inner),
             else => false,
         },
+        .Struct => |lhs_struct| switch (rhs_kind) {
+            .Struct => |rhs_struct| lhs_struct.def_id == rhs_struct.def_id,
+            .Path => |path| structMatchesPath(crate, lhs_struct.def_id, path.segments),
+            else => false,
+        },
+        .Path => |lhs_path| switch (rhs_kind) {
+            .Struct => |rhs_struct| structMatchesPath(crate, rhs_struct.def_id, lhs_path.segments),
+            .Path => |rhs_path| pathsMatch(lhs_path.segments, rhs_path.segments),
+            else => false,
+        },
         else => false,
     };
 }
 
 fn isBool(crate: *hir.Crate, ty: hir.TypeId) bool {
-    return ty < crate.types.items.len and crate.types.items[ty].kind == .Bool;
+    const resolved = resolveType(crate, ty);
+    return resolved < crate.types.items.len and crate.types.items[resolved].kind == .Bool;
 }
 
 fn isNumeric(crate: *hir.Crate, ty: hir.TypeId) bool {
-    if (ty >= crate.types.items.len) return false;
-    return switch (crate.types.items[ty].kind) {
+    const resolved = resolveType(crate, ty);
+    if (resolved >= crate.types.items.len) return false;
+    return switch (crate.types.items[resolved].kind) {
         .PrimInt, .PrimFloat => true,
         else => false,
     };
+}
+
+fn structMatchesPath(crate: *hir.Crate, struct_def_id: hir.DefId, path_segments: [][]const u8) bool {
+    if (path_segments.len != 1) return false;
+    const path_name = path_segments[0];
+    if (struct_def_id < crate.items.items.len) {
+        const item = crate.items.items[struct_def_id];
+        if (item.kind == .Struct) {
+            return std.mem.eql(u8, item.kind.Struct.name, path_name);
+        }
+    }
+    return false;
+}
+
+fn pathsMatch(lhs_segments: [][]const u8, rhs_segments: [][]const u8) bool {
+    if (lhs_segments.len != rhs_segments.len) return false;
+    for (lhs_segments, rhs_segments) |l, r| {
+        if (!std.mem.eql(u8, l, r)) return false;
+    }
+    return true;
 }
 
 fn getArrayElementType(crate: *hir.Crate, ty: hir.TypeId) union(enum) { ok: hir.TypeId, err: void } {
@@ -550,19 +621,59 @@ fn resolveFieldType(crate: *hir.Crate, ty: hir.TypeId, name: []const u8, span: h
         return ensureType(crate, .Unknown);
     }
 
-    switch (crate.types.items[ty].kind) {
+    const resolved_ty = resolveType(crate, ty);
+    if (resolved_ty >= crate.types.items.len) {
+        diagnostics.reportError(span, "unknown type for field access");
+        return ensureType(crate, .Unknown);
+    }
+
+    switch (crate.types.items[resolved_ty].kind) {
         .Struct => |info| {
             if (info.def_id < crate.items.items.len) {
                 const item = crate.items.items[info.def_id];
                 if (item.kind == .Struct) {
+                    // First check for fields
                     if (findFieldType(item.kind.Struct, name)) |field_ty| {
                         return field_ty;
                     }
+                    
+                    // If no field found, check for methods in impl blocks
+                    if (findMethodType(crate, info.def_id, name)) |method_ty| {
+                        return method_ty;
+                    }
+                    
                     diagnostics.reportError(span, "unknown field on struct");
                     return ensureType(crate, .Unknown);
                 }
             }
             diagnostics.reportError(span, "invalid struct reference in type");
+            return ensureType(crate, .Unknown);
+        },
+        .Path => |path| {
+            // Try to find the struct this path refers to
+            if (path.segments.len == 1) {
+                const struct_name = path.segments[0];
+                for (crate.items.items, 0..) |item, idx| {
+                    if (item.kind == .Struct) {
+                        const struct_item = item.kind.Struct;
+                        if (std.mem.eql(u8, struct_item.name, struct_name)) {
+                            // Found the struct - check for field
+                            if (findFieldType(struct_item, name)) |field_ty| {
+                                return field_ty;
+                            }
+                            
+                            // Check for methods
+                            if (findMethodType(crate, @intCast(idx), name)) |method_ty| {
+                                return method_ty;
+                            }
+                            
+                            diagnostics.reportError(span, "unknown field on struct");
+                            return ensureType(crate, .Unknown);
+                        }
+                    }
+                }
+            }
+            diagnostics.reportError(span, "unresolved path type for field access");
             return ensureType(crate, .Unknown);
         },
         // Pointer types can have methods like is_null()
@@ -576,6 +687,56 @@ fn resolveFieldType(crate: *hir.Crate, ty: hir.TypeId, name: []const u8, span: h
             return ensureType(crate, .Unknown);
         },
     }
+}
+
+fn findMethodType(crate: *hir.Crate, struct_def_id: hir.DefId, method_name: []const u8) ?hir.TypeId {
+    // Look through all impl blocks for this struct
+    for (crate.items.items) |item| {
+        if (item.kind == .Impl) {
+            const impl_item = item.kind.Impl;
+            // Check if this impl is for the struct we're looking at
+            // The target should be a Path or Struct type referring to our struct
+            if (impl_item.target < crate.types.items.len) {
+                const target_kind = crate.types.items[impl_item.target].kind;
+                var matches = false;
+                switch (target_kind) {
+                    .Struct => |info| {
+                        matches = info.def_id == struct_def_id;
+                    },
+                    .Path => |path| {
+                        // Check if the path name matches the struct name
+                        if (path.segments.len == 1) {
+                            const struct_item = crate.items.items[struct_def_id];
+                            if (struct_item.kind == .Struct) {
+                                matches = std.mem.eql(u8, path.segments[0], struct_item.kind.Struct.name);
+                            }
+                        }
+                    },
+                    else => {},
+                }
+                
+                if (matches) {
+                    // Look for the method in this impl block
+                    for (impl_item.methods) |method_id| {
+                        if (method_id < crate.items.items.len) {
+                            const method_item = crate.items.items[method_id];
+                            if (method_item.kind == .Function) {
+                                const func = method_item.kind.Function;
+                                if (std.mem.eql(u8, func.name, method_name)) {
+                                    // Return a function type for this method
+                                    // Note: we return an Unknown type for now since the actual
+                                    // function type needs to be constructed properly
+                                    // The Call expression handler will get the full type
+                                    return null; // Let the call handler deal with this
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return null;
 }
 
 fn isBuiltinPrintln(crate: *hir.Crate, callee_id: hir.ExprId) bool {
@@ -617,6 +778,88 @@ fn isPointerMethodCall(
                 .target_ty = target_ty,
                 .method_name = field.name,
             };
+        },
+        else => return null,
+    }
+}
+
+const StructMethodInfo = struct {
+    target_ty: hir.TypeId,
+    method_name: []const u8,
+    ret_ty: hir.TypeId,
+};
+
+fn isStructMethodCall(
+    crate: *hir.Crate,
+    callee_id: hir.ExprId,
+    diagnostics: *diag.Diagnostics,
+    locals: *std.AutoHashMap(hir.LocalId, hir.TypeId),
+) ?StructMethodInfo {
+    if (callee_id >= crate.exprs.items.len) return null;
+    const callee_expr = crate.exprs.items[callee_id];
+    
+    // Check if the callee is a Field expression
+    if (callee_expr.kind != .Field) return null;
+    
+    const field = callee_expr.kind.Field;
+    
+    // Check if the target is a struct type
+    const target_ty = checkExpr(crate, field.target, diagnostics, locals) catch return null;
+    const resolved_ty = resolveType(crate, target_ty);
+    if (resolved_ty >= crate.types.items.len) return null;
+    
+    switch (crate.types.items[resolved_ty].kind) {
+        .Struct => |info| {
+            // Look for a method with this name in impl blocks
+            for (crate.items.items) |item| {
+                if (item.kind == .Impl) {
+                    const impl_item = item.kind.Impl;
+                    // Check if this impl is for our struct
+                    var matches = false;
+                    if (impl_item.target < crate.types.items.len) {
+                        const target_kind = crate.types.items[impl_item.target].kind;
+                        switch (target_kind) {
+                            .Struct => |impl_info| {
+                                matches = impl_info.def_id == info.def_id;
+                            },
+                            .Path => |path| {
+                                if (path.segments.len == 1) {
+                                    const struct_item = crate.items.items[info.def_id];
+                                    if (struct_item.kind == .Struct) {
+                                        matches = std.mem.eql(u8, path.segments[0], struct_item.kind.Struct.name);
+                                    }
+                                }
+                            },
+                            else => {},
+                        }
+                    }
+                    
+                    if (matches) {
+                        // Look for the method
+                        for (impl_item.methods) |method_id| {
+                            if (method_id < crate.items.items.len) {
+                                const method_item = crate.items.items[method_id];
+                                if (method_item.kind == .Function) {
+                                    const func = method_item.kind.Function;
+                                    if (std.mem.eql(u8, func.name, field.name)) {
+                                        // Found the method - return its return type
+                                        const ret_ty = func.return_type orelse blk: {
+                                            const unknown = ensureType(crate, .Unknown) catch return null;
+                                            break :blk unknown;
+                                        };
+                                        return StructMethodInfo{
+                                            .target_ty = target_ty,
+                                            .method_name = field.name,
+                                            .ret_ty = ret_ty,
+                                        };
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            return null;
         },
         else => return null,
     }

@@ -342,11 +342,112 @@ fn lowerImpl(
     next_type_id: *TypeId,
 ) LowerError!void {
     const data = item.data.Impl;
-    const target = try appendUnknownType(crate, next_type_id);
+    
+    // Lower the target type
+    var diagnostics_dummy = @import("../diag/diagnostics.zig").Diagnostics.init(crate.allocator());
+    defer diagnostics_dummy.deinit();
+    const target = try lowerType(crate, data.target, &diagnostics_dummy, next_type_id);
+    
+    // Create a struct type for the self parameter based on the target type path
+    var self_type: TypeId = target;
+    if (data.target.tag == .Path) {
+        // Look up the struct by name to get a proper struct type
+        const path = data.target.data.Path;
+        if (path.segments.len == 1) {
+            const struct_name = path.segments[0].name;
+            for (crate.items.items, 0..) |crate_item, idx| {
+                if (crate_item.kind == .Struct) {
+                    const struct_item = crate_item.kind.Struct;
+                    if (std.mem.eql(u8, struct_item.name, struct_name)) {
+                        // Create a struct type referring to this def
+                        const struct_ty_id = next_type_id.*;
+                        next_type_id.* += 1;
+                        try crate.types.append(crate.allocator(), .{ 
+                            .id = struct_ty_id, 
+                            .kind = .{ .Struct = .{ .def_id = @intCast(idx), .type_args = &[_]TypeId{} } }
+                        });
+                        self_type = struct_ty_id;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    
+    // Lower methods - add each method as a separate item
+    var method_ids = std.ArrayListUnmanaged(ItemId){};
+    defer method_ids.deinit(crate.allocator());
+    
+    for (data.methods) |method| {
+        const method_def_id: DefId = @intCast(crate.items.items.len);
+        
+        // Lower method parameters
+        var params_buffer = std.ArrayListUnmanaged(LocalId){};
+        defer params_buffer.deinit(crate.allocator());
+        var param_types = std.ArrayListUnmanaged(TypeId){};
+        defer param_types.deinit(crate.allocator());
+        
+        for (method.params) |param| {
+            const local = try lowerPattern(crate, param.pattern, &diagnostics_dummy);
+            
+            // Determine parameter type
+            const ty_id = switch (param.kind) {
+                .SelfValue => self_type,
+                .SelfRef => blk: {
+                    // Create a reference type to the struct
+                    const ref_ty_id = next_type_id.*;
+                    next_type_id.* += 1;
+                    try crate.types.append(crate.allocator(), .{ 
+                        .id = ref_ty_id, 
+                        .kind = .{ .Ref = .{ .mutable = false, .inner = self_type } }
+                    });
+                    break :blk ref_ty_id;
+                },
+                .SelfRefMut => blk: {
+                    // Create a mutable reference type to the struct
+                    const ref_ty_id = next_type_id.*;
+                    next_type_id.* += 1;
+                    try crate.types.append(crate.allocator(), .{ 
+                        .id = ref_ty_id, 
+                        .kind = .{ .Ref = .{ .mutable = true, .inner = self_type } }
+                    });
+                    break :blk ref_ty_id;
+                },
+                .Normal => if (param.ty) |param_ty|
+                    try lowerType(crate, param_ty, &diagnostics_dummy, next_type_id)
+                else
+                    try appendUnknownType(crate, next_type_id),
+            };
+            try params_buffer.append(crate.allocator(), local);
+            try param_types.append(crate.allocator(), ty_id);
+        }
+        
+        const return_ty = if (method.return_type) |ret_ty|
+            try lowerType(crate, ret_ty, &diagnostics_dummy, next_type_id)
+        else
+            null;
+        
+        const body_expr = try lowerBlock(crate, method.body, &diagnostics_dummy, next_type_id);
+        
+        const method_name = try crate.allocator().dupe(u8, method.name.name);
+        
+        const fn_item = Function{
+            .def_id = method_def_id,
+            .name = method_name,
+            .params = try params_buffer.toOwnedSlice(crate.allocator()),
+            .param_types = try param_types.toOwnedSlice(crate.allocator()),
+            .return_type = return_ty,
+            .body = body_expr,
+            .span = method.span,
+        };
+        try crate.items.append(crate.allocator(), .{ .id = @intCast(method_def_id), .kind = .{ .Function = fn_item }, .span = method.span });
+        try method_ids.append(crate.allocator(), @intCast(method_def_id));
+    }
+    
     const impl_item = Impl{
         .def_id = def_id,
         .target = target,
-        .methods = &[_]ItemId{},
+        .methods = try method_ids.toOwnedSlice(crate.allocator()),
         .span = data.span,
     };
     try crate.items.append(crate.allocator(), .{ .id = @intCast(def_id), .kind = .{ .Impl = impl_item }, .span = item.span });

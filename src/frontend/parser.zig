@@ -285,7 +285,7 @@ const Parser = struct {
     }
 
     fn parsePath(self: *Parser) ?ast.Path {
-        if (!self.check(.Identifier)) return null;
+        if (!self.check(.Identifier) and !self.check(.KwSelf)) return null;
         var segments = std.ArrayListUnmanaged(ast.Identifier){};
         const first = self.advance();
         segments.append(self.arena, self.makeIdent(first)) catch {};
@@ -605,9 +605,30 @@ const Parser = struct {
                 expr = self.finishCall(expr, "expected ')' after macro invocation") orelse return null;
                 continue;
             }
+            // Struct literal: Path { field: value, ... }
+            if (expr.tag == .Path and self.check(.LBrace)) {
+                expr = self.finishStructInit(expr) orelse return null;
+                continue;
+            }
             break;
         }
         return expr;
+    }
+
+    fn finishStructInit(self: *Parser, path_expr: *ast.Expr) ?*ast.Expr {
+        const lbrace = self.expectConsume(.LBrace, "expected '{'") orelse return null;
+        _ = lbrace;
+        var fields = std.ArrayListUnmanaged(ast.StructInitField){};
+        while (!self.check(.RBrace) and !self.isAtEnd()) {
+            const field_name_tok = self.expectConsume(.Identifier, "expected field name") orelse break;
+            _ = self.expectConsume(.Colon, "expected ':' after field name") orelse break;
+            const value = self.parseExpr() orelse break;
+            fields.append(self.arena, .{ .name = self.makeIdent(field_name_tok), .value = value.* }) catch {};
+            if (!self.match(.Comma)) break;
+        }
+        const rbrace = self.expectConsume(.RBrace, "expected '}' to close struct literal") orelse return null;
+        const span = Span{ .file_id = path_expr.span.file_id, .start = path_expr.span.start, .end = rbrace.span.end };
+        return self.allocExpr(.{ .tag = .StructInit, .span = span, .data = .{ .StructInit = .{ .path = path_expr.data.Path, .fields = fields.toOwnedSlice(self.arena) catch @panic("out of memory") } } });
     }
 
     fn finishCall(self: *Parser, callee: *ast.Expr, close_message: []const u8) ?*ast.Expr {
@@ -640,7 +661,7 @@ const Parser = struct {
                 const expr = ast.Expr{ .tag = .Literal, .span = tok.span, .data = .{ .Literal = .{ .kind = lit_kind, .lexeme = self.dup(tok.lexeme) } } };
                 return self.copyExpr(expr);
             },
-            .Identifier => {
+            .Identifier, .KwSelf => {
                 if (self.parsePath()) |p| {
                     return self.allocExpr(.{ .tag = .Path, .span = p.span, .data = .{ .Path = p } });
                 }
@@ -716,7 +737,7 @@ const Parser = struct {
 
     fn isStartOfExpr(self: *Parser) bool {
         return switch (self.peekKind()) {
-            .LParen, .LBrace, .LBracket, .Identifier, .IntLit, .FloatLit, .BoolLit, .CharLit, .StringLit, .KwIf, .KwWhile, .KwFor, .KwReturn, .Bang, .Minus, .Star, .Amp, .Pipe => true,
+            .LParen, .LBrace, .LBracket, .Identifier, .IntLit, .FloatLit, .BoolLit, .CharLit, .StringLit, .KwIf, .KwWhile, .KwFor, .KwReturn, .Bang, .Minus, .Star, .Amp, .Pipe, .KwSelf => true,
             else => false,
         };
     }
