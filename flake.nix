@@ -20,6 +20,9 @@
           lldb
           gcc
 
+          cargo
+          rustc
+
         ];
       };
     };

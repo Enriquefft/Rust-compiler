@@ -275,6 +275,9 @@ fn checkExpr(
             const value_ty = try checkExpr(crate, assign.value, diagnostics, locals);
 
             if (!typesCompatible(crate, target_ty, value_ty)) {
+
+                std.debug.print("Assignment type mismatch: target {any}, value {any}\n", .{crate.types.items[target_ty], crate.types.items[value_ty]});
+
                 diagnostics.reportError(span, "assignment types do not match");
             }
 
@@ -312,11 +315,20 @@ fn checkExpr(
         },
         .For => |for_expr| {
             const iter_ty = try checkExpr(crate, for_expr.iter, diagnostics, locals);
+
+            const elem_ty = switch (getArrayElementType(crate, iter_ty)) {
+        .ok => |et| et,
+        .err => blk: {
+            diagnostics.reportError(span, "for loop iterator must be an array (or ref/pointer to array)");
+            break :blk try ensureType(crate, .Unknown);
+        },
+    };
+
             const pat_ty = try ensurePatternBinding(crate, for_expr.pat.id, locals);
-            if (!isUnknown(crate, pat_ty) and !typesCompatible(crate, pat_ty, iter_ty)) {
+            if (!isUnknown(crate, pat_ty) and !typesCompatible(crate, pat_ty, elem_ty)) {
                 diagnostics.reportError(span, "for pattern type does not match iterator");
             }
-            try locals.put(for_expr.pat.id, iter_ty);
+            try locals.put(for_expr.pat.id, elem_ty);
             _ = try checkExpr(crate, for_expr.body, diagnostics, locals);
             expr.ty = try ensureType(crate, .Unknown);
         },
@@ -432,7 +444,13 @@ fn checkStmt(
             if (let_stmt.value) |value_id| {
                 const value_ty = try checkExpr(crate, value_id, diagnostics, locals);
                 if (declared_ty) |*ty_id| {
+
+
                     if (!typesCompatible(crate, ty_id.*, value_ty)) {
+                    // view types
+
+                        std.debug.print("Declared type: {any}, Value type: {any}\n", .{crate.types.items[ty_id.*], crate.types.items[value_ty]});
+
                         diagnostics.reportError(stmt.span, "mismatched types in let binding");
                     }
                 } else {
@@ -484,7 +502,7 @@ fn typesEqual(crate: *hir.Crate, lhs: hir.TypeId, rhs: hir.TypeId) bool {
 /// returns the underlying type. Otherwise returns the original type.
 fn resolveType(crate: *hir.Crate, ty: hir.TypeId) hir.TypeId {
     if (ty >= crate.types.items.len) return ty;
-    
+
     const kind = crate.types.items[ty].kind;
     switch (kind) {
         .Path => |path| {
@@ -511,7 +529,7 @@ fn typesCompatible(crate: *hir.Crate, lhs: hir.TypeId, rhs: hir.TypeId) bool {
     // Resolve type aliases before comparing
     const resolved_lhs = resolveType(crate, lhs);
     const resolved_rhs = resolveType(crate, rhs);
-    
+
     if (typesEqual(crate, resolved_lhs, resolved_rhs)) return true;
     if (resolved_lhs >= crate.types.items.len or resolved_rhs >= crate.types.items.len) return false;
 
@@ -547,6 +565,16 @@ fn typesCompatible(crate: *hir.Crate, lhs: hir.TypeId, rhs: hir.TypeId) bool {
             .Path => |rhs_path| pathsMatch(lhs_path.segments, rhs_path.segments),
             else => false,
         },
+
+          .Array => |lhs_arr| switch (rhs_kind) {
+            .Array => |rhs_arr| blk: {
+                if (lhs_arr.size_const != rhs_arr.size_const) break :blk false;
+
+                break :blk typesCompatible(crate, lhs_arr.elem, rhs_arr.elem);
+            },
+            else => false,
+        },
+
         else => false,
     };
 }
@@ -636,12 +664,12 @@ fn resolveFieldType(crate: *hir.Crate, ty: hir.TypeId, name: []const u8, span: h
                     if (findFieldType(item.kind.Struct, name)) |field_ty| {
                         return field_ty;
                     }
-                    
+
                     // If no field found, check for methods in impl blocks
                     if (findMethodType(crate, info.def_id, name)) |method_ty| {
                         return method_ty;
                     }
-                    
+
                     diagnostics.reportError(span, "unknown field on struct");
                     return ensureType(crate, .Unknown);
                 }
@@ -661,12 +689,12 @@ fn resolveFieldType(crate: *hir.Crate, ty: hir.TypeId, name: []const u8, span: h
                             if (findFieldType(struct_item, name)) |field_ty| {
                                 return field_ty;
                             }
-                            
+
                             // Check for methods
                             if (findMethodType(crate, @intCast(idx), name)) |method_ty| {
                                 return method_ty;
                             }
-                            
+
                             diagnostics.reportError(span, "unknown field on struct");
                             return ensureType(crate, .Unknown);
                         }
@@ -714,7 +742,7 @@ fn findMethodType(crate: *hir.Crate, struct_def_id: hir.DefId, method_name: []co
                     },
                     else => {},
                 }
-                
+
                 if (matches) {
                     // Look for the method in this impl block
                     for (impl_item.methods) |method_id| {
@@ -768,16 +796,16 @@ fn isPointerMethodCall(
 ) ?PointerMethodInfo {
     if (callee_id >= crate.exprs.items.len) return null;
     const callee_expr = crate.exprs.items[callee_id];
-    
+
     // Check if the callee is a Field expression
     if (callee_expr.kind != .Field) return null;
-    
+
     const field = callee_expr.kind.Field;
-    
+
     // Check if the target is a pointer type
     const target_ty = checkExpr(crate, field.target, diagnostics, locals) catch return null;
     if (target_ty >= crate.types.items.len) return null;
-    
+
     switch (crate.types.items[target_ty].kind) {
         .Pointer => {
             return PointerMethodInfo{
@@ -803,17 +831,17 @@ fn isStructMethodCall(
 ) ?StructMethodInfo {
     if (callee_id >= crate.exprs.items.len) return null;
     const callee_expr = crate.exprs.items[callee_id];
-    
+
     // Check if the callee is a Field expression
     if (callee_expr.kind != .Field) return null;
-    
+
     const field = callee_expr.kind.Field;
-    
+
     // Check if the target is a struct type
     const target_ty = checkExpr(crate, field.target, diagnostics, locals) catch return null;
     const resolved_ty = resolveType(crate, target_ty);
     if (resolved_ty >= crate.types.items.len) return null;
-    
+
     switch (crate.types.items[resolved_ty].kind) {
         .Struct => |info| {
             // Look for a method with this name in impl blocks
@@ -839,7 +867,7 @@ fn isStructMethodCall(
                             else => {},
                         }
                     }
-                    
+
                     if (matches) {
                         // Look for the method
                         for (impl_item.methods) |method_id| {

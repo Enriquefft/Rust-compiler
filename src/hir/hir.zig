@@ -342,15 +342,15 @@ fn lowerImpl(
     next_type_id: *TypeId,
 ) LowerError!void {
     const data = item.data.Impl;
-    
+
     // Lower the target type
     var diagnostics_dummy = @import("../diag/diagnostics.zig").Diagnostics.init(crate.allocator());
     defer diagnostics_dummy.deinit();
     const target = try lowerType(crate, data.target, &diagnostics_dummy, next_type_id);
-    
+
     // Get the struct name for method name mangling
     var struct_name: []const u8 = "";
-    
+
     // Create a struct type for the self parameter based on the target type path
     var self_type: TypeId = target;
     if (data.target.tag == .Path) {
@@ -365,8 +365,8 @@ fn lowerImpl(
                         // Create a struct type referring to this def
                         const struct_ty_id = next_type_id.*;
                         next_type_id.* += 1;
-                        try crate.types.append(crate.allocator(), .{ 
-                            .id = struct_ty_id, 
+                        try crate.types.append(crate.allocator(), .{
+                            .id = struct_ty_id,
                             .kind = .{ .Struct = .{ .def_id = @intCast(idx), .type_args = &[_]TypeId{} } }
                         });
                         self_type = struct_ty_id;
@@ -376,23 +376,23 @@ fn lowerImpl(
             }
         }
     }
-    
+
     // Lower methods - add each method as a separate item
     var method_ids = std.ArrayListUnmanaged(ItemId){};
     defer method_ids.deinit(crate.allocator());
-    
+
     for (data.methods) |method| {
         const method_def_id: DefId = @intCast(crate.items.items.len);
-        
+
         // Lower method parameters
         var params_buffer = std.ArrayListUnmanaged(LocalId){};
         defer params_buffer.deinit(crate.allocator());
         var param_types = std.ArrayListUnmanaged(TypeId){};
         defer param_types.deinit(crate.allocator());
-        
+
         for (method.params) |param| {
             const local = try lowerPattern(crate, param.pattern, &diagnostics_dummy);
-            
+
             // Determine parameter type
             const ty_id = switch (param.kind) {
                 .SelfValue => self_type,
@@ -400,8 +400,8 @@ fn lowerImpl(
                     // Create a reference type to the struct
                     const ref_ty_id = next_type_id.*;
                     next_type_id.* += 1;
-                    try crate.types.append(crate.allocator(), .{ 
-                        .id = ref_ty_id, 
+                    try crate.types.append(crate.allocator(), .{
+                        .id = ref_ty_id,
                         .kind = .{ .Ref = .{ .mutable = false, .inner = self_type } }
                     });
                     break :blk ref_ty_id;
@@ -410,8 +410,8 @@ fn lowerImpl(
                     // Create a mutable reference type to the struct
                     const ref_ty_id = next_type_id.*;
                     next_type_id.* += 1;
-                    try crate.types.append(crate.allocator(), .{ 
-                        .id = ref_ty_id, 
+                    try crate.types.append(crate.allocator(), .{
+                        .id = ref_ty_id,
                         .kind = .{ .Ref = .{ .mutable = true, .inner = self_type } }
                     });
                     break :blk ref_ty_id;
@@ -424,20 +424,20 @@ fn lowerImpl(
             try params_buffer.append(crate.allocator(), local);
             try param_types.append(crate.allocator(), ty_id);
         }
-        
+
         const return_ty = if (method.return_type) |ret_ty|
             try lowerType(crate, ret_ty, &diagnostics_dummy, next_type_id)
         else
             null;
-        
+
         const body_expr = try lowerBlock(crate, method.body, &diagnostics_dummy, next_type_id);
-        
+
         // Create mangled method name: StructName_methodName to avoid libc conflicts
         const method_name = if (struct_name.len > 0)
             try std.fmt.allocPrint(crate.allocator(), "{s}_{s}", .{struct_name, method.name.name})
         else
             try crate.allocator().dupe(u8, method.name.name);
-        
+
         const fn_item = Function{
             .def_id = method_def_id,
             .name = method_name,
@@ -450,7 +450,7 @@ fn lowerImpl(
         try crate.items.append(crate.allocator(), .{ .id = @intCast(method_def_id), .kind = .{ .Function = fn_item }, .span = method.span });
         try method_ids.append(crate.allocator(), @intCast(method_def_id));
     }
-    
+
     const impl_item = Impl{
         .def_id = def_id,
         .target = target,
