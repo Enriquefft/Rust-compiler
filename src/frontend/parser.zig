@@ -165,6 +165,8 @@ const Parser = struct {
                     const param = self.parseSelfParam();
                     params.append(self.arena, param) catch {};
                 } else {
+
+                    _ = self.match(.KwMut);
                     const pattern = self.parsePattern() orelse break;
                     const ty = if (self.match(.Colon)) self.parseType() else null;
                     const span_end = if (ty) |t| t.span.end else pattern.span.end;
