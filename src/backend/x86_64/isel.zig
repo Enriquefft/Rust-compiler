@@ -375,7 +375,7 @@ fn lowerInst(
                         var hash: u32 = 0;
                         for (payload.name) |ch| hash = hash *% 31 +% ch;
                         const field_index: i32 = @intCast(hash % MAX_STRUCT_FIELDS);
-                        const field_offset: i64 = -field_index * @as(i32, @intCast(@sizeOf(i64)));
+                        const field_offset: i64 = @as(i64, -field_index) * @as(i64, @sizeOf(i64));
 
                         // Add field offset to the base address
                         vreg_count.* += 1;
@@ -565,7 +565,7 @@ fn lowerInst(
                             var hash: u32 = 0;
                             for (payload.name) |ch| hash = hash *% 31 +% ch;
                             const field_index: i32 = @intCast(hash % MAX_STRUCT_FIELDS);
-                            const field_offset: i64 = -field_index * @as(i32, @intCast(@sizeOf(i64)));
+                            const field_offset: i64 = @as(i64, -field_index) * @as(i64, @sizeOf(i64));
 
                             // Add field offset to the base address and load the value
                             vreg_count.* += 1;
