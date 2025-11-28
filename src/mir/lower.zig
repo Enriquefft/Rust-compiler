@@ -1218,6 +1218,29 @@ const FunctionBuilder = struct {
                 }
                 break :blk null;
             },
+            // Handle references to structs (e.g., &Counter, &mut Counter)
+            .Ref => |ref_info| blk: {
+                if (ref_info.inner < self.hir_crate.types.items.len) {
+                    const inner_ty = self.hir_crate.types.items[ref_info.inner];
+                    switch (inner_ty.kind) {
+                        .Struct => |info| break :blk info.def_id,
+                        .Path => |path| {
+                            if (path.segments.len == 1) {
+                                const struct_name = path.segments[0];
+                                for (self.hir_crate.items.items, 0..) |item, idx| {
+                                    if (item.kind == .Struct) {
+                                        if (std.mem.eql(u8, item.kind.Struct.name, struct_name)) {
+                                            break :blk @intCast(idx);
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        else => {},
+                    }
+                }
+                break :blk null;
+            },
             else => null,
         };
 

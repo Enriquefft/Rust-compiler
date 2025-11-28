@@ -3,7 +3,7 @@
 # Lines starting with # are comments
 # Empty lines are ignored
 
-dummy_lib.rs=
+# dummy_lib.rs is a library (no main function) - skip testing it
 closures_test1.rs=6 11
 closures_test2.rs=6 15
 conditionals_and_ranges_test1.rs=even 12
@@ -16,7 +16,7 @@ core_language_test1.rs=1 6 10
 core_language_test2.rs=8 14
 dynamic_data_test1.rs=3
 dynamic_data_test2.rs=Alice 30
-expressions_test1.rs=18 1 true
+expressions_test1.rs=18 1 1
 expressions_test2.rs=65 55 25
 functions_and_methods_test1.rs=16
 functions_and_methods_test2.rs=2

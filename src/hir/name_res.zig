@@ -321,6 +321,48 @@ fn resolveExpr(
                 const message = std.fmt.allocPrint(diagnostics.allocator, "unresolved identifier `{s}`", .{single_name}) catch single_name;
                 diagnostics.reportError(expr.span, message);
                 if (message.ptr != single_name.ptr) diagnostics.allocator.free(message);
+            } else if (path.segments.len == 2) {
+                // Two-segment paths like `Counter::new` - look for associated function
+                const type_name = path.segments[0];
+                const method_name = path.segments[1];
+
+                // First check if the first segment is a struct/type name
+                var struct_def_id: ?hir.DefId = null;
+                for (crate.items.items) |item| {
+                    switch (item.kind) {
+                        .Struct => |struct_item| {
+                            if (std.mem.eql(u8, struct_item.name, type_name)) {
+                                struct_def_id = struct_item.def_id;
+                                break;
+                            }
+                        },
+                        else => {},
+                    }
+                }
+
+                if (struct_def_id != null) {
+                    // Look for the mangled method name in module symbols
+                    // Methods are mangled as StructName_methodName
+                    var mangled_buf: [256]u8 = undefined;
+                    const mangled_name = std.fmt.bufPrint(&mangled_buf, "{s}_{s}", .{ type_name, method_name }) catch {
+                        diagnostics.reportError(expr.span, "method name too long");
+                        return;
+                    };
+
+                    if (module_symbols.get(mangled_name)) |def_id| {
+                        expr.kind = .{ .GlobalRef = def_id };
+                        return;
+                    }
+                }
+
+                // If not found as associated function, try just the last segment
+                if (module_symbols.get(method_name)) |def_id| {
+                    expr.kind = .{ .GlobalRef = def_id };
+                    return;
+                }
+                const message = std.fmt.allocPrint(diagnostics.allocator, "unresolved path `{s}::{s}`", .{ type_name, method_name }) catch method_name;
+                diagnostics.reportError(expr.span, message);
+                if (message.ptr != method_name.ptr) diagnostics.allocator.free(message);
             } else if (path.segments.len > 0) {
                 const name = path.segments[path.segments.len - 1];
                 if (module_symbols.get(name)) |def_id| {

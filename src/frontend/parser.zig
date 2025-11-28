@@ -701,9 +701,27 @@ const Parser = struct {
         var fields = std.ArrayListUnmanaged(ast.StructInitField){};
         while (!self.check(.RBrace) and !self.isAtEnd()) {
             const field_name_tok = self.expectConsume(.Identifier, "expected field name") orelse break;
-            _ = self.expectConsume(.Colon, "expected ':' after field name") orelse break;
-            const value = self.parseExpr() orelse break;
-            fields.append(self.arena, .{ .name = self.makeIdent(field_name_tok), .value = value.* }) catch {};
+            const value: ast.Expr = if (self.match(.Colon)) blk: {
+                // Full syntax: { field: value }
+                const parsed = self.parseExpr() orelse break;
+                break :blk parsed.*;
+            } else blk: {
+                // Shorthand syntax: { field } means { field: field }
+                // Create a Path expression that references the same identifier
+                const ident = self.makeIdent(field_name_tok);
+                const segments = self.arena.alloc(ast.Identifier, 1) catch break;
+                segments[0] = ident;
+                break :blk ast.Expr{
+                    .tag = .Path,
+                    .span = field_name_tok.span,
+                    .data = .{ .Path = .{
+                        .segments = segments,
+                        .generic_args = &[_]ast.Type{},
+                        .span = field_name_tok.span,
+                    } },
+                };
+            };
+            fields.append(self.arena, .{ .name = self.makeIdent(field_name_tok), .value = value }) catch {};
             if (!self.match(.Comma)) break;
         }
         const rbrace = self.expectConsume(.RBrace, "expected '}' to close struct literal") orelse return null;

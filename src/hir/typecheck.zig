@@ -848,6 +848,11 @@ fn resolveFieldType(crate: *hir.Crate, ty: hir.TypeId, name: []const u8, span: h
             diagnostics.reportError(span, "unresolved path type for field access");
             return ensureType(crate, .Unknown);
         },
+        // Reference types (e.g., &self, &mut self) - dereference and recurse
+        .Ref => |ref_info| {
+            // Dereference the reference and check the inner type
+            return resolveFieldType(crate, ref_info.inner, name, span, diagnostics);
+        },
         // Pointer types can have methods like is_null()
         .Pointer => {
             // For pointer methods, we return Unknown here and let the Call handling resolve it
@@ -1044,66 +1049,80 @@ fn isStructMethodCall(
     const resolved_ty = resolveType(crate, target_ty);
     if (resolved_ty >= crate.types.items.len) return null;
 
-    switch (crate.types.items[resolved_ty].kind) {
-        .Struct => |info| {
-            // Look for a method with this name in impl blocks
-            for (crate.items.items) |item| {
-                if (item.kind == .Impl) {
-                    const impl_item = item.kind.Impl;
-                    // Check if this impl is for our struct
-                    var matches = false;
-                    if (impl_item.target < crate.types.items.len) {
-                        const target_kind = crate.types.items[impl_item.target].kind;
-                        switch (target_kind) {
-                            .Struct => |impl_info| {
-                                matches = impl_info.def_id == info.def_id;
-                            },
-                            .Path => |path| {
-                                if (path.segments.len == 1) {
-                                    const struct_item = crate.items.items[info.def_id];
-                                    if (struct_item.kind == .Struct) {
-                                        matches = std.mem.eql(u8, path.segments[0], struct_item.kind.Struct.name);
-                                    }
-                                }
-                            },
-                            else => {},
-                        }
-                    }
+    // Extract the struct def_id from the type (handling both direct structs and references to structs)
+    const struct_def_id: ?hir.DefId = switch (crate.types.items[resolved_ty].kind) {
+        .Struct => |info| info.def_id,
+        .Ref => |ref_info| blk: {
+            // Dereference the ref to get the inner type
+            if (ref_info.inner < crate.types.items.len) {
+                const inner_ty = crate.types.items[ref_info.inner];
+                if (inner_ty.kind == .Struct) {
+                    break :blk inner_ty.kind.Struct.def_id;
+                }
+            }
+            break :blk null;
+        },
+        else => null,
+    };
 
-                    if (matches) {
-                        // Look for the method
-                        for (impl_item.methods) |method_id| {
-                            if (method_id < crate.items.items.len) {
-                                const method_item = crate.items.items[method_id];
-                                if (method_item.kind == .Function) {
-                                    const func = method_item.kind.Function;
-                                    // Method name is mangled as StructName_methodName
-                                    // Check if it ends with _methodName
-                                    const name_matches = std.mem.endsWith(u8, func.name, field.name) and
-                                        func.name.len > field.name.len and
-                                        func.name[func.name.len - field.name.len - 1] == '_';
-                                    if (name_matches) {
-                                        // Found the method - return its return type
-                                        const ret_ty = func.return_type orelse blk: {
-                                            const unknown = ensureType(crate, .Unknown) catch return null;
-                                            break :blk unknown;
-                                        };
-                                        return StructMethodInfo{
-                                            .target_ty = target_ty,
-                                            .method_name = field.name,
-                                            .ret_ty = ret_ty,
-                                        };
-                                    }
-                                }
+    if (struct_def_id == null) return null;
+    const info_def_id = struct_def_id.?;
+
+    // Look for a method with this name in impl blocks
+    for (crate.items.items) |item| {
+        if (item.kind == .Impl) {
+            const impl_item = item.kind.Impl;
+            // Check if this impl is for our struct
+            var matches = false;
+            if (impl_item.target < crate.types.items.len) {
+                const target_kind = crate.types.items[impl_item.target].kind;
+                switch (target_kind) {
+                    .Struct => |impl_info| {
+                        matches = impl_info.def_id == info_def_id;
+                    },
+                    .Path => |path| {
+                        if (path.segments.len == 1) {
+                            const struct_item = crate.items.items[info_def_id];
+                            if (struct_item.kind == .Struct) {
+                                matches = std.mem.eql(u8, path.segments[0], struct_item.kind.Struct.name);
+                            }
+                        }
+                    },
+                    else => {},
+                }
+            }
+
+            if (matches) {
+                // Look for the method
+                for (impl_item.methods) |method_id| {
+                    if (method_id < crate.items.items.len) {
+                        const method_item = crate.items.items[method_id];
+                        if (method_item.kind == .Function) {
+                            const func = method_item.kind.Function;
+                            // Method name is mangled as StructName_methodName
+                            // Check if it ends with _methodName
+                            const name_matches = std.mem.endsWith(u8, func.name, field.name) and
+                                func.name.len > field.name.len and
+                                func.name[func.name.len - field.name.len - 1] == '_';
+                            if (name_matches) {
+                                // Found the method - return its return type
+                                const ret_ty = func.return_type orelse blk: {
+                                    const unknown = ensureType(crate, .Unknown) catch return null;
+                                    break :blk unknown;
+                                };
+                                return StructMethodInfo{
+                                    .target_ty = target_ty,
+                                    .method_name = field.name,
+                                    .ret_ty = ret_ty,
+                                };
                             }
                         }
                     }
                 }
             }
-            return null;
-        },
-        else => return null,
+        }
     }
+    return null;
 }
 
 test "typechecker assigns literal types and detects mismatches" {
