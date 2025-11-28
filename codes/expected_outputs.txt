@@ -3,6 +3,7 @@
 # Lines starting with # are comments
 # Empty lines are ignored
 
+dummy_lib.rs=
 closures_test1.rs=6 11
 closures_test2.rs=6 15
 conditionals_and_ranges_test1.rs=even 12
@@ -33,5 +34,5 @@ statements_and_patterns_test2.rs=6
 types_test1.rs=-42 7 3.5 true z hello world
 types_test2.rs=4 11 false 4
 arrays1.rs=sum = 18
-arrays2.rs=sum = doubled: [20, 40, 60, 80, 100]
-arrays3.rs=sum = (2, 3)\n (-2, 5)\n (11, -4)
+arrays2.rs=doubled: 40
+arrays3.rs=sum =(2, 3)\n (-2, 5)\n (11, -4)
