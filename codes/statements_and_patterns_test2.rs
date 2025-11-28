@@ -5,7 +5,7 @@ fn main() {
     counter += 2;
     {
         counter += 3;
-        ; // empty statement
+        // ; // empty statement
     }
     println!("{}", counter);
 }
