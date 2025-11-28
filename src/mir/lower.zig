@@ -120,7 +120,7 @@ fn lowerFunction(crate: *mir.MirCrate, func: hir.Function, hir_crate: *const hir
             try builder.ensureLocal(next_local, ty, func.span);
 
             // Store each field to the struct local using StoreField
-            for (fields, 0..) |field, field_idx| {
+            for (fields) |field| {
                 _ = try builder.emitInst(.{
                     .ty = null,
                     .dest = null,
@@ -132,7 +132,6 @@ fn lowerFunction(crate: *mir.MirCrate, func: hir.Function, hir_crate: *const hir
                         },
                     },
                 });
-                _ = field_idx;
                 arg_idx += 1;
             }
 
