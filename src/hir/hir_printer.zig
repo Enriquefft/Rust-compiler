@@ -1,12 +1,31 @@
+//! HIR tree printer module.
+//!
+//! This module provides utilities for pretty-printing the HIR tree structure
+//! in a human-readable format. It is useful for debugging and understanding
+//! the structure of the lowered HIR.
+//!
+//! ## Usage
+//!
+//! Call `printCrateTree` with an allocator and a reference to an HIR crate
+//! to print the complete tree structure to stderr.
+
 const std = @import("std");
 const hir = @import("hir.zig");
 const AllocError = std.mem.Allocator.Error;
 
+/// Helper struct for printing tree-structured output with proper indentation.
+///
+/// Maintains a prefix string and manages connector characters (│, ├, └)
+/// for displaying hierarchical relationships between nodes.
 const TreePrinter = struct {
+    /// Allocator used for prefix buffer management.
     allocator: std.mem.Allocator,
+    /// Current indentation prefix (built up as we descend the tree).
     prefix: std.ArrayListUnmanaged(u8),
+    /// Stack of segment lengths for proper pop behavior.
     segment_lengths: std.ArrayListUnmanaged(usize),
 
+    /// Initializes a new TreePrinter with the given allocator.
     fn init(allocator: std.mem.Allocator) TreePrinter {
         return .{
             .allocator = allocator,
@@ -15,17 +34,21 @@ const TreePrinter = struct {
         };
     }
 
+    /// Releases all memory associated with this printer.
     fn deinit(self: *TreePrinter) void {
         self.prefix.deinit(self.allocator);
         self.segment_lengths.deinit(self.allocator);
     }
 
+    /// Pushes a new indentation level onto the prefix stack.
+    /// Use is_last to determine whether to use "    " or "│   " connector.
     fn push(self: *TreePrinter, is_last: bool) !void {
         const segment: []const u8 = if (is_last) "    " else "│   ";
         try self.prefix.appendSlice(self.allocator, segment);
         try self.segment_lengths.append(self.allocator, segment.len);
     }
 
+    /// Pops the most recent indentation level from the prefix stack.
     fn pop(self: *TreePrinter) void {
         if (self.segment_lengths.items.len == 0) return;
 
@@ -34,6 +57,7 @@ const TreePrinter = struct {
         self.prefix.shrinkRetainingCapacity(new_len);
     }
 
+    /// Prints a tree node with the current prefix and appropriate connector.
     fn printNode(self: *TreePrinter, is_last: bool, label: []const u8) !void {
         const connector: []const u8 = if (self.prefix.items.len == 0)
             ""
@@ -45,6 +69,7 @@ const TreePrinter = struct {
         std.debug.print("{s}{s}{s}\n", .{ self.prefix.items, connector, label });
     }
 
+    /// Prints a tree node with formatted label using printf-style format string.
     fn printNodeFmt(self: *TreePrinter, is_last: bool, comptime fmt: []const u8, args: anytype) !void {
         const label = try std.fmt.allocPrint(self.allocator, fmt, args);
         defer self.allocator.free(label);
@@ -52,6 +77,10 @@ const TreePrinter = struct {
     }
 };
 
+/// Prints the complete HIR crate tree structure to stderr.
+///
+/// Displays all items (functions, structs, type aliases, impls) with their
+/// full nested structure including expressions, statements, and types.
 pub fn printCrateTree(allocator: std.mem.Allocator, crate: *const hir.Crate) AllocError!void {
     var printer = TreePrinter.init(allocator);
     defer printer.deinit();
@@ -66,6 +95,7 @@ pub fn printCrateTree(allocator: std.mem.Allocator, crate: *const hir.Crate) All
     printer.pop();
 }
 
+// Prints a single HIR item (function, struct, type alias, impl).
 fn printItem(printer: *TreePrinter, crate: *const hir.Crate, item: hir.Item, is_last: bool) AllocError!void {
     switch (item.kind) {
         .Function => |func| {
@@ -124,6 +154,7 @@ fn printItem(printer: *TreePrinter, crate: *const hir.Crate, item: hir.Item, is_
     }
 }
 
+// Prints function parameters with their patterns and types.
 fn printParams(printer: *TreePrinter, crate: *const hir.Crate, params: []const hir.LocalId, param_types: []const hir.TypeId, is_last: bool) AllocError!void {
     try printer.printNode(is_last, "Params");
     if (params.len == 0) return;
@@ -144,6 +175,7 @@ fn printParams(printer: *TreePrinter, crate: *const hir.Crate, params: []const h
     printer.pop();
 }
 
+// Prints a pattern (identifier or wildcard).
 fn printPattern(printer: *TreePrinter, pattern: hir.Pattern, is_last: bool) AllocError!void {
     switch (pattern.kind) {
         .Identifier => |name| try printer.printNodeFmt(is_last, "Pattern Identifier {s}", .{name}),
@@ -151,6 +183,7 @@ fn printPattern(printer: *TreePrinter, pattern: hir.Pattern, is_last: bool) Allo
     }
 }
 
+// Recursively prints an expression and all its children.
 fn printExpr(printer: *TreePrinter, crate: *const hir.Crate, expr_id: hir.ExprId, is_last: bool) AllocError!void {
     if (expr_id >= crate.exprs.items.len) {
         try printer.printNodeFmt(is_last, "Expr (invalid id: {d})", .{expr_id});
@@ -351,6 +384,7 @@ fn printExpr(printer: *TreePrinter, crate: *const hir.Crate, expr_id: hir.ExprId
     }
 }
 
+// Prints a statement node.
 fn printStmt(printer: *TreePrinter, crate: *const hir.Crate, stmt_id: hir.StmtId, is_last: bool) AllocError!void {
     if (stmt_id >= crate.stmts.items.len) {
         try printer.printNodeFmt(is_last, "Stmt (invalid id: {d})", .{stmt_id});
@@ -383,6 +417,7 @@ fn printStmt(printer: *TreePrinter, crate: *const hir.Crate, stmt_id: hir.StmtId
     }
 }
 
+// Prints a type with its label and all nested types.
 fn printType(printer: *TreePrinter, crate: *const hir.Crate, type_id: hir.TypeId, is_last: bool, label: []const u8) AllocError!void {
     if (type_id >= crate.types.items.len) {
         try printer.printNodeFmt(is_last, "{s}: (invalid type id: {d})", .{ label, type_id });

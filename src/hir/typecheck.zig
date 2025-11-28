@@ -1,9 +1,46 @@
+//! Type checking module for the HIR.
+//!
+//! This module performs type checking on the HIR, assigning types to all expressions
+//! and validating type consistency throughout the program. It enforces:
+//!
+//! - Operator/type compatibility (e.g., `+` requires numeric operands)
+//! - Return type matching function signatures
+//! - Assignment type compatibility
+//! - Condition expressions must be boolean
+//! - Array elements must have the same type
+//! - Struct field types must match initializers
+//!
+//! ## Type Inference
+//!
+//! For expressions without explicit type annotations (e.g., `let x = 1;`),
+//! the type checker infers types from the context. Literals default to:
+//! - Integer literals: `i64`
+//! - Float literals: `f64`
+//! - Boolean literals: `bool`
+//! - Character literals: `char`
+//! - String literals: `String`
+//!
+//! ## Limitations
+//!
+//! - No borrow checking or lifetime analysis
+//! - Limited generic type support
+//! - No trait bounds checking
+
 const std = @import("std");
 const diag = @import("../diag/diagnostics.zig");
 const hir = @import("hir.zig");
 
+/// Error type for type checking operations (currently only allocation errors).
 const Error = error{OutOfMemory};
 
+/// Performs type checking on all items in the HIR crate.
+///
+/// This function traverses all functions, structs, and type aliases,
+/// assigning types to expressions and validating type consistency.
+///
+/// ## Parameters
+/// - `crate`: The HIR crate to type check (modified in place).
+/// - `diagnostics`: Diagnostics collector for error reporting.
 pub fn typecheck(crate: *hir.Crate, diagnostics: *diag.Diagnostics) Error!void {
     for (crate.items.items) |*item| {
         switch (item.kind) {
@@ -15,6 +52,8 @@ pub fn typecheck(crate: *hir.Crate, diagnostics: *diag.Diagnostics) Error!void {
     }
 }
 
+// Type checks a function, including its parameters and body.
+// Infers the return type if not explicitly specified.
 fn typecheckFunction(crate: *hir.Crate, func: *hir.Function, diagnostics: *diag.Diagnostics) Error!void {
     var locals = std.AutoHashMap(hir.LocalId, hir.TypeId).init(crate.allocator());
     defer locals.deinit();
@@ -39,12 +78,14 @@ fn typecheckFunction(crate: *hir.Crate, func: *hir.Function, diagnostics: *diag.
     }
 }
 
+// Type checks a struct definition, ensuring all field types are known.
 fn typecheckStruct(crate: *hir.Crate, structure: *hir.Struct, diagnostics: *diag.Diagnostics) Error!void {
     for (structure.fields) |field| {
         try ensureKnownType(crate, field.ty, field.span, diagnostics);
     }
 }
 
+// Validates that a type is known (not Unknown) and reports an error if not.
 fn ensureKnownType(crate: *hir.Crate, ty: hir.TypeId, span: hir.Span, diagnostics: *diag.Diagnostics) Error!void {
     if (ty >= crate.types.items.len) {
         diagnostics.reportError(span, "unknown type reference");
@@ -57,6 +98,8 @@ fn ensureKnownType(crate: *hir.Crate, ty: hir.TypeId, span: hir.Span, diagnostic
     }
 }
 
+// Recursively type checks an expression and returns its type.
+// The in_unsafe flag indicates whether we're inside an unsafe block.
 fn checkExpr(
     crate: *hir.Crate,
     expr_id: hir.ExprId,
@@ -304,7 +347,6 @@ fn checkExpr(
             const value_ty = try checkExpr(crate, assign.value, diagnostics, locals, in_unsafe);
 
             if (!typesCompatible(crate, target_ty, value_ty)) {
-
                 diagnostics.reportError(span, "assignment types do not match");
             }
 
@@ -357,7 +399,6 @@ fn checkExpr(
                         break :blk2 try ensureType(crate, .Unknown);
                     },
                 };
-
             };
 
             const pat_ty = try ensurePatternBinding(crate, for_expr.pat.id, locals);
@@ -466,6 +507,7 @@ fn checkExpr(
     return expr.ty;
 }
 
+// Type checks a statement and updates the locals map with any new bindings.
 fn checkStmt(
     crate: *hir.Crate,
     stmt_id: hir.StmtId,
@@ -483,7 +525,6 @@ fn checkStmt(
                 if (declared_ty) |*ty_id| {
                     if (!typesCompatible(crate, ty_id.*, value_ty)) {
                         // view types
-
 
                         diagnostics.reportError(stmt.span, "mismatched types in let binding");
                     }
@@ -505,6 +546,7 @@ fn checkStmt(
     }
 }
 
+// Ensures a pattern binding exists in the locals map, creating an Unknown type if needed.
 fn ensurePatternBinding(crate: *hir.Crate, local_id: hir.LocalId, locals: *std.AutoHashMap(hir.LocalId, hir.TypeId)) Error!hir.TypeId {
     if (locals.get(local_id)) |ty| return ty;
     const ty = try ensureType(crate, .Unknown);
@@ -512,6 +554,8 @@ fn ensurePatternBinding(crate: *hir.Crate, local_id: hir.LocalId, locals: *std.A
     return ty;
 }
 
+// Finds or creates a type with the given kind in the type arena.
+// Returns the existing TypeId if found, otherwise creates a new type.
 fn ensureType(crate: *hir.Crate, kind: hir.Type.Kind) Error!hir.TypeId {
     for (crate.types.items) |existing| {
         if (std.meta.eql(existing.kind, kind)) return existing.id;
@@ -522,10 +566,12 @@ fn ensureType(crate: *hir.Crate, kind: hir.Type.Kind) Error!hir.TypeId {
     return id;
 }
 
+// Checks if a type is Unknown (unresolved or error type).
 fn isUnknown(crate: *hir.Crate, ty: hir.TypeId) bool {
     return ty >= crate.types.items.len or crate.types.items[ty].kind == .Unknown;
 }
 
+// Checks if two types are structurally equal.
 fn typesEqual(crate: *hir.Crate, lhs: hir.TypeId, rhs: hir.TypeId) bool {
     if (lhs == rhs) return true;
     if (lhs >= crate.types.items.len or rhs >= crate.types.items.len) return false;
@@ -559,6 +605,8 @@ fn resolveType(crate: *hir.Crate, ty: hir.TypeId) hir.TypeId {
     }
 }
 
+// Checks if two types are compatible for assignment or comparison.
+// Resolves type aliases and allows coercion between compatible types.
 fn typesCompatible(crate: *hir.Crate, lhs: hir.TypeId, rhs: hir.TypeId) bool {
     // Resolve type aliases before comparing
     const resolved_lhs = resolveType(crate, lhs);
@@ -613,11 +661,13 @@ fn typesCompatible(crate: *hir.Crate, lhs: hir.TypeId, rhs: hir.TypeId) bool {
     };
 }
 
+// Checks if a type is the boolean type.
 fn isBool(crate: *hir.Crate, ty: hir.TypeId) bool {
     const resolved = resolveType(crate, ty);
     return resolved < crate.types.items.len and crate.types.items[resolved].kind == .Bool;
 }
 
+// Checks if a type is numeric (integer or floating-point).
 fn isNumeric(crate: *hir.Crate, ty: hir.TypeId) bool {
     const resolved = resolveType(crate, ty);
     if (resolved >= crate.types.items.len) return false;
@@ -627,6 +677,7 @@ fn isNumeric(crate: *hir.Crate, ty: hir.TypeId) bool {
     };
 }
 
+// Checks if a struct definition matches a path (single-segment paths only).
 fn structMatchesPath(crate: *hir.Crate, struct_def_id: hir.DefId, path_segments: [][]const u8) bool {
     if (path_segments.len != 1) return false;
     const path_name = path_segments[0];
@@ -639,6 +690,7 @@ fn structMatchesPath(crate: *hir.Crate, struct_def_id: hir.DefId, path_segments:
     return false;
 }
 
+// Checks if two paths are equal (same segments in the same order).
 fn pathsMatch(lhs_segments: [][]const u8, rhs_segments: [][]const u8) bool {
     if (lhs_segments.len != rhs_segments.len) return false;
     for (lhs_segments, rhs_segments) |l, r| {
@@ -647,10 +699,10 @@ fn pathsMatch(lhs_segments: [][]const u8, rhs_segments: [][]const u8) bool {
     return true;
 }
 
+// Extracts the element type from an array type (or ref/pointer to array).
+// Returns an error variant if the type is not an array.
 fn getArrayElementType(crate: *hir.Crate, ty: hir.TypeId) union(enum) { ok: hir.TypeId, err: void } {
-
     if (ty < crate.types.items.len) {
-
         switch (crate.types.items[ty].kind) {
             .Array => |arr| return .{ .ok = arr.elem },
             .Ref => |ref_ty| return getArrayElementType(crate, ref_ty.inner),
@@ -661,6 +713,7 @@ fn getArrayElementType(crate: *hir.Crate, ty: hir.TypeId) union(enum) { ok: hir.
     return .{ .err = {} };
 }
 
+// Finds a struct definition by its path.
 fn findStructDef(crate: *hir.Crate, path: [][]const u8) ?hir.DefId {
     if (path.len == 0) return null;
     const name = path[path.len - 1];
@@ -672,6 +725,7 @@ fn findStructDef(crate: *hir.Crate, path: [][]const u8) ?hir.DefId {
     return null;
 }
 
+// Finds the type of a field in a struct by name.
 fn findFieldType(structure: hir.Struct, name: []const u8) ?hir.TypeId {
     for (structure.fields) |field| {
         if (std.mem.eql(u8, field.name, name)) return field.ty;
@@ -679,6 +733,8 @@ fn findFieldType(structure: hir.Struct, name: []const u8) ?hir.TypeId {
     return null;
 }
 
+// Resolves the type of a field access expression.
+// First checks for struct fields, then for methods in impl blocks.
 fn resolveFieldType(crate: *hir.Crate, ty: hir.TypeId, name: []const u8, span: hir.Span, diagnostics: *diag.Diagnostics) Error!hir.TypeId {
     if (ty >= crate.types.items.len) {
         diagnostics.reportError(span, "unknown type for field access");
@@ -753,6 +809,8 @@ fn resolveFieldType(crate: *hir.Crate, ty: hir.TypeId, name: []const u8, span: h
     }
 }
 
+// Finds the return type of a method in an impl block for a given struct.
+// Methods are stored with mangled names (StructName_methodName).
 fn findMethodType(crate: *hir.Crate, struct_def_id: hir.DefId, method_name: []const u8) ?hir.TypeId {
     // Look through all impl blocks for this struct
     for (crate.items.items) |item| {
@@ -809,6 +867,7 @@ fn findMethodType(crate: *hir.Crate, struct_def_id: hir.DefId, method_name: []co
     return null;
 }
 
+// Checks if a callee expression refers to the builtin println function.
 fn isBuiltinPrintln(crate: *hir.Crate, callee_id: hir.ExprId) bool {
     if (callee_id >= crate.exprs.items.len) return false;
     const expr = crate.exprs.items[callee_id];
@@ -819,11 +878,13 @@ fn isBuiltinPrintln(crate: *hir.Crate, callee_id: hir.ExprId) bool {
     return item.kind == .Function and std.mem.eql(u8, item.kind.Function.name, "println");
 }
 
+/// Helper struct for pointer method call detection.
 const PointerMethodInfo = struct {
     target_ty: hir.TypeId,
     method_name: []const u8,
 };
 
+// Detects if a call expression is a pointer method call (e.g., ptr.is_null()).
 fn isPointerMethodCall(
     crate: *hir.Crate,
     callee_id: hir.ExprId,
@@ -854,11 +915,13 @@ fn isPointerMethodCall(
     }
 }
 
+/// Helper struct for array method call detection.
 const ArrayMethodInfo = struct {
     target_ty: hir.TypeId,
     method_name: []const u8,
 };
 
+// Detects if a call expression is an array method call (e.g., arr.len()).
 fn isArrayMethodCall(
     crate: *hir.Crate,
     callee_id: hir.ExprId,
@@ -901,12 +964,14 @@ fn isArrayMethodCall(
     return null;
 }
 
+/// Helper struct for struct method call detection.
 const StructMethodInfo = struct {
     target_ty: hir.TypeId,
     method_name: []const u8,
     ret_ty: hir.TypeId,
 };
 
+// Detects if a call expression is a struct method call (e.g., point.offset(1, 2)).
 fn isStructMethodCall(
     crate: *hir.Crate,
     callee_id: hir.ExprId,
