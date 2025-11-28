@@ -1,3 +1,15 @@
+//! Constant folding optimization pass.
+//!
+//! This pass evaluates constant expressions at compile time, replacing operations
+//! on immediate values with their computed results. This reduces runtime computation
+//! and enables further optimizations like dead code elimination.
+//!
+//! Supported operations:
+//! - Binary operations on integers (Add, Sub, Mul, Div, Mod)
+//! - Binary operations on booleans (And, Or, Xor)
+//! - Comparison operations on integers and booleans
+//! - Unary operations (Not for booleans, Neg for integers)
+
 const std = @import("std");
 const mir = @import("../mir.zig");
 const diag = @import("../../diag/diagnostics.zig");
@@ -6,6 +18,7 @@ const Pass = @import("passes.zig").Pass;
 /// Evaluates constant expressions and replaces them with immediates.
 pub const pass = Pass{ .name = "constant-folding", .run = run };
 
+/// Execute the constant folding pass on all functions in the crate.
 fn run(allocator: std.mem.Allocator, mir_crate: *mir.MirCrate, diagnostics: *diag.Diagnostics) !void {
     _ = allocator;
     _ = diagnostics;
@@ -19,6 +32,8 @@ fn run(allocator: std.mem.Allocator, mir_crate: *mir.MirCrate, diagnostics: *dia
     }
 }
 
+/// Try to fold a single instruction.
+/// Returns true if the instruction was folded, false otherwise.
 fn foldInst(inst: *mir.Inst) bool {
     switch (inst.kind) {
         .Bin => |bin| {
@@ -45,6 +60,8 @@ fn foldInst(inst: *mir.Inst) bool {
     return false;
 }
 
+/// Try to fold a binary operation on two immediate operands.
+/// Returns the result operand if folding is possible, null otherwise.
 fn foldBinary(op: mir.BinOp, lhs: mir.Operand, rhs: mir.Operand) ?mir.Operand {
     switch (lhs) {
         .ImmInt => |lhs_val| switch (rhs) {
@@ -78,6 +95,8 @@ fn foldBinary(op: mir.BinOp, lhs: mir.Operand, rhs: mir.Operand) ?mir.Operand {
     return null;
 }
 
+/// Try to fold a comparison operation on two immediate operands.
+/// Returns the boolean result if folding is possible, null otherwise.
 fn foldCmp(op: mir.CmpOp, lhs: mir.Operand, rhs: mir.Operand) ?bool {
     switch (lhs) {
         .ImmInt => |lhs_val| switch (rhs) {
@@ -104,6 +123,8 @@ fn foldCmp(op: mir.CmpOp, lhs: mir.Operand, rhs: mir.Operand) ?bool {
     return null;
 }
 
+/// Try to fold a unary operation on an immediate operand.
+/// Returns the result operand if folding is possible, null otherwise.
 fn foldUnary(op: mir.UnaryOp, operand: mir.Operand) ?mir.Operand {
     return switch (operand) {
         .ImmBool => |val| switch (op) {
