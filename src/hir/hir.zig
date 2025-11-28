@@ -1202,8 +1202,11 @@ fn isStringFromCall(call: *const ast.CallExpr) bool {
 fn parseCharLiteral(lexeme: []const u8) !u21 {
     if (lexeme.len == 0)
         return error.InvalidLiteral;
-    // Strip quotes if present (lexeme might be 'c' or just c)
-    const content = if (lexeme.len >= 2 and lexeme[0] == '\'') lexeme[1 .. lexeme.len - 1] else lexeme;
+    // Strip quotes if present (lexeme should be 'c' format from lexer)
+    const content = if (lexeme.len >= 2 and lexeme[0] == '\'' and lexeme[lexeme.len - 1] == '\'')
+        lexeme[1 .. lexeme.len - 1]
+    else
+        lexeme;
     if (content.len == 0)
         return error.InvalidLiteral;
     var iter = std.unicode.Utf8Iterator{ .bytes = content, .i = 0 };
