@@ -4,70 +4,88 @@
 
 .section .rodata
 .Lstr0:
-    .byte 115, 117, 109, 32, 61, 32, 37, 108, 100, 10, 0
+    .byte 37, 100, 32, 37, 100, 32, 37, 100, 10, 0
 
 .text
+.globl add
+add:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 80
+.Ladd_0:
+    mov [rbp-32], rdi
+    mov [rbp-64], rsi
+    mov rax, [rbp-32]
+    add rax, [rbp-64]
+    mov [rbp-72], rax
+    mov rax, [rbp-72]
+    leave
+    ret
+    leave
+    ret
+
+.globl Point_offset
+Point_offset:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 144
+.LPoint_offset_0:
+    mov [rbp-32], rdi
+    mov [rbp-64], rsi
+    mov [rbp-96], rdx
+    mov [rbp-128], rcx
+    mov rax, [rbp-32]
+    mov rbx, rax
+    add rbx, [rbp-96]
+    mov rcx, [rbp-40]
+    mov rdx, rcx
+    add rdx, [rbp-128]
+    mov rsi, rbx
+    mov [rbp-136], rdx
+    mov rdx, [rbp-136]
+    mov [rbp-144], rax
+    mov rax, rsi
+    leave
+    ret
+    leave
+    ret
+
 .globl main
 main:
     push rbp
     mov rbp, rsp
     sub rsp, 208
 .Lmain_0:
-    mov rax, 3
-    mov rbx, 6
-    mov rcx, 1
-    mov rdx, 8
-    mov [rbp-136], rdx
-    mov rdx, rbx
-    mov [rbp-144], rcx
-    mov rcx, [rbp-144]
-    mov r8, [rbp-136]
-    mov [rbp-32], rax
-    mov [rbp-40], rdx
-    mov [rbp-48], rcx
-    mov [rbp-56], r8
-    mov qword ptr [rbp-64], 0
-    mov qword ptr [rbp-128], 0
-    jmp .Lmain_1
-.Lmain_1:
-    mov rbx, [rbp-128]
-    mov qword ptr [rbp-144], 4
-    cmp rbx, [rbp-144]
-    setl byte ptr [rbp-136]
-    and qword ptr [rbp-136], 1
-    mov r11, [rbp-136]
-    test r11, r11
-    jne .Lmain_2
-    jmp .Lmain_3
-.Lmain_2:
-    mov rsi, [rbp-128]
-    mov rdi, rsi
-    imul rdi, 8
-    lea r8, [rbp-32]
-    sub r8, rdi
-    mov r9, [r8]
-    mov [rbp-96], r9
-    mov r10, [rbp-64]
-    mov rdi, r10
-    add rdi, [rbp-96]
-    mov [rbp-64], rdi
-    mov r8, [rbp-128]
-    mov [rbp-152], r8
-    add qword ptr [rbp-152], 1
-    mov r11, [rbp-152]
-    mov [rbp-128], r11
-    jmp .Lmain_1
-.Lmain_3:
-    mov [rbp-160], rdi
-    lea rdi, [rip + .Lstr0]
-    mov [rbp-168], rsi
+    mov qword ptr [rbp-32], 1
+    mov qword ptr [rbp-64], 2
+    mov rdi, [rbp-32]
     mov rsi, [rbp-64]
+    mov rdx, 3
+    mov rcx, 4
+    call Point_offset
+    mov rax, rax
+    mov [rbp-96], rax
+    mov [rbp-128], rdx
+    mov rbx, [rbp-96]
+    mov rcx, [rbp-104]
+    mov rdi, rbx
+    mov rsi, rcx
+    mov [rbp-168], rbx
     mov [rbp-176], rax
+    mov [rbp-184], rcx
+    call add
+    mov rdx, rax
+    mov [rbp-160], rdx
+    mov rsi, [rbp-32]
+    mov rdi, [rbp-104]
+    mov [rbp-192], rdi
+    lea rdi, [rip + .Lstr0]
+    mov [rbp-200], rsi
+    mov rsi, [rbp-200]
+    mov [rbp-208], rdx
+    mov rdx, [rbp-192]
+    mov rcx, [rbp-160]
     mov rax, 0
-    mov [rbp-184], r9
-    mov [rbp-192], rbx
-    mov [rbp-200], r8
-    mov [rbp-208], r10
     call printf
     mov rax, 0
     leave
