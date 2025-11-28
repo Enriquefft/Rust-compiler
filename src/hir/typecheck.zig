@@ -124,7 +124,9 @@ fn checkExpr(
             expr.ty = try ensureType(crate, .Char);
         },
         .ConstString => {
-            expr.ty = try ensureType(crate, .String);
+            // String literals in Rust have type &str, not String
+            const str_ty = try ensureType(crate, .Str);
+            expr.ty = try ensureType(crate, .{ .Ref = .{ .mutable = false, .inner = str_ty } });
         },
         .LocalRef => |local_id| {
             if (locals.get(local_id)) |ty| {
@@ -319,6 +321,18 @@ fn checkExpr(
                     }
 
                     for (call.args, 0..) |arg_id, idx| {
+                        // Check if this arg is a lambda that needs type inference from expected param type
+                        if (idx < param_types.len) {
+                            const expected = param_types[idx];
+                            if (expected < crate.types.items.len) {
+                                const expected_kind = crate.types.items[expected].kind;
+                                if (expected_kind == .Fn) {
+                                    // This argument should be a function type - try to infer lambda params
+                                    try inferLambdaTypes(crate, arg_id, expected_kind.Fn.params);
+                                }
+                            }
+                        }
+
                         const arg_ty = try checkExpr(crate, arg_id, diagnostics, locals, in_unsafe);
                         if (idx < param_types.len) {
                             const expected = param_types[idx];
@@ -546,6 +560,28 @@ fn checkStmt(
     }
 }
 
+/// Infer lambda parameter types from expected function type.
+/// This allows unannotated lambda parameters like `|n| n * 2` to get their types
+/// from the calling context when passed to a function expecting `fn(i32) -> i32`.
+fn inferLambdaTypes(crate: *hir.Crate, expr_id: hir.ExprId, expected_fn_params: []hir.TypeId) Error!void {
+    if (expr_id >= crate.exprs.items.len) return;
+    const expr = &crate.exprs.items[expr_id];
+    if (expr.kind != .Lambda) return;
+
+    const lambda = &expr.kind.Lambda;
+
+    // Update lambda param_types with expected types
+    for (lambda.params, 0..) |_, idx| {
+        if (idx < lambda.param_types.len and idx < expected_fn_params.len) {
+            // If the param type is Unknown, replace with expected type
+            const current_ty = lambda.param_types[idx];
+            if (current_ty < crate.types.items.len and crate.types.items[current_ty].kind == .Unknown) {
+                lambda.param_types[idx] = expected_fn_params[idx];
+            }
+        }
+    }
+}
+
 // Ensures a pattern binding exists in the locals map, creating an Unknown type if needed.
 fn ensurePatternBinding(crate: *hir.Crate, local_id: hir.LocalId, locals: *std.AutoHashMap(hir.LocalId, hir.TypeId)) Error!hir.TypeId {
     if (locals.get(local_id)) |ty| return ty;
@@ -635,8 +671,18 @@ fn typesCompatible(crate: *hir.Crate, lhs: hir.TypeId, rhs: hir.TypeId) bool {
         },
         .Ref => |lhs_ref| switch (rhs_kind) {
             .Ref => |rhs_ref| lhs_ref.mutable == rhs_ref.mutable and typesCompatible(crate, lhs_ref.inner, rhs_ref.inner),
+            // Allow &str to be compatible with String (simplified for this compiler)
+            .String => isStr(crate, lhs_ref.inner),
             else => false,
         },
+        // Allow String to be compatible with &str (simplified for this compiler)
+        .String => switch (rhs_kind) {
+            .String => true,
+            .Ref => |rhs_ref| isStr(crate, rhs_ref.inner),
+            else => false,
+        },
+        // Allow str to be compatible with String
+        .Str => rhs_kind == .Str or rhs_kind == .String,
         .Struct => |lhs_struct| switch (rhs_kind) {
             .Struct => |rhs_struct| lhs_struct.def_id == rhs_struct.def_id,
             .Path => |path| structMatchesPath(crate, lhs_struct.def_id, path.segments),
@@ -665,6 +711,12 @@ fn typesCompatible(crate: *hir.Crate, lhs: hir.TypeId, rhs: hir.TypeId) bool {
 fn isBool(crate: *hir.Crate, ty: hir.TypeId) bool {
     const resolved = resolveType(crate, ty);
     return resolved < crate.types.items.len and crate.types.items[resolved].kind == .Bool;
+}
+
+// Checks if a type is the str type.
+fn isStr(crate: *hir.Crate, ty: hir.TypeId) bool {
+    const resolved = resolveType(crate, ty);
+    return resolved < crate.types.items.len and crate.types.items[resolved].kind == .Str;
 }
 
 // Checks if a type is numeric (integer or floating-point).

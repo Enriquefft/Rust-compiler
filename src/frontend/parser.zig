@@ -288,7 +288,20 @@ const Parser = struct {
         return std.meta.stringToEnum(ast.Primitive, name);
     }
 
+    /// Parse a path for type contexts. In type context, `<` introduces generic arguments.
     fn parsePath(self: *Parser) ?ast.Path {
+        return self.parsePathImpl(true);
+    }
+
+    /// Parse a path for expression contexts. In expression context, `<` is comparison,
+    /// not generic arguments (turbofish `::<>` would be needed for that).
+    fn parsePathExpr(self: *Parser) ?ast.Path {
+        return self.parsePathImpl(false);
+    }
+
+    /// Internal path parsing implementation.
+    /// allow_generics: if true, `<` starts generic arguments; if false, it's treated as less-than.
+    fn parsePathImpl(self: *Parser, allow_generics: bool) ?ast.Path {
         if (!self.check(.Identifier) and !self.check(.KwSelf)) return null;
         var segments = std.ArrayListUnmanaged(ast.Identifier){};
         const first = self.advance();
@@ -299,7 +312,7 @@ const Parser = struct {
         }
 
         var args = std.ArrayListUnmanaged(ast.Type){};
-        if (self.match(.Lt)) {
+        if (allow_generics and self.match(.Lt)) {
             while (!self.check(.Gt) and !self.isAtEnd()) {
                 const arg = self.parseType() orelse break;
                 args.append(self.arena, arg) catch {};
@@ -729,7 +742,7 @@ const Parser = struct {
                 return self.copyExpr(expr);
             },
             .Identifier, .KwSelf => {
-                if (self.parsePath()) |p| {
+                if (self.parsePathExpr()) |p| {
                     return self.allocExpr(.{ .tag = .Path, .span = p.span, .data = .{ .Path = p } });
                 }
                 return null;

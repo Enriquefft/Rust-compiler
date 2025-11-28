@@ -55,6 +55,8 @@ pub const InstKind = union(enum) {
     Cmp: struct { lhs: MOperand, rhs: MOperand },
     Setcc: struct { cond: Condition, dst: MOperand },
     Test: struct { operand: MOperand },
+    Push: MOperand,
+    Add: struct { dst: MOperand, src: MOperand },
     Jmp: u32,
     Jcc: struct { cond: Condition, target: u32 },
     Call: union(enum) { Direct: []const u8, Indirect: MOperand },

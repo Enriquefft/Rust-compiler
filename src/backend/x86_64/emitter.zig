@@ -278,6 +278,18 @@ fn emitInst(writer: anytype, inst: machine.InstKind, fn_name: []const u8) !void 
             try writeOperand(writer, payload.operand);
             try writer.writeByte('\n');
         },
+        .Push => |payload| {
+            try writer.writeAll("    push ");
+            try writeOperand(writer, payload);
+            try writer.writeByte('\n');
+        },
+        .Add => |payload| {
+            try writer.writeAll("    add ");
+            try writeOperand(writer, payload.dst);
+            try writer.writeAll(", ");
+            try writeOperand(writer, payload.src);
+            try writer.writeByte('\n');
+        },
         .Jmp => |target| try writer.print("    jmp .L{s}_{d}\n", .{ fn_name, target }),
         .Jcc => |payload| try writer.print("    j{s} .L{s}_{d}\n", .{ condSuffix(payload.cond), fn_name, payload.target }),
         .Call => |target| switch (target) {

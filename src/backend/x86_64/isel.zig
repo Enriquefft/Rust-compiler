@@ -452,8 +452,19 @@ fn lowerInst(
             if (is_varargs) ctx.uses_printf = true;
 
             const arg_registers = [_]machine.PhysReg{ .rdi, .rsi, .rdx, .rcx, .r8, .r9 };
+
+            // Push extra arguments to stack (in reverse order per ABI)
+            if (payload.args.len > arg_registers.len) {
+                var extra_idx = payload.args.len;
+                while (extra_idx > arg_registers.len) {
+                    extra_idx -= 1;
+                    const lowered = try lowerOperand(ctx, payload.args[extra_idx], vreg_count);
+                    try insts.append(ctx.allocator, .{ .Push = lowered });
+                }
+            }
+
             for (payload.args, 0..) |arg, idx| {
-                if (idx >= arg_registers.len) break; // simplistic handling: ignore extra args for now
+                if (idx >= arg_registers.len) break;
                 const lowered = try lowerOperand(ctx, arg, vreg_count);
                 try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .Phys = arg_registers[idx] }, .src = lowered } });
             }
@@ -466,6 +477,12 @@ fn lowerInst(
                 .Direct => |name| .{ .Direct = name },
                 .Indirect => |op| .{ .Indirect = op },
             } });
+
+            // Clean up stack after call if we pushed extra args
+            if (payload.args.len > arg_registers.len) {
+                const extra_count = payload.args.len - arg_registers.len;
+                try insts.append(ctx.allocator, .{ .Add = .{ .dst = .{ .Phys = .rsp }, .src = .{ .Imm = @intCast(extra_count * 8) } } });
+            }
 
             if (dest_vreg) |dst| {
                 try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .VReg = dst }, .src = .{ .Phys = .rax } } });
@@ -728,6 +745,7 @@ fn lowerSimpleOperand(ctx: *LowerContext, op: mir.Operand, vreg_count: ?*machine
         .ImmInt => |v| .{ .Imm = v },
         .ImmBool => |v| .{ .Imm = if (v) 1 else 0 },
         .ImmFloat => |v| .{ .Imm = @bitCast(v) },
+        .ImmChar => |c| .{ .Imm = @intCast(c) }, // Unicode codepoint as immediate
         .ImmString => |s| .{ .Label = try ctx.data.internString(s) },
         .Global => |id| blk: {
             if (id >= ctx.mir_crate.fns.items.len) {
@@ -737,10 +755,6 @@ fn lowerSimpleOperand(ctx: *LowerContext, op: mir.Operand, vreg_count: ?*machine
             break :blk .{ .Label = ctx.mir_crate.fns.items[id].name };
         },
         .Symbol => |name| .{ .Label = name },
-        else => {
-            ctx.diagnostics.reportError(zero_span, "unsupported operand kind for x86_64 lowering");
-            return error.Unsupported;
-        },
     };
 }
 
