@@ -1,3 +1,12 @@
+//! Control Flow Graph (CFG) simplification pass.
+//!
+//! This pass removes unreachable basic blocks and renumbers the remaining blocks
+//! to maintain a compact representation. It uses a reachability analysis starting
+//! from block 0 (the entry block) to identify which blocks are reachable.
+//!
+//! After removing unreachable blocks, branch targets in terminators are rewritten
+//! to use the new block indices.
+
 const std = @import("std");
 const mir = @import("../mir.zig");
 const diag = @import("../../diag/diagnostics.zig");
@@ -6,6 +15,7 @@ const Pass = @import("passes.zig").Pass;
 /// Removes unreachable blocks and rewrites branch targets to compact block indices.
 pub const pass = Pass{ .name = "cfg-simplify", .run = run };
 
+/// Execute the CFG simplification pass on all functions in the crate.
 fn run(temp_allocator: std.mem.Allocator, mir_crate: *mir.MirCrate, diagnostics: *diag.Diagnostics) !void {
     _ = diagnostics;
 
@@ -16,6 +26,7 @@ fn run(temp_allocator: std.mem.Allocator, mir_crate: *mir.MirCrate, diagnostics:
     }
 }
 
+/// Simplify the CFG of a single function by removing unreachable blocks.
 fn simplifyFunction(temp_allocator: std.mem.Allocator, arena: std.mem.Allocator, func: *mir.MirFn) !void {
     const block_count = func.blocks.len;
     var reachable = try std.ArrayListUnmanaged(bool).initCapacity(temp_allocator, block_count);
@@ -70,6 +81,7 @@ fn simplifyFunction(temp_allocator: std.mem.Allocator, arena: std.mem.Allocator,
     func.blocks = try new_blocks.toOwnedSlice(arena);
 }
 
+/// Rewrite block references in a terminator using the old-to-new block ID mapping.
 fn rewriteTerm(term: mir.TermKind, map: []const ?mir.BlockId) mir.TermKind {
     return switch (term) {
         .Goto => |target| .{ .Goto = map[target].? },

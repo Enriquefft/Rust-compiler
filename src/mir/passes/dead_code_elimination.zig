@@ -1,3 +1,14 @@
+//! Dead code elimination optimization pass.
+//!
+//! This pass removes instructions whose results are never used. It performs
+//! liveness analysis to determine which temporaries are used, then removes
+//! instructions that produce unused values and have no side effects.
+//!
+//! The pass uses an iterative approach to handle transitive uses, ensuring
+//! that a chain of dependencies is preserved if the final value is used.
+//!
+//! Side-effecting instructions (calls, stores) are never removed.
+
 const std = @import("std");
 const mir = @import("../mir.zig");
 const diag = @import("../../diag/diagnostics.zig");
@@ -6,6 +17,7 @@ const Pass = @import("passes.zig").Pass;
 /// Removes instructions whose results are never consumed.
 pub const pass = Pass{ .name = "dead-code-elimination", .run = run };
 
+/// Execute the dead code elimination pass on all functions in the crate.
 fn run(temp_allocator: std.mem.Allocator, mir_crate: *mir.MirCrate, diagnostics: *diag.Diagnostics) !void {
     _ = diagnostics;
 
@@ -15,6 +27,8 @@ fn run(temp_allocator: std.mem.Allocator, mir_crate: *mir.MirCrate, diagnostics:
     }
 }
 
+/// Eliminate dead code within a single function.
+/// Performs liveness analysis and removes unused instructions.
 fn eliminateInFunction(temp_allocator: std.mem.Allocator, arena: std.mem.Allocator, func: *mir.MirFn) !void {
     var max_temp: mir.TempId = 0;
     for (func.blocks) |block| {
@@ -41,7 +55,7 @@ fn eliminateInFunction(temp_allocator: std.mem.Allocator, arena: std.mem.Allocat
             markUsesInInst(inst, used.items);
         }
     }
-    
+
     // Iterate until no more changes to handle transitive uses
     var changed = true;
     while (changed) {
@@ -85,10 +99,12 @@ fn eliminateInFunction(temp_allocator: std.mem.Allocator, arena: std.mem.Allocat
     }
 }
 
+/// Find the maximum temporary ID used in an instruction (for array sizing).
 fn collectMaxTempFromInst(inst: mir.Inst, max_temp: *mir.TempId) void {
     markMaxTemp(inst.kind, max_temp);
 }
 
+/// Find the maximum temporary ID used in a terminator.
 fn collectMaxTempFromTerm(term: mir.TermKind, max_temp: *mir.TempId) void {
     switch (term) {
         .Goto => {},
@@ -101,6 +117,7 @@ fn collectMaxTempFromTerm(term: mir.TermKind, max_temp: *mir.TempId) void {
     }
 }
 
+/// Update max_temp based on temporaries used in an instruction kind.
 fn markMaxTemp(kind: mir.InstKind, max_temp: *mir.TempId) void {
     switch (kind) {
         .Copy => |copy| markOperandMax(copy.src, max_temp),
@@ -138,10 +155,12 @@ fn markMaxTemp(kind: mir.InstKind, max_temp: *mir.TempId) void {
     }
 }
 
+/// Update max_temp if the operand is a temporary with a higher ID.
 fn markOperandMax(op: mir.Operand, max_temp: *mir.TempId) void {
     if (op == .Temp and op.Temp > max_temp.*) max_temp.* = op.Temp;
 }
 
+/// Mark temporaries used by a terminator as live.
 fn markUses(term: mir.TermKind, used: []bool) void {
     switch (term) {
         .Goto => {},
@@ -150,6 +169,7 @@ fn markUses(term: mir.TermKind, used: []bool) void {
     }
 }
 
+/// Mark temporaries used by an instruction as live.
 fn markUsesInInst(inst: mir.Inst, used: []bool) void {
     switch (inst.kind) {
         .Copy => |copy| markOperand(copy.src, used),
@@ -187,12 +207,14 @@ fn markUsesInInst(inst: mir.Inst, used: []bool) void {
     }
 }
 
+/// Mark a temporary operand as used.
 fn markOperand(op: mir.Operand, used: []bool) void {
     if (op == .Temp and op.Temp < used.len) {
         used[op.Temp] = true;
     }
 }
 
+/// Count the number of used temporaries (for change detection).
 fn countUsed(used: []const bool) usize {
     var count: usize = 0;
     for (used) |u| {
@@ -201,6 +223,7 @@ fn countUsed(used: []const bool) usize {
     return count;
 }
 
+/// Check if an instruction has no side effects and can be safely removed.
 fn isSideEffectFree(inst: mir.Inst) bool {
     return switch (inst.kind) {
         .Copy, .Bin, .Cmp, .Unary, .LoadLocal => true,

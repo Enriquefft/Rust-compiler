@@ -1,12 +1,23 @@
+//! Pretty-printer for MIR data structures.
+//!
+//! This module provides tree-based visualization of MIR crates, functions, blocks,
+//! and instructions. The output is formatted as an ASCII tree structure for easy
+//! reading and debugging during compiler development.
+
 const std = @import("std");
 const mir = @import("mir.zig");
 const AllocError = std.mem.Allocator.Error;
 
+/// Helper for printing tree-structured output with proper indentation and connectors.
+/// Manages a stack of indentation prefixes to create visual tree branches.
 const TreePrinter = struct {
     allocator: std.mem.Allocator,
+    /// Current indentation prefix string
     prefix: std.ArrayListUnmanaged(u8),
+    /// Stack of segment lengths for prefix management
     segment_lengths: std.ArrayListUnmanaged(usize),
 
+    /// Initialize a new tree printer with the given allocator.
     fn init(allocator: std.mem.Allocator) TreePrinter {
         return .{
             .allocator = allocator,
@@ -15,17 +26,20 @@ const TreePrinter = struct {
         };
     }
 
+    /// Release all memory used by this printer.
     fn deinit(self: *TreePrinter) void {
         self.prefix.deinit(self.allocator);
         self.segment_lengths.deinit(self.allocator);
     }
 
+    /// Push a new indentation level. Use is_last to determine connector style.
     fn push(self: *TreePrinter, is_last: bool) !void {
         const segment: []const u8 = if (is_last) "    " else "│   ";
         try self.prefix.appendSlice(self.allocator, segment);
         try self.segment_lengths.append(self.allocator, segment.len);
     }
 
+    /// Pop the most recent indentation level.
     fn pop(self: *TreePrinter) void {
         if (self.segment_lengths.items.len == 0) return;
 
@@ -34,6 +48,7 @@ const TreePrinter = struct {
         self.prefix.shrinkRetainingCapacity(new_len);
     }
 
+    /// Print a node with the current indentation and appropriate connector.
     fn printNode(self: *TreePrinter, is_last: bool, label: []const u8) !void {
         const connector: []const u8 = if (self.prefix.items.len == 0)
             ""
@@ -45,6 +60,7 @@ const TreePrinter = struct {
         std.debug.print("{s}{s}{s}\n", .{ self.prefix.items, connector, label });
     }
 
+    /// Print a formatted node using the given format string and arguments.
     fn printNodeFmt(self: *TreePrinter, is_last: bool, comptime fmt: []const u8, args: anytype) !void {
         const label = try std.fmt.allocPrint(self.allocator, fmt, args);
         defer self.allocator.free(label);
@@ -52,6 +68,7 @@ const TreePrinter = struct {
     }
 };
 
+/// Print a complete MIR crate as a tree structure to debug output.
 pub fn printCrateTree(allocator: std.mem.Allocator, crate: *const mir.MirCrate) AllocError!void {
     var printer = TreePrinter.init(allocator);
     defer printer.deinit();
@@ -66,6 +83,7 @@ pub fn printCrateTree(allocator: std.mem.Allocator, crate: *const mir.MirCrate) 
     printer.pop();
 }
 
+/// Print a single MIR function as a tree node.
 fn printFunction(printer: *TreePrinter, func: mir.MirFn, is_last: bool) AllocError!void {
     try printer.printNodeFmt(is_last, "Function {s}", .{func.name});
     try printer.push(is_last);
@@ -105,6 +123,7 @@ fn printFunction(printer: *TreePrinter, func: mir.MirFn, is_last: bool) AllocErr
     printer.pop();
 }
 
+/// Print a basic block as a tree node.
 fn printBlock(printer: *TreePrinter, block: mir.Block, block_id: mir.BlockId, is_last: bool) AllocError!void {
     try printer.printNodeFmt(is_last, "Block {d}", .{block_id});
     try printer.push(is_last);
@@ -120,6 +139,7 @@ fn printBlock(printer: *TreePrinter, block: mir.Block, block_id: mir.BlockId, is
     printer.pop();
 }
 
+/// Check if a terminator is simple (void return) for formatting purposes.
 fn isSimpleTerminator(term: mir.TermKind) bool {
     return switch (term) {
         .Ret => |val| val == null,
@@ -127,6 +147,7 @@ fn isSimpleTerminator(term: mir.TermKind) bool {
     };
 }
 
+/// Print a single instruction as a tree node.
 fn printInst(printer: *TreePrinter, inst: mir.Inst, is_last: bool) AllocError!void {
     const dest_str = if (inst.dest) |d| blk: {
         break :blk try std.fmt.allocPrint(printer.allocator, "t{d} = ", .{d});
@@ -244,6 +265,7 @@ fn printInst(printer: *TreePrinter, inst: mir.Inst, is_last: bool) AllocError!vo
     }
 }
 
+/// Print a block terminator as a tree node.
 fn printTerminator(printer: *TreePrinter, term: mir.TermKind, is_last: bool) AllocError!void {
     switch (term) {
         .Goto => |target| {
@@ -266,6 +288,7 @@ fn printTerminator(printer: *TreePrinter, term: mir.TermKind, is_last: bool) All
     }
 }
 
+/// Format an operand as a human-readable string.
 fn formatOperand(allocator: std.mem.Allocator, operand: mir.Operand) AllocError![]u8 {
     return switch (operand) {
         .Temp => |t| std.fmt.allocPrint(allocator, "t{d}", .{t}),

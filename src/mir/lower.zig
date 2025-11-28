@@ -1,20 +1,39 @@
+//! HIR to MIR lowering pass.
+//!
+//! This module transforms the High-Level IR (HIR) into Mid-Level IR (MIR).
+//! The lowering process converts high-level constructs like control flow statements,
+//! expressions, and function definitions into a simpler three-address form with
+//! explicit basic blocks and temporaries.
+//!
+//! Key responsibilities:
+//! - Convert HIR functions to MIR functions with explicit basic blocks
+//! - Lower control flow (if/else, while, for) to conditional branches and gotos
+//! - Transform expressions into sequences of MIR instructions
+//! - Handle special constructs like `println!` macro expansion
+//! - Map HIR types to MIR types
+
 const std = @import("std");
 const diag = @import("../diag/diagnostics.zig");
 const hir = @import("../hir/hir.zig");
 const mir = @import("mir.zig");
 
+/// Error type for lowering operations, currently only memory allocation failures.
 const LowerError = error{OutOfMemory};
 
 /// Maximum number of struct fields supported for hash-based field indexing.
 /// This limits the field layout to avoid collisions in the hash-based approach.
 const MAX_STRUCT_FIELDS: u32 = 4;
 
+/// Lower a complete HIR crate to MIR representation.
+///
+/// Iterates over all items in the HIR crate and lowers functions to MIR.
+/// Built-in functions like `println` without bodies are skipped.
+///
+/// Returns the lowered MIR crate or an error if allocation fails.
 pub fn lowerFromHir(allocator: std.mem.Allocator, hir_crate: *const hir.Crate, diagnostics: *diag.Diagnostics) LowerError!mir.MirCrate {
     var crate = mir.MirCrate.init(allocator);
 
     for (hir_crate.items.items) |item| {
-
-
         switch (item.kind) {
             .Function => |fn_item| {
                 if (std.mem.eql(u8, fn_item.name, "println") and fn_item.body == null) continue;
@@ -28,8 +47,11 @@ pub fn lowerFromHir(allocator: std.mem.Allocator, hir_crate: *const hir.Crate, d
     return crate;
 }
 
+/// Lower a single HIR function to MIR representation.
+///
+/// Creates a FunctionBuilder to manage block construction and instruction emission,
+/// then processes the function body, parameters, and return type.
 fn lowerFunction(crate: *mir.MirCrate, func: hir.Function, hir_crate: *const hir.Crate, diagnostics: *diag.Diagnostics) LowerError!mir.MirFn {
-
     var builder = FunctionBuilder{
         .allocator = crate.allocator(),
         .crate = crate,
@@ -44,7 +66,6 @@ fn lowerFunction(crate: *mir.MirCrate, func: hir.Function, hir_crate: *const hir
         },
         .param_local_map = std.AutoArrayHashMap(hir.LocalId, hir.LocalId).init(crate.allocator()),
     };
-
 
     _ = try builder.beginBlock();
 
@@ -94,7 +115,6 @@ fn lowerFunction(crate: *mir.MirCrate, func: hir.Function, hir_crate: *const hir
             const local = next_local + @as(hir.LocalId, @intCast(field_idx));
             try builder.ensureLocal(local, ty, func.span);
 
-
             _ = try builder.emitInst(.{ .ty = mapType(hir_crate, ty, func.span, diagnostics), .dest = null, .kind = .{ .StoreLocal = .{ .local = local, .src = .{ .Param = @intCast(arg_idx) } } } });
             arg_idx += 1;
         }
@@ -115,24 +135,45 @@ fn lowerFunction(crate: *mir.MirCrate, func: hir.Function, hir_crate: *const hir
     return try builder.finish();
 }
 
+/// Builder for constructing MIR functions incrementally.
+///
+/// Manages the creation of basic blocks, instruction emission, temporary allocation,
+/// and local variable tracking during the lowering of a single function.
 const FunctionBuilder = struct {
+    /// Allocator for temporary allocations during building
     allocator: std.mem.Allocator,
+    /// Reference to the parent MIR crate for nested function creation (lambdas)
     crate: *mir.MirCrate,
+    /// Reference to the HIR crate for expression/statement lookup
     hir_crate: *const hir.Crate,
+    /// Diagnostics collector for error reporting
     diagnostics: *diag.Diagnostics,
+    /// The MIR function being built
     mir_fn: mir.MirFn,
+    /// Types of local variables allocated so far
     locals: std.ArrayListUnmanaged(mir.MirType) = .{},
+    /// Basic blocks being constructed
     blocks: std.ArrayListUnmanaged(BlockState) = .{},
+    /// Index of the current block receiving instructions
     current_block: mir.BlockId = 0,
+    /// Next temporary ID to allocate
     next_temp: mir.TempId = 0,
-    next_local: hir.LocalId = 0, // Tracks the next available local slot
+    /// Next local ID to allocate (tracks available local slots)
+    next_local: hir.LocalId = 0,
+    /// Mapping from HIR parameter/pattern IDs to actual local IDs
+    /// Used when struct parameters expand to multiple locals
     param_local_map: std.AutoArrayHashMap(hir.LocalId, hir.LocalId) = std.AutoArrayHashMap(hir.LocalId, hir.LocalId).init(undefined),
 
+    /// State for a basic block under construction.
     const BlockState = struct {
+        /// Instructions added to this block so far
         insts: std.ArrayListUnmanaged(mir.Inst) = .{},
+        /// Terminator for this block (set when block is complete)
         term: ?mir.TermKind = null,
     };
 
+    /// Begin a new block and make it the current block.
+    /// Returns the ID of the newly created block.
     fn beginBlock(self: *FunctionBuilder) LowerError!mir.BlockId {
         const id: mir.BlockId = @intCast(self.blocks.items.len);
         try self.blocks.append(self.allocator, .{});
@@ -140,20 +181,26 @@ const FunctionBuilder = struct {
         return id;
     }
 
+    /// Create a new block without switching to it.
+    /// Used for creating branch targets before populating them.
     fn newBlock(self: *FunctionBuilder) LowerError!mir.BlockId {
         const id: mir.BlockId = @intCast(self.blocks.items.len);
         try self.blocks.append(self.allocator, .{});
         return id;
     }
 
+    /// Switch instruction emission to a different block.
     fn switchTo(self: *FunctionBuilder, id: mir.BlockId) void {
         self.current_block = id;
     }
 
+    /// Set the terminator for the current block.
     fn setTerm(self: *FunctionBuilder, term: mir.TermKind) void {
         self.blocks.items[self.current_block].term = term;
     }
 
+    /// Emit an instruction to the current block.
+    /// Returns the destination operand if the instruction has one.
     fn emitInst(self: *FunctionBuilder, inst: mir.Inst) LowerError!?mir.Operand {
         const dest = inst.dest;
         try self.blocks.items[self.current_block].insts.append(self.allocator, inst);
@@ -163,12 +210,15 @@ const FunctionBuilder = struct {
         return null;
     }
 
+    /// Allocate a new temporary ID.
     fn newTemp(self: *FunctionBuilder) mir.TempId {
         const tmp = self.next_temp;
         self.next_temp += 1;
         return tmp;
     }
 
+    /// Ensure a local slot exists with the given type.
+    /// Expands the locals array if necessary.
     fn ensureLocal(self: *FunctionBuilder, local: hir.LocalId, ty_id: ?hir.TypeId, span: hir.Span) LowerError!void {
         const mir_ty = mapType(self.hir_crate, ty_id, span, self.diagnostics);
         while (local >= self.locals.items.len) {
@@ -181,6 +231,8 @@ const FunctionBuilder = struct {
         }
     }
 
+    /// Lower a HIR expression to MIR instructions.
+    /// Returns an operand representing the expression's value, or null for void expressions.
     fn lowerExpr(self: *FunctionBuilder, expr_id: hir.ExprId) LowerError!?mir.Operand {
         const expr = self.hir_crate.exprs.items[expr_id];
         switch (expr.kind) {
@@ -300,7 +352,6 @@ const FunctionBuilder = struct {
                 return .{ .Temp = tmp };
             },
             .Assignment => |assign| {
-
                 const value_op = try self.lowerExpr(assign.value);
                 const target_expr = self.hir_crate.exprs.items[assign.target];
 
@@ -357,7 +408,7 @@ const FunctionBuilder = struct {
 
                         _ = try self.emitInst(.{ .ty = mapType(self.hir_crate, target_expr.ty, expr.span, self.diagnostics), .dest = null, .kind = .{ .StorePtr = .{ .ptr = ptr_op, .src = final_val } } });
                     }
-                }else if (target_expr.kind == .Index) {
+                } else if (target_expr.kind == .Index) {
                     // Handle index assignment: array[index] = value
                     const array_op = try self.lowerExpr(target_expr.kind.Index.target) orelse {
                         self.diagnostics.reportError(expr.span, "could not lower array for index assignment");
@@ -370,9 +421,7 @@ const FunctionBuilder = struct {
                     if (value_op) |val| {
                         _ = try self.emitInst(.{ .ty = mapType(self.hir_crate, target_expr.ty, expr.span, self.diagnostics), .dest = null, .kind = .{ .StoreIndex = .{ .target = array_op, .index = index_op, .src = val } } });
                     }
-
-                }
-                else {
+                } else {
                     self.diagnostics.reportError(expr.span, "assignment target not supported in MIR lowering");
                 }
                 return null;
@@ -430,7 +479,6 @@ const FunctionBuilder = struct {
                 self.switchTo(exit_block);
                 return null;
             },
-
 
             .For => |for_expr| {
                 const iter_expr = self.hir_crate.exprs.items[for_expr.iter];
@@ -777,6 +825,7 @@ const FunctionBuilder = struct {
         }
     }
 
+    /// Lower a HIR statement to MIR instructions.
     fn lowerStmt(self: *FunctionBuilder, stmt_id: hir.StmtId) LowerError!void {
         const stmt = self.hir_crate.stmts.items[stmt_id];
         switch (stmt.kind) {
@@ -852,6 +901,8 @@ const FunctionBuilder = struct {
         }
     }
 
+    /// Lower a struct initialization expression directly to local variable slots.
+    /// Uses hash-based ordering to match field access patterns in the backend.
     fn lowerStructInitToLocal(self: *FunctionBuilder, struct_init: hir.StructInit, base_local: hir.LocalId, span: hir.Span) LowerError!void {
         // Store each field to a separate local slot
         // Use hash-based ordering to match field access
@@ -871,6 +922,7 @@ const FunctionBuilder = struct {
         }
     }
 
+    /// Finalize the function builder and produce the completed MIR function.
     fn finish(self: *FunctionBuilder) LowerError!mir.MirFn {
         var blocks = std.ArrayListUnmanaged(mir.Block){};
         defer blocks.deinit(self.allocator);
@@ -889,6 +941,7 @@ const FunctionBuilder = struct {
         return self.mir_fn;
     }
 
+    /// Check if a callee expression refers to the built-in println function.
     fn isBuiltinPrintln(self: *FunctionBuilder, callee_id: hir.ExprId) bool {
         if (callee_id >= self.hir_crate.exprs.items.len) return false;
         const callee = self.hir_crate.exprs.items[callee_id];
@@ -899,11 +952,14 @@ const FunctionBuilder = struct {
         return item.kind == .Function and std.mem.eql(u8, item.kind.Function.name, "println");
     }
 
+    /// Information about a pointer method call (e.g., ptr.is_null()).
     const PointerMethodInfo = struct {
         target_id: hir.ExprId,
         method_name: []const u8,
     };
 
+    /// Check if a callee expression is a pointer method call.
+    /// Returns method info if it is, null otherwise.
     fn isPointerMethodCall(self: *FunctionBuilder, callee_id: hir.ExprId) ?PointerMethodInfo {
         if (callee_id >= self.hir_crate.exprs.items.len) return null;
         const callee = self.hir_crate.exprs.items[callee_id];
@@ -929,6 +985,7 @@ const FunctionBuilder = struct {
         }
     }
 
+    /// Lower a pointer method call (e.g., ptr.is_null()).
     fn lowerPointerMethodCall(self: *FunctionBuilder, target_id: hir.ExprId, method_name: []const u8, args: []const hir.ExprId, expr: hir.Expr) LowerError!?mir.Operand {
         _ = args; // Currently no pointer methods use arguments
 
@@ -945,12 +1002,15 @@ const FunctionBuilder = struct {
         }
     }
 
+    /// Information about an array method call (e.g., arr.len()).
     const ArrayMethodInfo = struct {
         target_id: hir.ExprId,
         method_name: []const u8,
         array_size: ?i64,
     };
 
+    /// Check if a callee expression is an array method call.
+    /// Returns method info if it is, null otherwise.
     fn isArrayMethodCall(self: *FunctionBuilder, callee_id: hir.ExprId) ?ArrayMethodInfo {
         if (callee_id >= self.hir_crate.exprs.items.len) return null;
         const callee = self.hir_crate.exprs.items[callee_id];
@@ -997,6 +1057,8 @@ const FunctionBuilder = struct {
         return null;
     }
 
+    /// Extract array element type and length from a type ID.
+    /// Handles direct arrays, references to arrays, and pointers to arrays.
     fn getArrayInfo(self: *FunctionBuilder, ty_id: hir.TypeId) ?struct {
         elem: hir.TypeId,
         len: i64,
@@ -1037,6 +1099,7 @@ const FunctionBuilder = struct {
         }
     }
 
+    /// Lower an array method call (e.g., arr.len()).
     fn lowerArrayMethodCall(self: *FunctionBuilder, _: hir.ExprId, method_name: []const u8, array_size: ?i64, _: []const hir.ExprId, expr: hir.Expr) LowerError!?mir.Operand {
         if (std.mem.eql(u8, method_name, "len")) {
             // len() returns the static array size
@@ -1054,12 +1117,15 @@ const FunctionBuilder = struct {
         }
     }
 
+    /// Information about a struct method call (e.g., point.offset(1, 2)).
     const StructMethodInfo = struct {
         target_id: hir.ExprId,
         method_name: []const u8,
         method_def_id: hir.DefId,
     };
 
+    /// Check if a callee expression is a struct method call.
+    /// Searches impl blocks to find matching methods.
     fn isStructMethodCall(self: *FunctionBuilder, callee_id: hir.ExprId) ?StructMethodInfo {
         if (callee_id >= self.hir_crate.exprs.items.len) return null;
         const callee = self.hir_crate.exprs.items[callee_id];
@@ -1145,6 +1211,7 @@ const FunctionBuilder = struct {
         return null;
     }
 
+    /// Lower a struct method call, passing struct fields as arguments.
     fn lowerStructMethodCall(self: *FunctionBuilder, target_id: hir.ExprId, method_name: []const u8, method_def_id: hir.DefId, args: []const hir.ExprId, expr: hir.Expr) LowerError!?mir.Operand {
         _ = method_name;
 
@@ -1224,6 +1291,8 @@ const FunctionBuilder = struct {
         return .{ .Temp = tmp };
     }
 
+    /// Lower a println! macro call to a printf call.
+    /// Converts Rust-style format strings to C-style format specifiers.
     fn lowerPrintlnMacro(self: *FunctionBuilder, args_ids: []const hir.ExprId, span: hir.Span) LowerError!?mir.Operand {
         if (args_ids.len == 0) {
             self.diagnostics.reportError(span, "println! requires a format string");
@@ -1301,6 +1370,7 @@ const FunctionBuilder = struct {
         return .{ .ImmInt = 0 };
     }
 
+    /// Determine the printf format specifier for an expression's type.
     fn printfSpecifier(self: *FunctionBuilder, expr_id: hir.ExprId, span: hir.Span) ?[]const u8 {
         if (expr_id >= self.hir_crate.exprs.items.len) {
             self.diagnostics.reportError(span, "unknown argument in println!");
@@ -1326,6 +1396,8 @@ const FunctionBuilder = struct {
         };
     }
 
+    /// Lower a short-circuit logical operation (&&, ||).
+    /// Creates conditional branches to implement short-circuit evaluation.
     fn lowerLogical(
         self: *FunctionBuilder,
         op: hir.BinaryOp,
@@ -1360,7 +1432,7 @@ const FunctionBuilder = struct {
     }
 };
 
-/// Strips surrounding quotes from a string literal if present
+/// Strips surrounding quotes from a string literal if present.
 fn stripQuotes(s: []const u8) []const u8 {
     if (s.len >= 2 and s[0] == '"' and s[s.len - 1] == '"') {
         return s[1 .. s.len - 1];
@@ -1368,8 +1440,10 @@ fn stripQuotes(s: []const u8) []const u8 {
     return s;
 }
 
+/// Map a HIR type to its corresponding MIR type.
+/// Handles primitive types, compound types, and path-based type references.
+/// Reports diagnostics for unsupported or unknown types.
 fn mapType(hir_crate: *const hir.Crate, ty_id: ?hir.TypeId, span: hir.Span, diagnostics: *diag.Diagnostics) ?mir.MirType {
-
     if (ty_id) |id| {
         if (id >= hir_crate.types.items.len) {
             diagnostics.reportError(span, "unknown type id during MIR lowering");
@@ -1420,8 +1494,6 @@ fn mapType(hir_crate: *const hir.Crate, ty_id: ?hir.TypeId, span: hir.Span, diag
                 break :blk null;
             },
             .Unknown => blk: {
-
-
                 diagnostics.reportWarning(span, "unknown type information during MIR lowering");
                 break :blk null;
             },
@@ -1432,6 +1504,9 @@ fn mapType(hir_crate: *const hir.Crate, ty_id: ?hir.TypeId, span: hir.Span, diag
     return null;
 }
 
+/// Map a HIR binary operator to the corresponding MIR binary operation.
+/// Note: comparison and logical operators return Add as a placeholder since
+/// they are handled separately via Cmp instructions.
 fn mapBin(op: hir.BinaryOp) mir.BinOp {
     return switch (op) {
         .Add => .Add,
@@ -1443,6 +1518,8 @@ fn mapBin(op: hir.BinaryOp) mir.BinOp {
     };
 }
 
+/// Map a compound assignment operator to its underlying binary operation.
+/// Returns null for plain assignment (=).
 fn mapAssignBin(op: hir.AssignOp) ?mir.BinOp {
     return switch (op) {
         .Assign => null,
@@ -1453,6 +1530,8 @@ fn mapAssignBin(op: hir.AssignOp) ?mir.BinOp {
     };
 }
 
+/// Map a HIR comparison operator to the corresponding MIR comparison operation.
+/// Non-comparison operators return Eq as a placeholder (should not occur in practice).
 fn mapCmp(op: hir.BinaryOp) mir.CmpOp {
     return switch (op) {
         .Eq => .Eq,
@@ -1465,6 +1544,8 @@ fn mapCmp(op: hir.BinaryOp) mir.CmpOp {
     };
 }
 
+/// Map a HIR unary operator to the corresponding MIR unary operation.
+/// Returns null for unsupported operators.
 fn mapUnary(op: hir.UnaryOp) ?mir.UnaryOp {
     return switch (op) {
         .Not => .Not,
@@ -1474,6 +1555,7 @@ fn mapUnary(op: hir.UnaryOp) ?mir.UnaryOp {
     };
 }
 
+/// Check if a MIR type is an integer type.
 fn isIntegerType(ty: mir.MirType) bool {
     return switch (ty) {
         .I32, .I64, .U32, .U64, .Usize => true,

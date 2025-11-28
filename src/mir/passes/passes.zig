@@ -1,3 +1,16 @@
+//! MIR optimization pass infrastructure.
+//!
+//! This module defines the pass interface and provides a registry of available
+//! optimization passes. Passes are executed in sequence to transform and optimize
+//! MIR before code generation.
+//!
+//! Available passes:
+//! - `noOpPass`: No-op pass for testing pipeline wiring
+//! - `constantFoldingPass`: Evaluates constant expressions at compile time
+//! - `deadCodeEliminationPass`: Removes unused computations
+//! - `cfgSimplifyPass`: Removes unreachable blocks and simplifies control flow
+//! - `debugDumpPass`: Prints MIR for debugging purposes
+
 const std = @import("std");
 const diag = @import("../../diag/diagnostics.zig");
 const mir = @import("../mir.zig");
@@ -6,18 +19,28 @@ const dead_code_elim = @import("dead_code_elimination.zig");
 const cfg_simplify = @import("cfg_simplify.zig");
 const debug_dump = @import("debug_dump.zig");
 
+/// Debug dump pass for printing MIR state.
 pub const debugDumpPass = debug_dump.pass;
 
 /// An optimization or analysis pass executed over MIR.
+/// Each pass has a name for identification and a run function that transforms the crate.
 pub const Pass = struct {
+    /// Human-readable name for logging and debugging
     name: []const u8,
+    /// Function to execute the pass, transforming the MIR crate in place
     run: *const fn (allocator: std.mem.Allocator, mir_crate: *mir.MirCrate, diagnostics: *diag.Diagnostics) anyerror!void,
 };
 
 /// A no-op pass useful for validating the pass pipeline wiring.
 pub const noOpPass = Pass{ .name = "noop", .run = noOpRun };
+
+/// Constant folding pass: evaluates constant expressions at compile time.
 pub const constantFoldingPass = constant_folding.pass;
+
+/// Dead code elimination pass: removes unused computations.
 pub const deadCodeEliminationPass = dead_code_elim.pass;
+
+/// CFG simplification pass: removes unreachable blocks and simplifies control flow.
 pub const cfgSimplifyPass = cfg_simplify.pass;
 
 fn noOpRun(allocator: std.mem.Allocator, mir_crate: *mir.MirCrate, diagnostics: *diag.Diagnostics) anyerror!void {
@@ -26,6 +49,11 @@ fn noOpRun(allocator: std.mem.Allocator, mir_crate: *mir.MirCrate, diagnostics: 
     _ = diagnostics;
 }
 
+/// Run all optimization passes in sequence on the given MIR crate.
+///
+/// Pass order: noop -> constant folding -> dead code elimination -> CFG simplification
+///
+/// If `dump_passes` is true, prints MIR state after each pass for debugging.
 pub fn runAll(allocator: std.mem.Allocator, mir_crate: *mir.MirCrate, diagnostics: *diag.Diagnostics, dump_passes: bool) !void {
     const passes = [_]Pass{
         noOpPass,
