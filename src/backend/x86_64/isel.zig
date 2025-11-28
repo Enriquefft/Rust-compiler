@@ -261,6 +261,9 @@ fn lowerInst(
             try insts.append(ctx.allocator, .{ .Mov = .{ .dst = mem, .src = src } });
 
             // For array types, also store additional elements from rdx, rcx, r8 etc.
+            // For struct types from function returns, store the second field from rdx.
+            // Skip this for Param sources since parameters are stored to separate locals.
+            const is_param_source = payload.src == .Param;
             if (inst.ty) |ty| {
                 if (ty == .Array) {
                     // Store 2nd element from rdx at offset 8
@@ -272,6 +275,16 @@ fn lowerInst(
                     // Store 4th element from r8 at offset 24
                     const mem4 = machine.MOperand{ .Mem = .{ .base = mem.Mem.base, .offset = mem.Mem.offset - 24 } };
                     try insts.append(ctx.allocator, .{ .Mov = .{ .dst = mem4, .src = .{ .Phys = .r8 } } });
+                } else if (ty == .Struct and !is_param_source) {
+                    // For structs returned from function calls, store the second field from rdx
+                    // Struct values are returned in (rax/src, rdx) for 2-field structs
+                    const second_field_mem = machine.MOperand{
+                        .Mem = .{
+                            .base = mem.Mem.base,
+                            .offset = mem.Mem.offset - @as(i32, @intCast(@sizeOf(i64))),
+                        },
+                    };
+                    try insts.append(ctx.allocator, .{ .Mov = .{ .dst = second_field_mem, .src = .{ .Phys = .rdx } } });
                 }
             }
         },
