@@ -31,8 +31,8 @@ macros_test1.rs=hello from println!
 macros_test2.rs=a = 3, b = 4
 statements_and_patterns_test1.rs=2 5
 statements_and_patterns_test2.rs=6
-types_test1.rs=-42 7 3.5 true z hello world
-types_test2.rs=4 11 false 4
+types_test1.rs=-42 7 3.500000 1 z hello world
+types_test2.rs=4 11 0 4
 arrays1.rs=sum = 18
 arrays2.rs=doubled: 40
 arrays3.rs=sum =(2, 3)\n (-2, 5)\n (11, -4)
