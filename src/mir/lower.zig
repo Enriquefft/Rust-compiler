@@ -78,6 +78,7 @@ fn lowerFunction(crate: *mir.MirCrate, func: hir.Function, hir_crate: *const hir
 
         // Check if this parameter is a struct type (needs field expansion)
         var num_fields: usize = 1;
+        var struct_fields: ?[]const hir.Field = null;
         if (ty) |ty_id| {
             if (ty_id < hir_crate.types.items.len) {
                 const param_type = hir_crate.types.items[ty_id];
@@ -87,6 +88,7 @@ fn lowerFunction(crate: *mir.MirCrate, func: hir.Function, hir_crate: *const hir
                             const struct_item = hir_crate.items.items[info.def_id];
                             if (struct_item.kind == .Struct) {
                                 num_fields = struct_item.kind.Struct.fields.len;
+                                struct_fields = struct_item.kind.Struct.fields;
                             }
                         }
                     },
@@ -97,6 +99,7 @@ fn lowerFunction(crate: *mir.MirCrate, func: hir.Function, hir_crate: *const hir
                             for (hir_crate.items.items) |item| {
                                 if (item.kind == .Struct and std.mem.eql(u8, item.kind.Struct.name, struct_name)) {
                                     num_fields = item.kind.Struct.fields.len;
+                                    struct_fields = item.kind.Struct.fields;
                                     break;
                                 }
                             }
@@ -110,16 +113,38 @@ fn lowerFunction(crate: *mir.MirCrate, func: hir.Function, hir_crate: *const hir
         // Store the base local for this param in the mapping
         try builder.param_local_map.put(param, next_local);
 
-        // For struct parameters, store each field from a separate argument
-        for (0..num_fields) |field_idx| {
-            const local = next_local + @as(hir.LocalId, @intCast(field_idx));
-            try builder.ensureLocal(local, ty, func.span);
+        // For struct parameters, store each field using StoreField to the same local
+        // This ensures all fields are in the same memory region for Field access
+        if (struct_fields) |fields| {
+            // Allocate ONE local for the entire struct
+            try builder.ensureLocal(next_local, ty, func.span);
 
-            _ = try builder.emitInst(.{ .ty = mapType(hir_crate, ty, func.span, diagnostics), .dest = null, .kind = .{ .StoreLocal = .{ .local = local, .src = .{ .Param = @intCast(arg_idx) } } } });
+            // Store each field to the struct local using StoreField
+            for (fields, 0..) |field, field_idx| {
+                _ = try builder.emitInst(.{
+                    .ty = null,
+                    .dest = null,
+                    .kind = .{
+                        .StoreField = .{
+                            .target = .{ .Local = next_local },
+                            .name = field.name,
+                            .src = .{ .Param = @intCast(arg_idx) },
+                        },
+                    },
+                });
+                _ = field_idx;
+                arg_idx += 1;
+            }
+
+            // Only increment by 1 since we're using a single local for the struct
+            next_local += 1;
+        } else {
+            // Non-struct parameter: store normally
+            try builder.ensureLocal(next_local, ty, func.span);
+            _ = try builder.emitInst(.{ .ty = mapType(hir_crate, ty, func.span, diagnostics), .dest = null, .kind = .{ .StoreLocal = .{ .local = next_local, .src = .{ .Param = @intCast(arg_idx) } } } });
             arg_idx += 1;
+            next_local += 1;
         }
-
-        next_local += @as(hir.LocalId, @intCast(num_fields));
     }
 
     // Set the next_local in the builder for use in lowering statements
