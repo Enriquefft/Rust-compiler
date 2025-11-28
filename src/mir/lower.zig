@@ -355,12 +355,6 @@ const FunctionBuilder = struct {
                 const value_op = try self.lowerExpr(assign.value);
                 const target_expr = self.hir_crate.exprs.items[assign.target];
 
-                std.debug.print("Lowering assignment to target kind: {any}\n", .{target_expr.kind});
-                // target target
-                std.debug.print("Assignment target expr: {any}\n", .{self.hir_crate.exprs.items[target_expr.kind.Index.target]});
-                // target index
-                std.debug.print("Assignment target expr: {any}\n", .{self.hir_crate.exprs.items[target_expr.kind.Index.index]});
-
                 if (target_expr.kind == .LocalRef) {
                     const local = target_expr.kind.LocalRef;
                     try self.ensureLocal(local, target_expr.ty, expr.span);

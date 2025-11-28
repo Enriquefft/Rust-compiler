@@ -156,6 +156,8 @@ pub const InstKind = union(enum) {
     StoreLocal: struct { local: LocalId, src: Operand },
     /// Store a value through a pointer
     StorePtr: struct { ptr: Operand, src: Operand },
+    /// Store a value through an index
+    StoreIndex: struct { target: Operand, index: Operand, src: Operand },
 
     /// Function call with target and arguments
     Call: struct {

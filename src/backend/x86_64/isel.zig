@@ -109,11 +109,11 @@ fn lowerFn(ctx: *LowerContext, func: mir.MirFn) LowerError!machine.MachineFn {
     defer blocks.deinit(ctx.allocator);
 
     var vreg_count: machine.VReg = 0;
-    
+
     // Initialize index memory map for this function
     ctx.index_mem_map = std.AutoHashMap(machine.VReg, machine.MemRef).init(ctx.allocator);
     defer ctx.index_mem_map.deinit();
-    
+
     // Initialize dynamic index address map for this function
     ctx.dynamic_index_addr_map = std.AutoHashMap(machine.VReg, machine.VReg).init(ctx.allocator);
     defer ctx.dynamic_index_addr_map.deinit();
@@ -259,7 +259,7 @@ fn lowerInst(
             const mem = localMem(payload.local);
             const src = try lowerOperand(ctx, payload.src, vreg_count);
             try insts.append(ctx.allocator, .{ .Mov = .{ .dst = mem, .src = src } });
-            
+
             // For array types, also store additional elements from rdx, rcx, r8 etc.
             if (inst.ty) |ty| {
                 if (ty == .Array) {
@@ -281,6 +281,38 @@ fn lowerInst(
             const src = try lowerOperand(ctx, payload.src, vreg_count);
             try insts.append(ctx.allocator, .{ .StoreDeref = .{ .addr = ptr, .src = src } });
         },
+
+        .StoreIndex => |payload| {
+            // Store to an indexed location: target[index] = value
+            const target = try lowerOperand(ctx, payload.target, vreg_count);
+            const index = try lowerOperand(ctx, payload.index, vreg_count);
+            const src = try lowerOperand(ctx, payload.src, vreg_count);
+            const mem = switch (target) {
+            .Mem => |base_mem| blk: {
+                const offset = switch (index) {
+                    .Imm => |imm| blk2: {
+                        const scaled: i32 = @intCast(imm * @as(i64, @intCast(@sizeOf(i64))));
+                        break :blk2 base_mem.offset - scaled;
+                    },
+                    .VReg, .Phys, .Mem => {
+                        ctx.diagnostics.reportError(zero_span, "store index currently supports only immediate indices");
+                        return error.Unsupported;
+                    },
+                    else => {
+                        ctx.diagnostics.reportError(zero_span, "unsupported index operand for store index");
+                        return error.Unsupported;
+                    },
+                };
+                break :blk machine.MOperand{ .Mem = .{ .base = base_mem.base, .offset = offset } };
+            },
+            else => {
+                ctx.diagnostics.reportError(zero_span, "unsupported target for store index");
+                return error.Unsupported;
+            },
+            };
+            try insts.append(ctx.allocator, .{ .Mov = .{ .dst = mem, .src = src } });
+        },
+
         .Cast => |payload| {
             if (dest_vreg) |dst| {
                 const src = try lowerOperand(ctx, payload.src, vreg_count);
@@ -391,11 +423,11 @@ fn lowerInst(
 
                                 // Load value from computed address into dst
                                 try insts.append(ctx.allocator, .{ .Deref = .{ .dst = .{ .VReg = dst }, .addr = .{ .VReg = base_vreg } } });
-                                
+
                                 // Track that this VReg holds a value from dynamic indexing
                                 // When Ref is applied to this VReg, we use base_vreg (the address) instead
                                 try ctx.dynamic_index_addr_map.put(dst, base_vreg);
-                                
+
                                 return null;
                             },
                             else => {
@@ -443,13 +475,13 @@ fn lowerInst(
                     // First element goes to dst, subsequent elements go to adjacent memory
                     const first = try lowerOperand(ctx, payload.elems[0], vreg_count);
                     try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .VReg = dst }, .src = first } });
-                    
+
                     // For additional elements, first compute all values into VRegs,
                     // then move to designated physical registers that StoreLocal will pick up
                     // This avoids clobbering issues from interleaved VReg/PhysReg operations
                     var elem_vregs: [MAX_EXTRA_ARRAY_ELEMENTS]machine.VReg = .{ 0, 0, 0 };
                     const num_extra = @min(payload.elems.len - 1, MAX_EXTRA_ARRAY_ELEMENTS);
-                    
+
                     // Phase 1: Compute all elements into VRegs
                     for (payload.elems[1..][0..num_extra], 0..) |elem, i| {
                         const elem_op = try lowerOperand(ctx, elem, vreg_count);
@@ -458,7 +490,7 @@ fn lowerInst(
                         try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .VReg = elem_vreg }, .src = elem_op } });
                         elem_vregs[i] = elem_vreg;
                     }
-                    
+
                     // Phase 2: Move all values to physical registers
                     // rdx for 2nd element, rcx for 3rd element, r8 for 4th element
                     if (num_extra >= 1) {

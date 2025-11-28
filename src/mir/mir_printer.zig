@@ -199,6 +199,15 @@ fn printInst(printer: *TreePrinter, inst: mir.Inst, is_last: bool) AllocError!vo
             defer printer.allocator.free(src);
             try printer.printNodeFmt(is_last, "StorePtr {s} <- {s}", .{ ptr, src });
         },
+        .StoreIndex => |store| {
+            const ptr = try formatOperand(printer.allocator, store.target);
+            defer printer.allocator.free(ptr);
+            const index = try formatOperand(printer.allocator, store.index);
+            defer printer.allocator.free(index);
+            const src = try formatOperand(printer.allocator, store.src);
+            defer printer.allocator.free(src);
+            try printer.printNodeFmt(is_last, "StoreIndex {s}[{s}] <- {s}", .{ ptr, index, src });
+        },
         .Call => |call| {
             const target = try formatOperand(printer.allocator, call.target);
             defer printer.allocator.free(target);
