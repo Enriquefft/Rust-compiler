@@ -6,3 +6,5 @@ codes/*.s
 report.md
 test_report.md
 test_out
+*.a
+*.o
