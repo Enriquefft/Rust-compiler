@@ -622,16 +622,31 @@ fn resolveType(crate: *hir.Crate, ty: hir.TypeId) hir.TypeId {
     const kind = crate.types.items[ty].kind;
     switch (kind) {
         .Path => |path| {
-            // Look up the type alias by name
+            // Look up the type by name (could be a type alias or struct)
             if (path.segments.len == 1) {
                 const name = path.segments[0];
-                for (crate.items.items) |item| {
-                    if (item.kind == .TypeAlias) {
-                        const alias = item.kind.TypeAlias;
-                        if (std.mem.eql(u8, alias.name, name)) {
-                            // Recursively resolve in case of chained aliases
-                            return resolveType(crate, alias.target);
-                        }
+                for (crate.items.items, 0..) |item, idx| {
+                    switch (item.kind) {
+                        .TypeAlias => |alias| {
+                            if (std.mem.eql(u8, alias.name, name)) {
+                                // Recursively resolve in case of chained aliases
+                                return resolveType(crate, alias.target);
+                            }
+                        },
+                        .Struct => |struct_item| {
+                            if (std.mem.eql(u8, struct_item.name, name)) {
+                                // Find or create a Struct type for this def_id
+                                for (crate.types.items) |existing| {
+                                    if (existing.kind == .Struct and existing.kind.Struct.def_id == @as(hir.DefId, @intCast(idx))) {
+                                        return existing.id;
+                                    }
+                                }
+                                // No existing struct type found, return the path type as-is
+                                // (the struct type should have been created during HIR lowering)
+                                return ty;
+                            }
+                        },
+                        else => {},
                     }
                 }
             }
