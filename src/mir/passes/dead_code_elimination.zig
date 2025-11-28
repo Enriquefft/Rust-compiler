@@ -141,6 +141,10 @@ fn markMaxTemp(kind: mir.InstKind, max_temp: *mir.TempId) void {
             markOperandMax(store.index, max_temp);
             markOperandMax(store.src, max_temp);
         },
+        .StoreField => |store| {
+            markOperandMax(store.target, max_temp);
+            markOperandMax(store.src, max_temp);
+        },
         .Call => |call| {
             markOperandMax(call.target, max_temp);
             for (call.args) |arg| markOperandMax(arg, max_temp);
@@ -197,6 +201,10 @@ fn markUsesInInst(inst: mir.Inst, used: []bool) void {
         .StoreIndex => |store| {
             markOperand(store.target, used);
             markOperand(store.index, used);
+            markOperand(store.src, used);
+        },
+        .StoreField => |store| {
+            markOperand(store.target, used);
             markOperand(store.src, used);
         },
         .Call => |call| {

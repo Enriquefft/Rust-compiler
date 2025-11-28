@@ -403,7 +403,7 @@ const FunctionBuilder = struct {
                         _ = try self.emitInst(.{ .ty = mapType(self.hir_crate, target_expr.ty, expr.span, self.diagnostics), .dest = null, .kind = .{ .StorePtr = .{ .ptr = ptr_op, .src = final_val } } });
                     }
                 } else if (target_expr.kind == .Index) {
-                    // Handle index assignment: array[index] = value
+                    // Handle index assignment: array[index] = value or array[index] op= value
                     const array_op = try self.lowerExpr(target_expr.kind.Index.target) orelse {
                         self.diagnostics.reportError(expr.span, "could not lower array for index assignment");
                         return null;
@@ -413,7 +413,51 @@ const FunctionBuilder = struct {
                         return null;
                     };
                     if (value_op) |val| {
-                        _ = try self.emitInst(.{ .ty = mapType(self.hir_crate, target_expr.ty, expr.span, self.diagnostics), .dest = null, .kind = .{ .StoreIndex = .{ .target = array_op, .index = index_op, .src = val } } });
+                        var final_val = val;
+                        if (assign.op != .Assign) {
+                            // For compound assignment (array[i] += val), we need to:
+                            // 1. Load the current value from the array index
+                            // 2. Perform the binary operation
+                            // 3. Store the result back
+                            const loaded_tmp = self.newTemp();
+                            const mir_ty = mapType(self.hir_crate, target_expr.ty, expr.span, self.diagnostics);
+                            _ = try self.emitInst(.{ .ty = mir_ty, .dest = loaded_tmp, .kind = .{ .Index = .{ .target = array_op, .index = index_op } } });
+
+                            if (mapAssignBin(assign.op)) |bin_op| {
+                                const bin_tmp = self.newTemp();
+                                _ = try self.emitInst(.{ .ty = mir_ty, .dest = bin_tmp, .kind = .{ .Bin = .{ .op = bin_op, .lhs = .{ .Temp = loaded_tmp }, .rhs = val } } });
+                                final_val = .{ .Temp = bin_tmp };
+                            }
+                        }
+
+                        _ = try self.emitInst(.{ .ty = mapType(self.hir_crate, target_expr.ty, expr.span, self.diagnostics), .dest = null, .kind = .{ .StoreIndex = .{ .target = array_op, .index = index_op, .src = final_val } } });
+                    }
+                } else if (target_expr.kind == .Field) {
+                    // Handle field assignment: struct.field = value or struct.field op= value
+                    const struct_op = try self.lowerExpr(target_expr.kind.Field.target) orelse {
+                        self.diagnostics.reportError(expr.span, "could not lower struct for field assignment");
+                        return null;
+                    };
+                    const field_name = target_expr.kind.Field.name;
+                    if (value_op) |val| {
+                        var final_val = val;
+                        if (assign.op != .Assign) {
+                            // For compound assignment (struct.field += val), we need to:
+                            // 1. Load the current value from the field
+                            // 2. Perform the binary operation
+                            // 3. Store the result back
+                            const loaded_tmp = self.newTemp();
+                            const mir_ty = mapType(self.hir_crate, target_expr.ty, expr.span, self.diagnostics);
+                            _ = try self.emitInst(.{ .ty = mir_ty, .dest = loaded_tmp, .kind = .{ .Field = .{ .target = struct_op, .name = field_name } } });
+
+                            if (mapAssignBin(assign.op)) |bin_op| {
+                                const bin_tmp = self.newTemp();
+                                _ = try self.emitInst(.{ .ty = mir_ty, .dest = bin_tmp, .kind = .{ .Bin = .{ .op = bin_op, .lhs = .{ .Temp = loaded_tmp }, .rhs = val } } });
+                                final_val = .{ .Temp = bin_tmp };
+                            }
+                        }
+
+                        _ = try self.emitInst(.{ .ty = mapType(self.hir_crate, target_expr.ty, expr.span, self.diagnostics), .dest = null, .kind = .{ .StoreField = .{ .target = struct_op, .name = field_name, .src = final_val } } });
                     }
                 } else {
                     self.diagnostics.reportError(expr.span, "assignment target not supported in MIR lowering");
