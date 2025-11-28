@@ -15,24 +15,28 @@ main:
 .Lmain_0:
     mov rax, 3
     mov rbx, 6
-    mov rdx, rbx
     mov rcx, 1
-    mov [rbp-136], rcx
-    mov rcx, [rbp-136]
     mov rdx, 8
+    mov [rbp-136], rdx
+    mov rdx, rbx
+    mov [rbp-144], rcx
+    mov rcx, [rbp-144]
+    mov r8, [rbp-136]
     mov [rbp-32], rax
     mov [rbp-40], rdx
     mov [rbp-48], rcx
+    mov [rbp-56], r8
     mov qword ptr [rbp-64], 0
     mov qword ptr [rbp-128], 0
     jmp .Lmain_1
 .Lmain_1:
     mov rbx, [rbp-128]
-    mov qword ptr [rbp-136], 4
-    cmp rbx, [rbp-136]
-    setl dl
-    and rdx, 1
-    test rdx, rdx
+    mov qword ptr [rbp-144], 4
+    cmp rbx, [rbp-144]
+    setl byte ptr [rbp-136]
+    and qword ptr [rbp-136], 1
+    mov r11, [rbp-136]
+    test r11, r11
     jne .Lmain_2
     jmp .Lmain_3
 .Lmain_2:
@@ -48,21 +52,20 @@ main:
     add rdi, [rbp-96]
     mov [rbp-64], rdi
     mov r8, [rbp-128]
-    mov [rbp-144], r8
-    add qword ptr [rbp-144], 1
-    mov r11, [rbp-144]
+    mov [rbp-152], r8
+    add qword ptr [rbp-152], 1
+    mov r11, [rbp-152]
     mov [rbp-128], r11
     jmp .Lmain_1
 .Lmain_3:
-    mov [rbp-152], rdi
+    mov [rbp-160], rdi
     lea rdi, [rip + .Lstr0]
-    mov [rbp-160], rsi
+    mov [rbp-168], rsi
     mov rsi, [rbp-64]
-    mov [rbp-168], rax
+    mov [rbp-176], rax
     mov rax, 0
-    mov [rbp-176], r9
-    mov [rbp-184], rbx
-    mov [rbp-192], rdx
+    mov [rbp-184], r9
+    mov [rbp-192], rbx
     mov [rbp-200], r8
     mov [rbp-208], r10
     call printf

@@ -154,9 +154,9 @@ for code_path in "${code_files[@]}"; do
 done
 
 printf "## Summary\n\n" >> "$report_path"
-printf "- Passed: %d\n" "$passed" >> "$report_path"
-printf "- Failed: %d\n" "$failed" >> "$report_path"
-printf "- Skipped: %d\n" "$skipped" >> "$report_path"
+printf -- "- Passed: %d\n" "$passed" >> "$report_path"
+printf -- "- Failed: %d\n" "$failed" >> "$report_path"
+printf -- "- Skipped: %d\n" "$skipped" >> "$report_path"
 
 echo ""
 echo "Results: $passed passed, $failed failed, $skipped skipped"

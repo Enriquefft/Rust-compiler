@@ -300,8 +300,16 @@ const FunctionBuilder = struct {
                 return .{ .Temp = tmp };
             },
             .Assignment => |assign| {
+
                 const value_op = try self.lowerExpr(assign.value);
                 const target_expr = self.hir_crate.exprs.items[assign.target];
+
+                std.debug.print("Lowering assignment to target kind: {any}\n", .{target_expr.kind});
+                // target target
+                std.debug.print("Assignment target expr: {any}\n", .{self.hir_crate.exprs.items[target_expr.kind.Index.target]});
+                // target index
+                std.debug.print("Assignment target expr: {any}\n", .{self.hir_crate.exprs.items[target_expr.kind.Index.index]});
+
                 if (target_expr.kind == .LocalRef) {
                     const local = target_expr.kind.LocalRef;
                     try self.ensureLocal(local, target_expr.ty, expr.span);
@@ -349,7 +357,22 @@ const FunctionBuilder = struct {
 
                         _ = try self.emitInst(.{ .ty = mapType(self.hir_crate, target_expr.ty, expr.span, self.diagnostics), .dest = null, .kind = .{ .StorePtr = .{ .ptr = ptr_op, .src = final_val } } });
                     }
-                } else {
+                }else if (target_expr.kind == .Index) {
+                    // Handle index assignment: array[index] = value
+                    const array_op = try self.lowerExpr(target_expr.kind.Index.target) orelse {
+                        self.diagnostics.reportError(expr.span, "could not lower array for index assignment");
+                        return null;
+                    };
+                    const index_op = try self.lowerExpr(target_expr.kind.Index.index) orelse {
+                        self.diagnostics.reportError(expr.span, "could not lower index for index assignment");
+                        return null;
+                    };
+                    if (value_op) |val| {
+                        _ = try self.emitInst(.{ .ty = mapType(self.hir_crate, target_expr.ty, expr.span, self.diagnostics), .dest = null, .kind = .{ .StoreIndex = .{ .target = array_op, .index = index_op, .src = val } } });
+                    }
+
+                }
+                else {
                     self.diagnostics.reportError(expr.span, "assignment target not supported in MIR lowering");
                 }
                 return null;

@@ -4,5 +4,5 @@ fn main() {
         values[i] *= 2;
     }
 
-    println!("doubled: {:?}", values);
+    println!("doubled: {}", values[0]);
 }

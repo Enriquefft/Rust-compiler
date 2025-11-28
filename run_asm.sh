@@ -2,7 +2,7 @@
 set -euo pipefail
 
 if [ $# -lt 1 ]; then
-    echo "Usage: $0 <assembly-file> [program-args...]" >&2
+    echo "Usage: $0 <assembly-file>" >&2
     exit 1
 fi
 
