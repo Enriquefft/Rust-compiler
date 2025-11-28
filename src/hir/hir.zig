@@ -1,3 +1,26 @@
+//! High-level Intermediate Representation (HIR) module.
+//!
+//! This module defines the HIR data structures used to represent a resolved and
+//! typed variant of the AST. The HIR is the main output of the frontend and serves
+//! as the input to the MIR lowering phase.
+//!
+//! ## Key Concepts
+//!
+//! - **DefId**: Identifies top-level items (functions, structs, type aliases, impls).
+//! - **LocalId**: Identifies function parameters and local variable bindings.
+//! - **TypeId**: References types stored in the crate's type arena.
+//! - **ExprId / StmtId / ItemId**: References to expressions, statements, and items.
+//!
+//! ## HIR Lowering Pipeline
+//!
+//! The function `lowerFromAst` transforms an AST crate into an HIR crate by:
+//! 1. Converting AST items (functions, structs, type aliases, impls) to HIR items.
+//! 2. Lowering expressions and statements recursively.
+//! 3. Allocating types into the type arena.
+//!
+//! After lowering, name resolution (`name_res.zig`) and type checking (`typecheck.zig`)
+//! are performed to produce a fully resolved and typed HIR.
+
 const std = @import("std");
 const diag = @import("../diag/diagnostics.zig");
 const source_map = @import("../diag/source_map.zig");
@@ -5,196 +28,370 @@ const ast = @import("../frontend/ast.zig");
 const name_res = @import("name_res.zig");
 const typecheck = @import("typecheck.zig");
 
+/// Unique identifier for top-level definitions (functions, structs, type aliases, impls).
 pub const DefId = u32;
+
+/// Unique identifier for local bindings (function parameters, let bindings).
 pub const LocalId = u32;
+
+/// Unique identifier for types stored in the crate's type arena.
 pub const TypeId = u32;
+
+/// Unique identifier for expressions stored in the crate's expression arena.
 pub const ExprId = u32;
+
+/// Unique identifier for statements stored in the crate's statement arena.
 pub const StmtId = u32;
+
+/// Unique identifier for items stored in the crate's item arena.
 pub const ItemId = u32;
 
+/// Represents a type in the HIR.
+///
+/// Types are interned in the crate's type arena and referenced by `TypeId`.
+/// The `kind` field determines the specific type variant.
 pub const Type = struct {
+    /// Unique identifier of this type in the type arena.
     id: TypeId,
+    /// The specific kind of type.
     kind: Kind,
 
+    /// Discriminated union of all possible type kinds.
     pub const Kind = union(enum) {
+        /// Primitive integer types (signed and unsigned).
         PrimInt: enum { U32, U64, Usize, I32, I64 },
+        /// Primitive floating-point types.
         PrimFloat: enum { F32, F64 },
+        /// Boolean type.
         Bool,
+        /// Character type (Unicode scalar value).
         Char,
+        /// String slice type (&str).
         Str,
+        /// Owned string type (String).
         String,
+        /// Fixed-size array type with element type and optional compile-time size.
         Array: struct { elem: TypeId, size_const: ?i64 },
+        /// Raw pointer type with mutability flag.
         Pointer: struct { mutable: bool, inner: TypeId },
+        /// Reference type with mutability flag.
         Ref: struct { mutable: bool, inner: TypeId },
+        /// Function type with parameter types and return type.
         Fn: struct { params: []TypeId, ret: TypeId },
+        /// Struct type referencing a definition with optional type arguments.
         Struct: struct { def_id: DefId, type_args: []TypeId },
+        /// Unresolved path type (to be resolved during type checking).
         Path: struct { segments: [][]const u8, args: []TypeId },
+        /// Placeholder for unresolved or error types.
         Unknown,
     };
 };
 
+/// Represents a pattern used in bindings and match arms.
+///
+/// Patterns occur in function parameters, let bindings, for loops, and match expressions.
 pub const Pattern = struct {
+    /// Unique identifier for this pattern in the pattern arena.
     id: LocalId,
+    /// The specific kind of pattern.
     kind: Kind,
+    /// Source location span for diagnostics.
     span: Span,
 
+    /// Discriminated union of all possible pattern kinds.
     pub const Kind = union(enum) {
+        /// Named binding pattern that introduces a local variable.
         Identifier: []const u8,
+        /// Wildcard pattern that matches anything without binding.
         Wildcard,
     };
 };
 
+/// Represents an expression in the HIR.
+///
+/// Expressions are the primary computational units. Each expression has a type
+/// (assigned during type checking) and a source span for diagnostics.
 pub const Expr = struct {
+    /// Unique identifier for this expression in the expression arena.
     id: ExprId,
+    /// The specific kind of expression.
     kind: Kind,
+    /// Type of this expression (filled during type checking).
     ty: TypeId,
+    /// Source location span for diagnostics.
     span: Span,
 
+    /// Discriminated union of all possible expression kinds.
     pub const Kind = union(enum) {
+        /// Reference to a local variable by its LocalId.
         LocalRef: LocalId,
+        /// Reference to a global item (function, struct, etc.) by its DefId.
         GlobalRef: DefId,
+        /// Integer constant literal.
         ConstInt: i64,
+        /// Floating-point constant literal.
         ConstFloat: f64,
+        /// Boolean constant literal.
         ConstBool: bool,
+        /// Character constant literal (Unicode codepoint).
         ConstChar: u21,
+        /// String constant literal.
         ConstString: []const u8,
+        /// Unresolved identifier (to be resolved during name resolution).
         UnresolvedIdent: []const u8,
+        /// Path expression with segments and optional generic arguments.
         Path: struct { segments: [][]const u8, args: []TypeId },
+        /// Binary operation (arithmetic, comparison, logical).
         Binary: struct { op: BinaryOp, lhs: ExprId, rhs: ExprId },
+        /// Unary operation (negation, not, reference, dereference).
         Unary: struct { op: UnaryOp, expr: ExprId },
+        /// Function call with callee expression and arguments.
         Call: struct { callee: ExprId, args: []ExprId },
+        /// Method call on a target expression.
         MethodCall: struct { target: ExprId, name: []const u8, args: []ExprId },
+        /// Assignment expression with optional compound operator.
         Assignment: struct { target: ExprId, op: AssignOp, value: ExprId },
+        /// Return expression with optional value.
         Return: ?ExprId,
+        /// Conditional expression with condition, then branch, and optional else branch.
         If: struct { cond: ExprId, then_branch: ExprId, else_branch: ?ExprId },
+        /// While loop with condition and body.
         While: struct { cond: ExprId, body: ExprId },
+        /// For loop with pattern, iterator expression, and body.
         For: struct { pat: Pattern, iter: ExprId, body: ExprId },
+        /// Range expression (exclusive or inclusive).
         Range: struct { inclusive: bool, start: ExprId, end: ExprId },
+        /// Type cast expression.
         Cast: struct { expr: ExprId, ty: TypeId },
+        /// Array/slice indexing expression.
         Index: struct { target: ExprId, index: ExprId },
+        /// Field access expression.
         Field: struct { target: ExprId, name: []const u8 },
+        /// Array literal expression.
         Array: []ExprId,
+        /// Struct initialization expression.
         StructInit: StructInit,
+        /// Lambda/closure expression.
         Lambda: struct { params: []Pattern, param_types: []TypeId, body: ExprId },
+        /// Block expression containing statements and optional tail expression.
         Block: struct { stmts: []StmtId, tail: ?ExprId },
+        /// Unsafe block expression.
         Unsafe: struct { body: ExprId },
+        /// Placeholder for unresolved or error expressions.
         Unknown,
     };
 };
 
+/// Struct initialization expression data.
+///
+/// Contains the path identifying the struct type and the field initializers.
 pub const StructInit = struct {
+    /// Path segments identifying the struct type.
     path: [][]const u8,
+    /// List of field initializers.
     fields: []StructInitField,
 };
 
+/// A single field initializer in a struct initialization expression.
 pub const StructInitField = struct {
+    /// Name of the field being initialized.
     name: []const u8,
+    /// Expression providing the initial value.
     value: ExprId,
 };
 
+/// Binary operators for arithmetic, comparison, and logical operations.
 pub const BinaryOp = enum {
+    /// Logical OR (||).
     LogicalOr,
+    /// Logical AND (&&).
     LogicalAnd,
+    /// Equality comparison (==).
     Eq,
+    /// Inequality comparison (!=).
     Ne,
+    /// Less than comparison (<).
     Lt,
+    /// Less than or equal comparison (<=).
     Le,
+    /// Greater than comparison (>).
     Gt,
+    /// Greater than or equal comparison (>=).
     Ge,
+    /// Addition (+).
     Add,
+    /// Subtraction (-).
     Sub,
+    /// Multiplication (*).
     Mul,
+    /// Division (/).
     Div,
+    /// Modulo/remainder (%).
     Mod,
 };
 
+/// Unary operators for negation, reference, and dereference operations.
 pub const UnaryOp = enum {
+    /// Logical NOT (!).
     Not,
+    /// Arithmetic negation (-).
     Neg,
+    /// Pointer/reference dereference (*).
     Deref,
+    /// Immutable reference (&).
     Ref,
+    /// Mutable reference (&mut).
     RefMut,
 };
 
+/// Assignment operators for simple and compound assignment.
 pub const AssignOp = enum {
+    /// Simple assignment (=).
     Assign,
+    /// Addition assignment (+=).
     AddAssign,
+    /// Subtraction assignment (-=).
     SubAssign,
+    /// Multiplication assignment (*=).
     MulAssign,
+    /// Division assignment (/=).
     DivAssign,
 };
 
+/// Represents a statement in the HIR.
+///
+/// Statements are executed for their side effects and optionally produce a value
+/// (as the tail expression of a block).
 pub const Stmt = struct {
+    /// Unique identifier for this statement in the statement arena.
     id: StmtId,
+    /// The specific kind of statement.
     kind: Kind,
+    /// Source location span for diagnostics.
     span: Span,
 
+    /// Discriminated union of all possible statement kinds.
     pub const Kind = union(enum) {
+        /// Let binding statement with pattern, optional type annotation, and optional initializer.
         Let: struct { pat: Pattern, ty: ?TypeId, value: ?ExprId },
+        /// Expression statement.
         Expr: ExprId,
+        /// Placeholder for unresolved or error statements.
         Unknown,
     };
 };
 
+/// Represents a top-level item in the HIR.
+///
+/// Items are the building blocks of a crate: functions, structs, type aliases, and impls.
 pub const Item = struct {
+    /// Unique identifier for this item in the item arena.
     id: ItemId,
+    /// The specific kind of item.
     kind: Kind,
+    /// Source location span for diagnostics.
     span: Span,
 
+    /// Discriminated union of all possible item kinds.
     pub const Kind = union(enum) {
+        /// Function definition.
         Function: Function,
+        /// Struct definition.
         Struct: Struct,
+        /// Type alias definition.
         TypeAlias: TypeAlias,
+        /// Impl block containing methods.
         Impl: Impl,
+        /// Empty item (placeholder).
         Empty,
     };
 };
 
+/// Represents a function definition in the HIR.
 pub const Function = struct {
+    /// Definition ID for this function.
     def_id: DefId,
+    /// Function name.
     name: []const u8,
+    /// Parameter local IDs (indices into the pattern arena).
     params: []LocalId,
+    /// Parameter types (indices into the type arena).
     param_types: []TypeId,
+    /// Optional return type (inferred if not specified).
     return_type: ?TypeId,
+    /// Optional function body (extern functions have no body).
     body: ?ExprId,
+    /// Source location span for diagnostics.
     span: Span,
 };
 
+/// Represents a struct definition in the HIR.
 pub const Struct = struct {
+    /// Definition ID for this struct.
     def_id: DefId,
+    /// Struct name.
     name: []const u8,
+    /// List of struct fields.
     fields: []Field,
+    /// Source location span for diagnostics.
     span: Span,
 };
 
+/// Represents a field in a struct definition.
 pub const Field = struct {
+    /// Field name.
     name: []const u8,
+    /// Field type.
     ty: TypeId,
+    /// Source location span for diagnostics.
     span: Span,
 };
 
+/// Represents a type alias definition in the HIR.
 pub const TypeAlias = struct {
+    /// Definition ID for this type alias.
     def_id: DefId,
+    /// Alias name.
     name: []const u8,
+    /// Target type that this alias refers to.
     target: TypeId,
+    /// Source location span for diagnostics.
     span: Span,
 };
 
+/// Represents an impl block in the HIR.
+///
+/// Impl blocks define methods for a type.
 pub const Impl = struct {
+    /// Definition ID for this impl block.
     def_id: DefId,
+    /// Target type for which methods are being implemented.
     target: TypeId,
+    /// List of method item IDs.
     methods: []ItemId,
+    /// Source location span for diagnostics.
     span: Span,
 };
 
+/// The root container for all HIR data structures.
+///
+/// A crate contains arenas for items, expressions, statements, types, and patterns.
+/// All HIR nodes are stored in these arenas and referenced by their respective IDs.
 pub const Crate = struct {
+    /// Arena allocator for all HIR allocations.
     arena: std.heap.ArenaAllocator,
+    /// All top-level items in the crate.
     items: std.ArrayListUnmanaged(Item),
+    /// All expressions in the crate.
     exprs: std.ArrayListUnmanaged(Expr),
+    /// All statements in the crate.
     stmts: std.ArrayListUnmanaged(Stmt),
+    /// All types in the crate.
     types: std.ArrayListUnmanaged(Type),
+    /// All patterns in the crate.
     patterns: std.ArrayListUnmanaged(Pattern),
 
+    /// Initializes a new empty crate with the given backing allocator.
     pub fn init(backing_allocator: std.mem.Allocator) Crate {
         return .{
             .arena = std.heap.ArenaAllocator.init(backing_allocator),
@@ -206,6 +403,7 @@ pub const Crate = struct {
         };
     }
 
+    /// Releases all memory associated with this crate.
     pub fn deinit(self: *Crate) void {
         self.items.deinit(self.arena.allocator());
         self.exprs.deinit(self.arena.allocator());
@@ -215,14 +413,34 @@ pub const Crate = struct {
         self.arena.deinit();
     }
 
+    /// Returns the arena allocator for making allocations within this crate.
     pub fn allocator(self: *Crate) std.mem.Allocator {
         return self.arena.allocator();
     }
 };
 
+/// Re-export of `Span` from the source map module for convenience.
 pub const Span = source_map.Span;
+
+/// Error type for lowering operations, combining allocation errors with literal parsing errors.
 const LowerError = std.mem.Allocator.Error || error{InvalidLiteral};
 
+/// Lowers an AST crate to an HIR crate.
+///
+/// This function transforms the parsed AST into the HIR representation by:
+/// 1. Converting each AST item (function, struct, type alias, impl) to its HIR equivalent.
+/// 2. Detecting and reporting duplicate item names.
+/// 3. Lowering expressions, statements, and types recursively.
+///
+/// After this pass, name resolution and type checking should be performed to fully resolve the HIR.
+///
+/// ## Parameters
+/// - `allocator`: The allocator used for the HIR crate's arena.
+/// - `ast_crate`: The parsed AST crate to lower.
+/// - `diagnostics`: Diagnostics collector for error reporting.
+///
+/// ## Returns
+/// The lowered HIR crate, or an error if allocation fails.
 pub fn lowerFromAst(allocator: std.mem.Allocator, ast_crate: ast.Crate, diagnostics: *diag.Diagnostics) !Crate {
     var crate = Crate.init(allocator);
     var name_table = std.StringHashMap(Span).init(allocator);
@@ -244,6 +462,7 @@ pub fn lowerFromAst(allocator: std.mem.Allocator, ast_crate: ast.Crate, diagnost
     return crate;
 }
 
+// Lowers an AST function item to an HIR function item.
 fn lowerFn(
     crate: *Crate,
     name_table: *std.StringHashMap(Span),
@@ -288,6 +507,7 @@ fn lowerFn(
     try crate.items.append(crate.allocator(), .{ .id = @intCast(def_id), .kind = .{ .Function = fn_item }, .span = item.span });
 }
 
+// Lowers an AST struct item to an HIR struct item.
 fn lowerStruct(
     crate: *Crate,
     name_table: *std.StringHashMap(Span),
@@ -316,6 +536,7 @@ fn lowerStruct(
     try crate.items.append(crate.allocator(), .{ .id = @intCast(def_id), .kind = .{ .Struct = struct_item }, .span = item.span });
 }
 
+// Lowers an AST type alias item to an HIR type alias item.
 fn lowerTypeAlias(
     crate: *Crate,
     name_table: *std.StringHashMap(Span),
@@ -336,6 +557,7 @@ fn lowerTypeAlias(
     try crate.items.append(crate.allocator(), .{ .id = @intCast(def_id), .kind = .{ .TypeAlias = alias_item }, .span = item.span });
 }
 
+// Lowers an AST impl block to HIR, adding each method as a separate function item.
 fn lowerImpl(
     crate: *Crate,
     def_id: DefId,
@@ -452,6 +674,7 @@ fn lowerImpl(
     try crate.items.append(crate.allocator(), .{ .id = @intCast(def_id), .kind = .{ .Impl = impl_item }, .span = item.span });
 }
 
+// Allocates a new Unknown type and returns its TypeId.
 fn appendUnknownType(crate: *Crate, next_type_id: *TypeId) LowerError!TypeId {
     const id = next_type_id.*;
     next_type_id.* += 1;
@@ -459,6 +682,7 @@ fn appendUnknownType(crate: *Crate, next_type_id: *TypeId) LowerError!TypeId {
     return id;
 }
 
+// Lowers an AST type to an HIR type and returns its TypeId.
 fn lowerType(crate: *Crate, ty: ast.Type, diagnostics: *diag.Diagnostics, next_type_id: *TypeId) LowerError!TypeId {
     const id = next_type_id.*;
     next_type_id.* += 1;
@@ -524,6 +748,7 @@ fn lowerType(crate: *Crate, ty: ast.Type, diagnostics: *diag.Diagnostics, next_t
     return id;
 }
 
+// Evaluates an array size expression at compile time, returning the size as i64 if constant.
 fn evalArraySize(expr: ast.Expr) !?i64 {
     switch (expr.tag) {
         .Literal => {
@@ -536,6 +761,7 @@ fn evalArraySize(expr: ast.Expr) !?i64 {
     }
 }
 
+// Lowers an AST pattern to an HIR pattern and returns its LocalId.
 fn lowerPattern(crate: *Crate, pattern: ast.Pattern, diagnostics: *diag.Diagnostics) LowerError!LocalId {
     _ = diagnostics;
     const id: LocalId = @intCast(crate.patterns.items.len);
@@ -547,6 +773,7 @@ fn lowerPattern(crate: *Crate, pattern: ast.Pattern, diagnostics: *diag.Diagnost
     return id;
 }
 
+// Lowers an AST expression to an HIR expression and returns its ExprId.
 fn lowerExpr(crate: *Crate, expr: ast.Expr, diagnostics: *diag.Diagnostics, next_type_id: *TypeId) LowerError!ExprId {
     switch (expr.tag) {
         .Literal => {
@@ -842,6 +1069,7 @@ fn lowerExpr(crate: *Crate, expr: ast.Expr, diagnostics: *diag.Diagnostics, next
     }
 }
 
+// Lowers an AST block to an HIR block expression and returns its ExprId.
 fn lowerBlock(crate: *Crate, block: ast.Block, diagnostics: *diag.Diagnostics, next_type_id: *TypeId) LowerError!ExprId {
     var stmts = std.ArrayListUnmanaged(StmtId){};
     defer stmts.deinit(crate.allocator());
@@ -865,6 +1093,7 @@ fn lowerBlock(crate: *Crate, block: ast.Block, diagnostics: *diag.Diagnostics, n
     return id;
 }
 
+// Lowers an AST statement to an HIR statement and returns its StmtId.
 fn lowerStmt(crate: *Crate, stmt: ast.Stmt, diagnostics: *diag.Diagnostics, next_type_id: *TypeId) LowerError!StmtId {
     const kind: Stmt.Kind = switch (stmt.tag) {
         .Let => blk: {
@@ -905,6 +1134,7 @@ fn lowerStmt(crate: *Crate, stmt: ast.Stmt, diagnostics: *diag.Diagnostics, next
     return id;
 }
 
+// Infers the type for a literal expression and returns its TypeId.
 fn literalType(crate: *Crate, lit: ast.Literal, diagnostics: *diag.Diagnostics, next_type_id: *TypeId) LowerError!TypeId {
     _ = diagnostics;
     const ty_id = next_type_id.*;
@@ -920,6 +1150,7 @@ fn literalType(crate: *Crate, lit: ast.Literal, diagnostics: *diag.Diagnostics, 
     return ty_id;
 }
 
+// Maps an AST binary operator to an HIR binary operator.
 fn mapBinaryOp(op: ast.BinaryOp) BinaryOp {
     return switch (op) {
         .LogicalOr => .LogicalOr,
@@ -938,6 +1169,7 @@ fn mapBinaryOp(op: ast.BinaryOp) BinaryOp {
     };
 }
 
+// Maps an AST assignment operator to an HIR assignment operator.
 fn mapAssignOp(op: ast.AssignOp) AssignOp {
     return switch (op) {
         .Assign => .Assign,
@@ -948,6 +1180,7 @@ fn mapAssignOp(op: ast.AssignOp) AssignOp {
     };
 }
 
+// Parses a character literal lexeme and returns the Unicode codepoint.
 fn parseCharLiteral(lexeme: []const u8) !u21 {
     if (lexeme.len == 0)
         return error.InvalidLiteral;
@@ -959,12 +1192,15 @@ fn parseCharLiteral(lexeme: []const u8) !u21 {
     return error.InvalidLiteral;
 }
 
+// Allocates an Unknown expression (used as a placeholder for error recovery).
 fn appendUnknownExpr(crate: *Crate, span: Span) LowerError!ExprId {
     const id: ExprId = @intCast(crate.exprs.items.len);
     try crate.exprs.append(crate.allocator(), .{ .id = id, .kind = .Unknown, .ty = 0, .span = span });
     return id;
 }
 
+// Interns a name and detects duplicate definitions.
+// Reports an error if the name already exists in the name table.
 fn internName(
     crate: *Crate,
     name_table: *std.StringHashMap(Span),
@@ -989,19 +1225,30 @@ fn internName(
     return owned;
 }
 
-// Placeholder name resolution and type checking entry points.
+/// Performs name resolution on the HIR crate.
+///
+/// This resolves all identifiers to their corresponding definitions (local or global)
+/// and reports any unresolved or duplicate names.
 pub fn performNameResolution(crate: *Crate, diagnostics: *diag.Diagnostics) !void {
     try name_res.resolve(crate, diagnostics);
 }
 
+/// Performs type checking on the HIR crate.
+///
+/// This assigns types to all expressions and validates type consistency
+/// (operand types, return types, assignment compatibility, etc.).
 pub fn performTypeCheck(crate: *Crate, diagnostics: *diag.Diagnostics) !void {
     try typecheck.typecheck(crate, diagnostics);
 }
 
+/// Creates an empty span for the given file ID.
+///
+/// Useful for constructing synthetic HIR nodes during testing or error recovery.
 pub fn emptySpan(file_id: source_map.FileId) Span {
     return .{ .file_id = file_id, .start = 0, .end = 0 };
 }
 
+// Builds a dummy empty block expression (used for error recovery).
 fn buildDummyBlock(crate: *Crate, span: Span) !ExprId {
     var stmt_ids = std.ArrayListUnmanaged(StmtId){};
     defer stmt_ids.deinit(crate.allocator());

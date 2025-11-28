@@ -1,9 +1,38 @@
+//! Name resolution module for the HIR.
+//!
+//! This module performs name resolution on the HIR, converting unresolved
+//! identifiers to either local references (`LocalRef`) or global references
+//! (`GlobalRef`). It builds symbol tables for module-level and function-level
+//! scopes and reports errors for unresolved or duplicate names.
+//!
+//! ## Resolution Process
+//!
+//! 1. Build module-level symbol table with all top-level items (functions, structs, type aliases).
+//! 2. For each function, build a local symbol table with parameters.
+//! 3. Traverse the function body, resolving identifiers and binding let patterns.
+//! 4. Report diagnostics for unresolved names or duplicate definitions.
+//!
+//! ## Scoping Rules
+//!
+//! - Function parameters are in scope for the entire function body.
+//! - Let bindings shadow earlier bindings with the same name (except within the same scope).
+//! - Lambdas get a copy of the enclosing scope's locals.
+
 const std = @import("std");
 const diag = @import("../diag/diagnostics.zig");
 const hir = @import("hir.zig");
 
+/// Error type for name resolution operations (currently only allocation errors).
 const Error = error{OutOfMemory};
 
+/// Resolves all names in the given HIR crate.
+///
+/// This function populates the module-level symbol table with all top-level items,
+/// then resolves identifiers in each function body to local or global references.
+///
+/// ## Parameters
+/// - `crate`: The HIR crate to perform name resolution on (modified in place).
+/// - `diagnostics`: Diagnostics collector for error reporting.
 pub fn resolve(crate: *hir.Crate, diagnostics: *diag.Diagnostics) Error!void {
     const println_def = try ensureBuiltinPrintln(crate);
 
@@ -52,8 +81,11 @@ pub fn resolve(crate: *hir.Crate, diagnostics: *diag.Diagnostics) Error!void {
     }
 }
 
+/// Helper struct to hold builtin function info.
 const Builtin = struct { name: []const u8, def_id: hir.DefId };
 
+// Ensures the builtin println function exists in the crate.
+// If not present, adds a synthetic println function declaration.
 fn ensureBuiltinPrintln(crate: *hir.Crate) Error!Builtin {
     for (crate.items.items) |item| {
         if (item.kind == .Function and std.mem.eql(u8, item.kind.Function.name, "println")) {
@@ -69,6 +101,8 @@ fn ensureBuiltinPrintln(crate: *hir.Crate) Error!Builtin {
     return .{ .name = name, .def_id = id };
 }
 
+// Inserts a global symbol into the module symbol table.
+// Reports an error if a symbol with the same name already exists.
 fn insertGlobal(
     module_symbols: *std.StringHashMap(hir.DefId),
     name: []const u8,
@@ -90,6 +124,10 @@ fn insertGlobal(
     try module_symbols.put(name, def_id);
 }
 
+// Binds a pattern to the local scope.
+// For identifier patterns, adds the name to the locals table.
+// For wildcard patterns, just allocates a local ID without adding to scope.
+// Reports duplicate binding errors if the name is already in scope.
 fn bindPattern(
     pat: *hir.Pattern,
     locals: *std.StringHashMap(hir.LocalId),
@@ -134,6 +172,7 @@ fn bindPattern(
     }
 }
 
+// Resolves names in a statement (let bindings and expression statements).
 fn resolveStmt(
     crate: *hir.Crate,
     stmt_id: hir.StmtId,
@@ -157,6 +196,8 @@ fn resolveStmt(
     }
 }
 
+// Recursively resolves names in an expression.
+// Converts UnresolvedIdent and Path expressions to LocalRef or GlobalRef.
 fn resolveExpr(
     crate: *hir.Crate,
     expr_id: hir.ExprId,
