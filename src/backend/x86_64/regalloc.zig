@@ -226,6 +226,10 @@ fn rewriteOperands(
             }
         },
         .Jmp, .Jcc, .Ret => try rewritten.append(allocator, inst.*),
+        .Movsd => {
+            // Movsd handles XMM registers - just copy through for now
+            try rewritten.append(allocator, inst.*);
+        },
     }
 }
 

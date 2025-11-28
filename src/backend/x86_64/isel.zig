@@ -452,6 +452,7 @@ fn lowerInst(
             if (is_varargs) ctx.uses_printf = true;
 
             const arg_registers = [_]machine.PhysReg{ .rdi, .rsi, .rdx, .rcx, .r8, .r9 };
+            const xmm_registers = [_]machine.XmmReg{ .xmm0, .xmm1, .xmm2, .xmm3, .xmm4, .xmm5, .xmm6, .xmm7 };
 
             // Push extra arguments to stack (in reverse order per ABI)
             if (payload.args.len > arg_registers.len) {
@@ -463,14 +464,31 @@ fn lowerInst(
                 }
             }
 
+            var xmm_count: usize = 0;
             for (payload.args, 0..) |arg, idx| {
                 if (idx >= arg_registers.len) break;
-                const lowered = try lowerOperand(ctx, arg, vreg_count);
-                try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .Phys = arg_registers[idx] }, .src = lowered } });
+
+                // Check if this is a float argument that needs XMM register
+                if (arg == .ImmFloat) {
+                    // Float args go in XMM registers for varargs
+                    if (xmm_count < xmm_registers.len) {
+                        // Move through memory since we can't directly mov imm to xmm
+                        // Store to stack, then load to xmm
+                        const float_val: i64 = @bitCast(arg.ImmFloat);
+                        try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .Phys = .r11 }, .src = .{ .Imm = float_val } } });
+                        try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .Mem = .{ .base = .rsp, .offset = -8 } }, .src = .{ .Phys = .r11 } } });
+                        try insts.append(ctx.allocator, .{ .Movsd = .{ .dst = .{ .Xmm = xmm_registers[xmm_count] }, .src = .{ .Mem = .{ .base = .rsp, .offset = -8 } } } });
+                        xmm_count += 1;
+                    }
+                } else {
+                    const lowered = try lowerOperand(ctx, arg, vreg_count);
+                    try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .Phys = arg_registers[idx] }, .src = lowered } });
+                }
             }
 
             if (is_varargs) {
-                try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .Phys = .rax }, .src = .{ .Imm = 0 } } });
+                // AL must contain the number of XMM registers used
+                try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .Phys = .rax }, .src = .{ .Imm = @intCast(xmm_count) } } });
             }
 
             try insts.append(ctx.allocator, .{ .Call = switch (target) {
