@@ -26,7 +26,6 @@ const TreePrinter = struct {
     segment_lengths: std.ArrayListUnmanaged(usize),
 
     /// Initializes a new TreePrinter with the given allocator.
-    /// Initializes a new TreePrinter with the given allocator.
     fn init(allocator: std.mem.Allocator) TreePrinter {
         return .{
             .allocator = allocator,
