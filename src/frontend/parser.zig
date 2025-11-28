@@ -759,12 +759,10 @@ const Parser = struct {
             .LBracket => {
                 const lbrack = self.advance();
                 var elements = std.ArrayListUnmanaged(ast.Expr){};
-                if (!self.check(.RBracket)) {
-                    while (true) {
-                        const elem = self.parseExpr() orelse break;
-                        elements.append(self.arena, elem.*) catch {};
-                        if (!self.match(.Comma)) break;
-                    }
+                while (!self.check(.RBracket) and !self.isAtEnd()) {
+                    const elem = self.parseExpr() orelse break;
+                    elements.append(self.arena, elem.*) catch {};
+                    if (!self.match(.Comma)) break;
                 }
                 const rbrack = self.expectConsume(.RBracket, "expected ']' after array literal") orelse return null;
                 const span = Span{ .file_id = lbrack.span.file_id, .start = lbrack.span.start, .end = rbrack.span.end };

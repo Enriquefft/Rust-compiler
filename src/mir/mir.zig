@@ -158,6 +158,8 @@ pub const InstKind = union(enum) {
     StorePtr: struct { ptr: Operand, src: Operand },
     /// Store a value through an index
     StoreIndex: struct { target: Operand, index: Operand, src: Operand },
+    /// Store a value into a struct field
+    StoreField: struct { target: Operand, name: []const u8, src: Operand },
 
     /// Function call with target and arguments
     Call: struct {
