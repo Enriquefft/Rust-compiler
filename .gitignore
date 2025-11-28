@@ -3,6 +3,7 @@ zig-cache/
 zig-out/
 s.s
 codes/*.s
+codes/target/
 report.md
 test_report.md
 test_out
