@@ -1439,6 +1439,33 @@ const FunctionBuilder = struct {
             return null;
         }
         const expr = self.hir_crate.exprs.items[expr_id];
+
+        // Check HIR type directly for references like &str
+        if (expr.ty < self.hir_crate.types.items.len) {
+            const hir_type = self.hir_crate.types.items[expr.ty].kind;
+            switch (hir_type) {
+                .Ref => |ref_info| {
+                    // Check what the reference is to
+                    if (ref_info.inner < self.hir_crate.types.items.len) {
+                        const inner_kind = self.hir_crate.types.items[ref_info.inner].kind;
+                        if (inner_kind == .Str) {
+                            return "%s";
+                        }
+                    }
+                },
+                .Pointer => |ptr_info| {
+                    // Check what the pointer is to
+                    if (ptr_info.inner < self.hir_crate.types.items.len) {
+                        const inner_kind = self.hir_crate.types.items[ptr_info.inner].kind;
+                        if (inner_kind == .Str) {
+                            return "%s";
+                        }
+                    }
+                },
+                else => {},
+            }
+        }
+
         const ty = mapType(self.hir_crate, expr.ty, span, self.diagnostics) orelse {
             self.diagnostics.reportError(span, "println! argument has unsupported type");
             return null;
@@ -1451,6 +1478,7 @@ const FunctionBuilder = struct {
             .Bool => "%d",
             .Char => "%c",
             .String, .Str => "%s",
+            .Pointer => "%p", // Default pointer format
             else => {
                 self.diagnostics.reportError(span, "println! argument type cannot be formatted");
                 return null;

@@ -59,6 +59,8 @@ const LowerContext = struct {
     index_mem_map: std.AutoHashMap(machine.VReg, machine.MemRef) = undefined,
     // Map from VReg to address VReg for dynamic index results (to support Ref(Index) with dynamic indices)
     dynamic_index_addr_map: std.AutoHashMap(machine.VReg, machine.VReg) = undefined,
+    // Current function's local variable types (for type-aware lowering)
+    current_fn_locals: []const mir.MirType = &[_]mir.MirType{},
 };
 
 pub fn lowerCrate(allocator: std.mem.Allocator, mir_crate: *const mir.MirCrate, diagnostics: *diag.Diagnostics) LowerError!machine.MachineCrate {
@@ -109,6 +111,9 @@ fn lowerFn(ctx: *LowerContext, func: mir.MirFn) LowerError!machine.MachineFn {
     defer blocks.deinit(ctx.allocator);
 
     var vreg_count: machine.VReg = 0;
+
+    // Set current function's local types for type-aware lowering
+    ctx.current_fn_locals = func.locals;
 
     // Initialize index memory map for this function
     ctx.index_mem_map = std.AutoHashMap(machine.VReg, machine.MemRef).init(ctx.allocator);
@@ -452,20 +457,131 @@ fn lowerInst(
             if (is_varargs) ctx.uses_printf = true;
 
             const arg_registers = [_]machine.PhysReg{ .rdi, .rsi, .rdx, .rcx, .r8, .r9 };
-            for (payload.args, 0..) |arg, idx| {
-                if (idx >= arg_registers.len) break; // simplistic handling: ignore extra args for now
-                const lowered = try lowerOperand(ctx, arg, vreg_count);
-                try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .Phys = arg_registers[idx] }, .src = lowered } });
+            const xmm_registers = [_]machine.XmmReg{ .xmm0, .xmm1, .xmm2, .xmm3, .xmm4, .xmm5, .xmm6, .xmm7 };
+
+            // First pass: count float vs non-float args to determine what goes where
+            var float_count: usize = 0;
+            var gpr_count: usize = 0;
+            for (payload.args) |arg| {
+                const is_float = switch (arg) {
+                    .ImmFloat => true,
+                    .Local => |local_id| blk: {
+                        if (local_id < ctx.current_fn_locals.len) {
+                            const ty = ctx.current_fn_locals[local_id];
+                            break :blk (ty == .F32 or ty == .F64);
+                        }
+                        break :blk false;
+                    },
+                    else => false,
+                };
+                if (is_float and is_varargs) {
+                    float_count += 1;
+                } else {
+                    gpr_count += 1;
+                }
+            }
+
+            // Push extra GPR arguments to stack (in reverse order per ABI)
+            var stack_args = std.ArrayListUnmanaged(machine.MOperand){};
+            defer stack_args.deinit(ctx.allocator);
+
+            var temp_gpr_count: usize = 0;
+            for (payload.args) |arg| {
+                const is_float = switch (arg) {
+                    .ImmFloat => true,
+                    .Local => |local_id| blk: {
+                        if (local_id < ctx.current_fn_locals.len) {
+                            const ty = ctx.current_fn_locals[local_id];
+                            break :blk (ty == .F32 or ty == .F64);
+                        }
+                        break :blk false;
+                    },
+                    else => false,
+                };
+                if (!is_float or !is_varargs) {
+                    if (temp_gpr_count >= arg_registers.len) {
+                        // This arg needs to go on stack
+                        const lowered = try lowerOperand(ctx, arg, vreg_count);
+                        try stack_args.append(ctx.allocator, lowered);
+                    }
+                    temp_gpr_count += 1;
+                }
+            }
+
+            // Ensure 16-byte stack alignment before call
+            // If odd number of stack args, add padding
+            const need_padding = (stack_args.items.len % 2) == 1;
+            if (need_padding) {
+                try insts.append(ctx.allocator, .{ .Bin = .{ .op = .sub, .dst = .{ .Phys = .rsp }, .lhs = .{ .Phys = .rsp }, .rhs = .{ .Imm = 8 } } });
+            }
+
+            // Push stack args in reverse order
+            var i = stack_args.items.len;
+            while (i > 0) {
+                i -= 1;
+                try insts.append(ctx.allocator, .{ .Push = stack_args.items[i] });
+            }
+
+            var xmm_count: usize = 0;
+            var gpr_idx: usize = 0;
+            for (payload.args) |arg| {
+                // Check if this argument is a float type
+                const is_float = switch (arg) {
+                    .ImmFloat => true,
+                    .Local => |local_id| blk: {
+                        if (local_id < ctx.current_fn_locals.len) {
+                            const ty = ctx.current_fn_locals[local_id];
+                            break :blk (ty == .F32 or ty == .F64);
+                        }
+                        break :blk false;
+                    },
+                    else => false,
+                };
+
+                if (is_float and is_varargs) {
+                    // Float args go in XMM registers for varargs
+                    if (xmm_count < xmm_registers.len) {
+                        // Load from local to XMM
+                        switch (arg) {
+                            .ImmFloat => |float_val| {
+                                const float_bits: i64 = @bitCast(float_val);
+                                try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .Phys = .r11 }, .src = .{ .Imm = float_bits } } });
+                                try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .Mem = .{ .base = .rsp, .offset = -8 } }, .src = .{ .Phys = .r11 } } });
+                                try insts.append(ctx.allocator, .{ .Movsd = .{ .dst = .{ .Xmm = xmm_registers[xmm_count] }, .src = .{ .Mem = .{ .base = .rsp, .offset = -8 } } } });
+                            },
+                            .Local => |local_id| {
+                                const offset: i32 = -@as(i32, @intCast(local_id + 1)) * 32;
+                                try insts.append(ctx.allocator, .{ .Movsd = .{ .dst = .{ .Xmm = xmm_registers[xmm_count] }, .src = .{ .Mem = .{ .base = .rbp, .offset = offset } } } });
+                            },
+                            else => {},
+                        }
+                        xmm_count += 1;
+                    }
+                } else {
+                    if (gpr_idx < arg_registers.len) {
+                        const lowered = try lowerOperand(ctx, arg, vreg_count);
+                        try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .Phys = arg_registers[gpr_idx] }, .src = lowered } });
+                        gpr_idx += 1;
+                    }
+                }
             }
 
             if (is_varargs) {
-                try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .Phys = .rax }, .src = .{ .Imm = 0 } } });
+                // AL must contain the number of XMM registers used
+                try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .Phys = .rax }, .src = .{ .Imm = @intCast(xmm_count) } } });
             }
 
             try insts.append(ctx.allocator, .{ .Call = switch (target) {
                 .Direct => |name| .{ .Direct = name },
                 .Indirect => |op| .{ .Indirect = op },
             } });
+
+            // Clean up stack after call if we pushed extra args (including alignment padding)
+            if (stack_args.items.len > 0 or need_padding) {
+                var cleanup_size = stack_args.items.len * 8;
+                if (need_padding) cleanup_size += 8;
+                try insts.append(ctx.allocator, .{ .Add = .{ .dst = .{ .Phys = .rsp }, .src = .{ .Imm = @intCast(cleanup_size) } } });
+            }
 
             if (dest_vreg) |dst| {
                 try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .VReg = dst }, .src = .{ .Phys = .rax } } });
@@ -728,6 +844,7 @@ fn lowerSimpleOperand(ctx: *LowerContext, op: mir.Operand, vreg_count: ?*machine
         .ImmInt => |v| .{ .Imm = v },
         .ImmBool => |v| .{ .Imm = if (v) 1 else 0 },
         .ImmFloat => |v| .{ .Imm = @bitCast(v) },
+        .ImmChar => |c| .{ .Imm = @intCast(c) }, // Unicode codepoint as immediate
         .ImmString => |s| .{ .Label = try ctx.data.internString(s) },
         .Global => |id| blk: {
             if (id >= ctx.mir_crate.fns.items.len) {
@@ -737,10 +854,6 @@ fn lowerSimpleOperand(ctx: *LowerContext, op: mir.Operand, vreg_count: ?*machine
             break :blk .{ .Label = ctx.mir_crate.fns.items[id].name };
         },
         .Symbol => |name| .{ .Label = name },
-        else => {
-            ctx.diagnostics.reportError(zero_span, "unsupported operand kind for x86_64 lowering");
-            return error.Unsupported;
-        },
     };
 }
 

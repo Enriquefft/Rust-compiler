@@ -198,6 +198,23 @@ fn rewriteOperands(
             }
             try rewritten.append(allocator, .{ .Test = .{ .operand = op } });
         },
+        .Push => |*payload| {
+            var op = try materializeRead(payload.*, map, available, spill_scratch, phys_used, spill_slots, diagnostics);
+            if (isMem(op)) {
+                try rewritten.append(allocator, .{ .Mov = .{ .dst = .{ .Phys = spill_scratch }, .src = op } });
+                op = .{ .Phys = spill_scratch };
+            }
+            try rewritten.append(allocator, .{ .Push = op });
+        },
+        .Add => |*payload| {
+            const dst = try materializeWrite(payload.dst, map, available, spill_scratch, phys_used, spill_slots, diagnostics);
+            var src = try materializeRead(payload.src, map, available, spill_scratch, phys_used, spill_slots, diagnostics);
+            if (isMem(dst) and isMem(src)) {
+                try rewritten.append(allocator, .{ .Mov = .{ .dst = .{ .Phys = spill_scratch }, .src = src } });
+                src = .{ .Phys = spill_scratch };
+            }
+            try rewritten.append(allocator, .{ .Add = .{ .dst = dst, .src = src } });
+        },
         .Call => |*payload| {
             try spillMappedRegisters(map, rewritten, allocator, spill_slots);
             switch (payload.*) {
@@ -209,6 +226,10 @@ fn rewriteOperands(
             }
         },
         .Jmp, .Jcc, .Ret => try rewritten.append(allocator, inst.*),
+        .Movsd => {
+            // Movsd handles XMM registers - just copy through for now
+            try rewritten.append(allocator, inst.*);
+        },
     }
 }
 

@@ -15,6 +15,17 @@ pub const PhysReg = enum {
     rsp,
 };
 
+pub const XmmReg = enum {
+    xmm0,
+    xmm1,
+    xmm2,
+    xmm3,
+    xmm4,
+    xmm5,
+    xmm6,
+    xmm7,
+};
+
 pub const Condition = enum {
     eq,
     ne,
@@ -34,6 +45,7 @@ pub const MemRef = struct {
 pub const MOperand = union(enum) {
     VReg: VReg,
     Phys: PhysReg,
+    Xmm: XmmReg,
     Imm: i64,
     Label: []const u8,
     Mem: MemRef,
@@ -45,6 +57,7 @@ pub const UnaryOpcode = enum { not_, neg };
 
 pub const InstKind = union(enum) {
     Mov: struct { dst: MOperand, src: MOperand },
+    Movsd: struct { dst: MOperand, src: MOperand },
     Bin: struct { op: BinOpcode, dst: MOperand, lhs: MOperand, rhs: MOperand },
     Unary: struct { op: UnaryOpcode, dst: MOperand, src: MOperand },
     Lea: struct { dst: MOperand, mem: MemRef },
@@ -55,6 +68,8 @@ pub const InstKind = union(enum) {
     Cmp: struct { lhs: MOperand, rhs: MOperand },
     Setcc: struct { cond: Condition, dst: MOperand },
     Test: struct { operand: MOperand },
+    Push: MOperand,
+    Add: struct { dst: MOperand, src: MOperand },
     Jmp: u32,
     Jcc: struct { cond: Condition, target: u32 },
     Call: union(enum) { Direct: []const u8, Indirect: MOperand },

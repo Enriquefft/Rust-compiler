@@ -101,6 +101,13 @@ fn emitInst(writer: anytype, inst: machine.InstKind, fn_name: []const u8) !void 
                 try writer.writeByte('\n');
             }
         },
+        .Movsd => |payload| {
+            try writer.writeAll("    movsd ");
+            try writeOperand(writer, payload.dst);
+            try writer.writeAll(", ");
+            try writeOperand(writer, payload.src);
+            try writer.writeByte('\n');
+        },
         .Bin => |payload| {
             if (payload.op == .idiv or payload.op == .imod) {
                 // x86-64 idiv is a unary instruction that divides rdx:rax by the operand.
@@ -278,6 +285,18 @@ fn emitInst(writer: anytype, inst: machine.InstKind, fn_name: []const u8) !void 
             try writeOperand(writer, payload.operand);
             try writer.writeByte('\n');
         },
+        .Push => |payload| {
+            try writer.writeAll("    push ");
+            try writeOperand(writer, payload);
+            try writer.writeByte('\n');
+        },
+        .Add => |payload| {
+            try writer.writeAll("    add ");
+            try writeOperand(writer, payload.dst);
+            try writer.writeAll(", ");
+            try writeOperand(writer, payload.src);
+            try writer.writeByte('\n');
+        },
         .Jmp => |target| try writer.print("    jmp .L{s}_{d}\n", .{ fn_name, target }),
         .Jcc => |payload| try writer.print("    j{s} .L{s}_{d}\n", .{ condSuffix(payload.cond), fn_name, payload.target }),
         .Call => |target| switch (target) {
@@ -326,6 +345,7 @@ fn condSuffix(cond: machine.Condition) []const u8 {
 fn writeOperand(writer: anytype, op: machine.MOperand) !void {
     switch (op) {
         .Phys => |reg| try writer.writeAll(physName(reg)),
+        .Xmm => |reg| try writer.writeAll(xmmName(reg)),
         .Imm => |val| try writer.print("{d}", .{val}),
         .Label => |label| try writer.writeAll(label),
         .Mem => |mem| {
@@ -333,6 +353,19 @@ fn writeOperand(writer: anytype, op: machine.MOperand) !void {
         },
         .VReg => |id| try writer.print("v{d}", .{id}),
     }
+}
+
+fn xmmName(reg: machine.XmmReg) []const u8 {
+    return switch (reg) {
+        .xmm0 => "xmm0",
+        .xmm1 => "xmm1",
+        .xmm2 => "xmm2",
+        .xmm3 => "xmm3",
+        .xmm4 => "xmm4",
+        .xmm5 => "xmm5",
+        .xmm6 => "xmm6",
+        .xmm7 => "xmm7",
+    };
 }
 
 fn writeMem(writer: anytype, mem: machine.MemRef) !void {

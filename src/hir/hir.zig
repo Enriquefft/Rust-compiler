@@ -826,6 +826,12 @@ fn lowerExpr(crate: *Crate, expr: ast.Expr, diagnostics: *diag.Diagnostics, next
             return id;
         },
         .Call => {
+            // Handle String::from("...") specially - just return the string literal as String type
+            if (isStringFromCall(&expr.data.Call)) {
+                if (expr.data.Call.args.len == 1) {
+                    return try lowerExpr(crate, expr.data.Call.args[0], diagnostics, next_type_id);
+                }
+            }
             const callee = try lowerExpr(crate, expr.data.Call.callee.*, diagnostics, next_type_id);
             var args = std.ArrayListUnmanaged(ExprId){};
             defer args.deinit(crate.allocator());
@@ -1180,12 +1186,30 @@ fn mapAssignOp(op: ast.AssignOp) AssignOp {
     };
 }
 
+// Checks if a Call expression is a String::from(...) call.
+// This is used to handle String::from("literal") specially.
+fn isStringFromCall(call: *const ast.CallExpr) bool {
+    const callee = call.callee.*;
+    if (callee.tag != .Path) return false;
+    const path = callee.data.Path;
+    if (path.segments.len != 2) return false;
+    if (!std.mem.eql(u8, path.segments[0].name, "String")) return false;
+    if (!std.mem.eql(u8, path.segments[1].name, "from")) return false;
+    return true;
+}
+
 // Parses a character literal lexeme and returns the Unicode codepoint.
 fn parseCharLiteral(lexeme: []const u8) !u21 {
     if (lexeme.len == 0)
         return error.InvalidLiteral;
-    // Naive parsing assuming lexeme already stripped of quotes.
-    var iter = std.unicode.Utf8Iterator{ .bytes = lexeme, .i = 0 };
+    // Strip quotes if present (lexeme should be 'c' format from lexer)
+    const content = if (lexeme.len >= 2 and lexeme[0] == '\'' and lexeme[lexeme.len - 1] == '\'')
+        lexeme[1 .. lexeme.len - 1]
+    else
+        lexeme;
+    if (content.len == 0)
+        return error.InvalidLiteral;
+    var iter = std.unicode.Utf8Iterator{ .bytes = content, .i = 0 };
     if (iter.nextCodepointSlice()) |cp| {
         return std.unicode.utf8Decode(cp) catch return error.InvalidLiteral;
     }
