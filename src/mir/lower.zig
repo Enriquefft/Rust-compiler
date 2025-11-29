@@ -401,7 +401,7 @@ const FunctionBuilder = struct {
                 defer args.deinit(self.allocator);
                 for (call.args) |arg_id| {
                     const arg_expr = self.hir_crate.exprs.items[arg_id];
-                    
+
                     // Check if argument is a struct type - if so, pass all fields
                     var is_struct_arg = false;
                     var struct_fields: ?[]const hir.Field = null;
@@ -431,7 +431,7 @@ const FunctionBuilder = struct {
                             else => {},
                         }
                     }
-                    
+
                     if (is_struct_arg and struct_fields != null and arg_expr.kind == .LocalRef) {
                         const base_local = self.param_local_map.get(arg_expr.kind.LocalRef) orelse arg_expr.kind.LocalRef;
                         // Pass each field using same hash-based ordering as struct init
