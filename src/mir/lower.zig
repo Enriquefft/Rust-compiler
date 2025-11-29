@@ -79,6 +79,7 @@ fn lowerFunction(crate: *mir.MirCrate, func: hir.Function, hir_crate: *const hir
         // Check if this parameter is a struct type (needs field expansion)
         var num_fields: usize = 1;
         var struct_fields: ?[]const hir.Field = null;
+        var is_generic_param = false;
         if (ty) |ty_id| {
             if (ty_id < hir_crate.types.items.len) {
                 const param_type = hir_crate.types.items[ty_id];
@@ -96,11 +97,17 @@ fn lowerFunction(crate: *mir.MirCrate, func: hir.Function, hir_crate: *const hir
                         // Look up struct by name
                         if (path.segments.len == 1) {
                             const struct_name = path.segments[0];
-                            for (hir_crate.items.items) |item| {
-                                if (item.kind == .Struct and std.mem.eql(u8, item.kind.Struct.name, struct_name)) {
-                                    num_fields = item.kind.Struct.fields.len;
-                                    struct_fields = item.kind.Struct.fields;
-                                    break;
+                            // Check if this is a generic type parameter (single letter like T, U, V)
+                            // Generic params are typically single uppercase letters
+                            if (struct_name.len == 1 and struct_name[0] >= 'A' and struct_name[0] <= 'Z') {
+                                is_generic_param = true;
+                            } else {
+                                for (hir_crate.items.items) |item| {
+                                    if (item.kind == .Struct and std.mem.eql(u8, item.kind.Struct.name, struct_name)) {
+                                        num_fields = item.kind.Struct.fields.len;
+                                        struct_fields = item.kind.Struct.fields;
+                                        break;
+                                    }
                                 }
                             }
                         }
@@ -139,6 +146,20 @@ fn lowerFunction(crate: *mir.MirCrate, func: hir.Function, hir_crate: *const hir
 
             // Increment by MAX_STRUCT_FIELDS to reserve space for hash-indexed fields
             next_local += MAX_STRUCT_FIELDS;
+        } else if (is_generic_param) {
+            // For generic type parameters (T, U, etc.), assume they might be structs
+            // and allocate space for up to 2 fields (common case for pairs)
+            // Store both param0 and param1 to adjacent locals
+            for (0..2) |i| {
+                try builder.ensureLocal(next_local + @as(hir.LocalId, @intCast(i)), ty, func.span);
+            }
+            // Store first value
+            _ = try builder.emitInst(.{ .ty = mapType(hir_crate, ty, func.span, diagnostics), .dest = null, .kind = .{ .StoreLocal = .{ .local = next_local, .src = .{ .Param = @intCast(arg_idx) } } } });
+            arg_idx += 1;
+            // Store second value (might be passed if T is a 2-field struct)
+            _ = try builder.emitInst(.{ .ty = mapType(hir_crate, ty, func.span, diagnostics), .dest = null, .kind = .{ .StoreLocal = .{ .local = next_local + 1, .src = .{ .Param = @intCast(arg_idx) } } } });
+            arg_idx += 1;
+            next_local += 2;
         } else {
             // Non-struct parameter: store normally
             try builder.ensureLocal(next_local, ty, func.span);
@@ -1603,8 +1624,14 @@ const FunctionBuilder = struct {
                     // Check what the reference is to
                     if (ref_info.inner < self.hir_crate.types.items.len) {
                         const inner_kind = self.hir_crate.types.items[ref_info.inner].kind;
-                        if (inner_kind == .Str) {
-                            return "%s";
+                        switch (inner_kind) {
+                            .Str => return "%s",
+                            .String => return "%s",
+                            .PrimInt => |int_ty| return switch (int_ty) {
+                                .I32, .U32 => "%d",
+                                .I64, .U64, .Usize => "%ld",
+                            },
+                            else => {},
                         }
                     }
                 },
@@ -1612,8 +1639,14 @@ const FunctionBuilder = struct {
                     // Check what the pointer is to
                     if (ptr_info.inner < self.hir_crate.types.items.len) {
                         const inner_kind = self.hir_crate.types.items[ptr_info.inner].kind;
-                        if (inner_kind == .Str) {
-                            return "%s";
+                        switch (inner_kind) {
+                            .Str => return "%s",
+                            .String => return "%s",
+                            .PrimInt => |int_ty| return switch (int_ty) {
+                                .I32, .U32 => "%d",
+                                .I64, .U64, .Usize => "%ld",
+                            },
+                            else => {},
                         }
                     }
                 },
