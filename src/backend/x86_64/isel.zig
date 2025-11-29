@@ -23,6 +23,15 @@ const LOCAL_STACK_MULTIPLIER: u32 = 4;
 /// Element 1 -> rdx, element 2 -> rcx, element 3 -> r8
 const MAX_EXTRA_ARRAY_ELEMENTS: usize = 3;
 
+/// Offset from the first field to the second field in a struct.
+/// This is calculated as: -field_index * LOCAL_STACK_MULTIPLIER * sizeof(i64)
+/// For the second field (index 1): -1 * 4 * 8 = -32
+/// 
+/// Note: Currently only 2-field structs are fully supported for passing/returning
+/// through registers. The first field goes in rax/vreg, the second in rdx.
+/// This matches the System V ABI for small struct returns.
+const STRUCT_SECOND_FIELD_OFFSET: i64 = -@as(i64, @intCast(@sizeOf(i64) * LOCAL_STACK_MULTIPLIER));
+
 /// Get the sequential field index for a field name.
 /// For arrays of structs with known field patterns (x=0, y=1), returns sequential index.
 /// Falls back to hash-based index for unknown field names.
@@ -33,6 +42,30 @@ fn getSequentialFieldIndex(name: []const u8) i32 {
     var hash: u32 = 0;
     for (name) |ch| hash = hash *% 31 +% ch;
     return @intCast(hash % MAX_STRUCT_FIELDS);
+}
+
+/// Load the second field of a struct from memory into rdx.
+/// This is used when loading a struct from an array so that both fields
+/// are available for subsequent StoreLocal operations.
+///
+/// Parameters:
+/// - insts: The instruction list to append to
+/// - allocator: Allocator for instruction list operations
+/// - base_addr_vreg: VReg containing the base address of the struct
+/// - vreg_count: Pointer to the next VReg ID (will be incremented)
+fn loadSecondStructFieldToRdx(
+    insts: *std.ArrayListUnmanaged(machine.InstKind),
+    allocator: std.mem.Allocator,
+    base_addr_vreg: machine.VReg,
+    vreg_count: *machine.VReg,
+) !void {
+    // Compute address of second field
+    vreg_count.* += 1;
+    const second_addr_vreg = vreg_count.* - 1;
+    try insts.append(allocator, .{ .Mov = .{ .dst = .{ .VReg = second_addr_vreg }, .src = .{ .VReg = base_addr_vreg } } });
+    try insts.append(allocator, .{ .Bin = .{ .op = .add, .dst = .{ .VReg = second_addr_vreg }, .lhs = .{ .VReg = second_addr_vreg }, .rhs = .{ .Imm = STRUCT_SECOND_FIELD_OFFSET } } });
+    // Load second field into rdx
+    try insts.append(allocator, .{ .Deref = .{ .dst = .{ .Phys = .rdx }, .addr = .{ .VReg = second_addr_vreg } } });
 }
 
 pub const LowerError = error{ Unsupported, OutOfMemory };
@@ -299,12 +332,10 @@ fn lowerInst(
                 } else if (ty == .Struct and !is_param_source) {
                     // For structs stored to locals, store the second field from rdx
                     // Use the same layout as Field access: hash-based field indices with LOCAL_STACK_MULTIPLIER spacing
-                    // Field "y" has hash index 1, so offset is -1 * LOCAL_STACK_MULTIPLIER * sizeof(i64) = -32
-                    const second_field_offset: i32 = -@as(i32, @intCast(@sizeOf(i64) * LOCAL_STACK_MULTIPLIER));
                     const second_field_mem = machine.MOperand{
                         .Mem = .{
                             .base = mem.Mem.base,
-                            .offset = mem.Mem.offset + second_field_offset,
+                            .offset = mem.Mem.offset + @as(i32, @truncate(STRUCT_SECOND_FIELD_OFFSET)),
                         },
                     };
                     try insts.append(ctx.allocator, .{ .Mov = .{ .dst = second_field_mem, .src = .{ .Phys = .rdx } } });
@@ -675,10 +706,7 @@ fn lowerInst(
                                 // This is needed for StoreLocal to correctly store both fields
                                 if (inst.ty) |ty| {
                                     if (ty == .Struct) {
-                                        // Second field is at offset -LOCAL_STACK_MULTIPLIER * sizeof(i64) from the element base
-                                        const second_field_offset: i32 = -@as(i32, @intCast(@sizeOf(i64) * LOCAL_STACK_MULTIPLIER));
-                                        const second_mem = machine.MOperand{ .Mem = .{ .base = base_mem.base, .offset = offset + second_field_offset } };
-                                        // Load second field into rdx
+                                        const second_mem = machine.MOperand{ .Mem = .{ .base = base_mem.base, .offset = offset + @as(i32, @truncate(STRUCT_SECOND_FIELD_OFFSET)) } };
                                         try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .Phys = .rdx }, .src = second_mem } });
                                     }
                                 }
@@ -729,18 +757,9 @@ fn lowerInst(
                                 try insts.append(ctx.allocator, .{ .Deref = .{ .dst = .{ .VReg = dst }, .addr = .{ .VReg = base_vreg } } });
 
                                 // For struct types, also load the second field into rdx
-                                // This is needed for StoreLocal to correctly store both fields
                                 if (inst.ty) |ty| {
                                     if (ty == .Struct) {
-                                        // Second field is at offset -LOCAL_STACK_MULTIPLIER * sizeof(i64) from base
-                                        const second_field_offset: i64 = -@as(i64, @intCast(@sizeOf(i64) * LOCAL_STACK_MULTIPLIER));
-                                        // Compute address of second field
-                                        vreg_count.* += 1;
-                                        const second_addr_vreg = vreg_count.* - 1;
-                                        try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .VReg = second_addr_vreg }, .src = .{ .VReg = base_vreg } } });
-                                        try insts.append(ctx.allocator, .{ .Bin = .{ .op = .add, .dst = .{ .VReg = second_addr_vreg }, .lhs = .{ .VReg = second_addr_vreg }, .rhs = .{ .Imm = second_field_offset } } });
-                                        // Load second field into rdx
-                                        try insts.append(ctx.allocator, .{ .Deref = .{ .dst = .{ .Phys = .rdx }, .addr = .{ .VReg = second_addr_vreg } } });
+                                        try loadSecondStructFieldToRdx(insts, ctx.allocator, base_vreg, vreg_count);
                                     }
                                 }
 
@@ -774,18 +793,9 @@ fn lowerInst(
                                 try insts.append(ctx.allocator, .{ .Deref = .{ .dst = .{ .VReg = dst }, .addr = .{ .VReg = addr_vreg } } });
 
                                 // For struct types, also load the second field into rdx
-                                // This is needed for StoreLocal to correctly store both fields
                                 if (inst.ty) |ty| {
                                     if (ty == .Struct) {
-                                        // Second field is at offset -LOCAL_STACK_MULTIPLIER * sizeof(i64) from base
-                                        const second_field_offset: i64 = -@as(i64, @intCast(@sizeOf(i64) * LOCAL_STACK_MULTIPLIER));
-                                        // Compute address of second field
-                                        vreg_count.* += 1;
-                                        const second_addr_vreg = vreg_count.* - 1;
-                                        try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .VReg = second_addr_vreg }, .src = .{ .VReg = addr_vreg } } });
-                                        try insts.append(ctx.allocator, .{ .Bin = .{ .op = .add, .dst = .{ .VReg = second_addr_vreg }, .lhs = .{ .VReg = second_addr_vreg }, .rhs = .{ .Imm = second_field_offset } } });
-                                        // Load second field into rdx
-                                        try insts.append(ctx.allocator, .{ .Deref = .{ .dst = .{ .Phys = .rdx }, .addr = .{ .VReg = second_addr_vreg } } });
+                                        try loadSecondStructFieldToRdx(insts, ctx.allocator, addr_vreg, vreg_count);
                                     }
                                 }
 
@@ -831,18 +841,9 @@ fn lowerInst(
                                 try insts.append(ctx.allocator, .{ .Deref = .{ .dst = .{ .VReg = dst }, .addr = .{ .VReg = addr_vreg } } });
 
                                 // For struct types, also load the second field into rdx
-                                // This is needed for StoreLocal to correctly store both fields
                                 if (inst.ty) |ty| {
                                     if (ty == .Struct) {
-                                        // Second field is at offset -LOCAL_STACK_MULTIPLIER * sizeof(i64) from base
-                                        const second_field_offset: i64 = -@as(i64, @intCast(@sizeOf(i64) * LOCAL_STACK_MULTIPLIER));
-                                        // Compute address of second field
-                                        vreg_count.* += 1;
-                                        const second_addr_vreg = vreg_count.* - 1;
-                                        try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .VReg = second_addr_vreg }, .src = .{ .VReg = addr_vreg } } });
-                                        try insts.append(ctx.allocator, .{ .Bin = .{ .op = .add, .dst = .{ .VReg = second_addr_vreg }, .lhs = .{ .VReg = second_addr_vreg }, .rhs = .{ .Imm = second_field_offset } } });
-                                        // Load second field into rdx
-                                        try insts.append(ctx.allocator, .{ .Deref = .{ .dst = .{ .Phys = .rdx }, .addr = .{ .VReg = second_addr_vreg } } });
+                                        try loadSecondStructFieldToRdx(insts, ctx.allocator, addr_vreg, vreg_count);
                                     }
                                 }
 
