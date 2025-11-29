@@ -20,8 +20,9 @@ const LOCAL_STACK_MULTIPLIER: u32 = 4;
 
 /// Maximum number of additional array elements (beyond the first) that can be
 /// stored via physical registers during array initialization.
-/// Element 1 -> rdx, element 2 -> rcx, element 3 -> r8
-const MAX_EXTRA_ARRAY_ELEMENTS: usize = 3;
+/// Element 1 -> rdx, element 2 -> rcx, element 3 -> r8, element 4 -> r9,
+/// element 5 -> r10, element 6 -> r12, element 7 -> r13
+const MAX_EXTRA_ARRAY_ELEMENTS: usize = 7;
 
 /// Offset from the first field to the second field in a struct.
 /// This is calculated as: -field_index * LOCAL_STACK_MULTIPLIER * sizeof(i64)
@@ -314,21 +315,19 @@ fn lowerInst(
             const src = try lowerOperand(ctx, payload.src, vreg_count);
             try insts.append(ctx.allocator, .{ .Mov = .{ .dst = mem, .src = src } });
 
-            // For array types, also store additional elements from rdx, rcx, r8 etc.
+            // For array types, also store additional elements from physical registers
             // For struct types from function returns, store the second field from rdx.
             // Skip this for Param sources since parameters are stored to separate locals.
             const is_param_source = payload.src == .Param;
             if (inst.ty) |ty| {
                 if (ty == .Array) {
-                    // Store 2nd element from rdx at offset 8
-                    const mem2 = machine.MOperand{ .Mem = .{ .base = mem.Mem.base, .offset = mem.Mem.offset - 8 } };
-                    try insts.append(ctx.allocator, .{ .Mov = .{ .dst = mem2, .src = .{ .Phys = .rdx } } });
-                    // Store 3rd element from rcx at offset 16
-                    const mem3 = machine.MOperand{ .Mem = .{ .base = mem.Mem.base, .offset = mem.Mem.offset - 16 } };
-                    try insts.append(ctx.allocator, .{ .Mov = .{ .dst = mem3, .src = .{ .Phys = .rcx } } });
-                    // Store 4th element from r8 at offset 24
-                    const mem4 = machine.MOperand{ .Mem = .{ .base = mem.Mem.base, .offset = mem.Mem.offset - 24 } };
-                    try insts.append(ctx.allocator, .{ .Mov = .{ .dst = mem4, .src = .{ .Phys = .r8 } } });
+                    // Store elements 2-8 from physical registers at consecutive offsets
+                    const extra_regs = [_]machine.PhysReg{ .rdx, .rcx, .r8, .r9, .r10, .r12, .r13 };
+                    for (extra_regs, 0..) |reg, i| {
+                        const offset = mem.Mem.offset - @as(i32, @intCast((i + 1) * 8));
+                        const elem_mem = machine.MOperand{ .Mem = .{ .base = mem.Mem.base, .offset = offset } };
+                        try insts.append(ctx.allocator, .{ .Mov = .{ .dst = elem_mem, .src = .{ .Phys = reg } } });
+                    }
                 } else if (ty == .Struct and !is_param_source) {
                     // For structs stored to locals, store the second field from rdx
                     // Use the same layout as Field access: hash-based field indices with LOCAL_STACK_MULTIPLIER spacing
@@ -886,13 +885,14 @@ fn lowerInst(
                     const ptr_vreg = vreg_count.* - 1;
                     try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .VReg = ptr_vreg }, .src = ptr_mem } });
 
-                    // For pointer-based struct access, use offset 0 for the first field.
-                    // This works for single-field structs. For multi-field structs accessed
-                    // via pointer, the layout should match what StructInit produces (contiguous
-                    // fields starting at offset 0).
-                    // Note: This simplified approach works for single-field structs like Counter.
-                    // A more robust solution would track struct field layouts.
-                    const field_offset: i64 = 0;
+                    // For pointer-based struct access, compute hash-based field offset
+                    // This matches the layout used in StructInit and StoreLocal
+                    var hash: u32 = 0;
+                    for (payload.name) |ch| hash = hash *% 31 +% ch;
+                    const field_index: i32 = @intCast(hash % MAX_STRUCT_FIELDS);
+                    // Each field is at offset = field_index * LOCAL_STACK_MULTIPLIER * sizeof(i64)
+                    // Since locals grow downward (negative offsets), we subtract
+                    const field_offset: i64 = -@as(i64, field_index) * @as(i64, LOCAL_STACK_MULTIPLIER) * @as(i64, @sizeOf(i64));
 
                     // Access field through the pointer
                     if (field_offset != 0) {
@@ -968,15 +968,15 @@ fn lowerInst(
         .Array => |payload| {
             if (dest_vreg) |dst| {
                 if (payload.elems.len > 0) {
-                    // Store all array elements to consecutive memory locations
-                    // First element goes to dst, subsequent elements go to adjacent memory
+                    // For arrays, we need to know the local ID to compute proper offsets
+                    // The first element goes to dst, subsequent elements go to adjacent memory
                     const first = try lowerOperand(ctx, payload.elems[0], vreg_count);
                     try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .VReg = dst }, .src = first } });
 
                     // For additional elements, first compute all values into VRegs,
                     // then move to designated physical registers that StoreLocal will pick up
                     // This avoids clobbering issues from interleaved VReg/PhysReg operations
-                    var elem_vregs: [MAX_EXTRA_ARRAY_ELEMENTS]machine.VReg = .{ 0, 0, 0 };
+                    var elem_vregs: [MAX_EXTRA_ARRAY_ELEMENTS]machine.VReg = undefined;
                     const num_extra = @min(payload.elems.len - 1, MAX_EXTRA_ARRAY_ELEMENTS);
 
                     // Phase 1: Compute all elements into VRegs
@@ -989,15 +989,12 @@ fn lowerInst(
                     }
 
                     // Phase 2: Move all values to physical registers
-                    // rdx for 2nd element, rcx for 3rd element, r8 for 4th element
-                    if (num_extra >= 1) {
-                        try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .Phys = .rdx }, .src = .{ .VReg = elem_vregs[0] } } });
-                    }
-                    if (num_extra >= 2) {
-                        try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .Phys = .rcx }, .src = .{ .VReg = elem_vregs[1] } } });
-                    }
-                    if (num_extra >= 3) {
-                        try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .Phys = .r8 }, .src = .{ .VReg = elem_vregs[2] } } });
+                    // rdx for 2nd, rcx for 3rd, r8 for 4th, r9 for 5th, r10 for 6th, r12 for 7th, r13 for 8th
+                    const extra_regs = [_]machine.PhysReg{ .rdx, .rcx, .r8, .r9, .r10, .r12, .r13 };
+                    for (elem_vregs[0..num_extra], 0..) |vreg, i| {
+                        if (i < extra_regs.len) {
+                            try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .Phys = extra_regs[i] }, .src = .{ .VReg = vreg } } });
+                        }
                     }
                 } else {
                     try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .VReg = dst }, .src = .{ .Imm = 0 } } });
@@ -1040,9 +1037,25 @@ fn lowerTerm(
                 error.Unsupported => return err,
                 else => return err,
             };
-            try insts.append(ctx.allocator, .{ .Test = .{ .operand = cond_op } });
-            try insts.append(ctx.allocator, .{ .Jcc = .{ .cond = .ne, .target = payload.then_block } });
-            try insts.append(ctx.allocator, .{ .Jmp = payload.else_block });
+            // If condition is an immediate, we need to load it into a register first
+            // because test imm, imm is not valid x86
+            switch (cond_op) {
+                .Imm => |imm| {
+                    // For immediate conditions (like const bool), check if it's always true/false
+                    if (imm != 0) {
+                        // Condition is always true, just jump to then block
+                        try insts.append(ctx.allocator, .{ .Jmp = payload.then_block });
+                    } else {
+                        // Condition is always false, just jump to else block
+                        try insts.append(ctx.allocator, .{ .Jmp = payload.else_block });
+                    }
+                },
+                else => {
+                    try insts.append(ctx.allocator, .{ .Test = .{ .operand = cond_op } });
+                    try insts.append(ctx.allocator, .{ .Jcc = .{ .cond = .ne, .target = payload.then_block } });
+                    try insts.append(ctx.allocator, .{ .Jmp = payload.else_block });
+                },
+            }
         },
         .Ret => |maybe_op| {
             if (maybe_op) |op| {

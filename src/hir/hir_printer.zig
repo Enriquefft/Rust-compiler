@@ -148,6 +148,13 @@ fn printItem(printer: *TreePrinter, crate: *const hir.Crate, item: hir.Item, is_
             }
             printer.pop();
         },
+        .Const => |const_item| {
+            try printer.printNodeFmt(is_last, "Const {s} (def_id: {d})", .{ const_item.name, const_item.def_id });
+            try printer.push(is_last);
+            try printType(printer, crate, const_item.ty, false, "Type");
+            try printExpr(printer, crate, const_item.value, true);
+            printer.pop();
+        },
         .Empty => {
             try printer.printNode(is_last, "Empty");
         },

@@ -302,6 +302,8 @@ pub const Item = struct {
         TypeAlias: TypeAlias,
         /// Impl block containing methods.
         Impl: Impl,
+        /// Const item definition.
+        Const: Const,
         /// Empty item (placeholder).
         Empty,
     };
@@ -369,6 +371,22 @@ pub const Impl = struct {
     target: TypeId,
     /// List of method item IDs.
     methods: []ItemId,
+    /// Source location span for diagnostics.
+    span: Span,
+};
+
+/// Represents a const item in the HIR.
+///
+/// Const items define compile-time constants.
+pub const Const = struct {
+    /// Definition ID for this const.
+    def_id: DefId,
+    /// Const name.
+    name: []const u8,
+    /// Type of the const.
+    ty: TypeId,
+    /// Value expression.
+    value: ExprId,
     /// Source location span for diagnostics.
     span: Span,
 };
@@ -455,6 +473,7 @@ pub fn lowerFromAst(allocator: std.mem.Allocator, ast_crate: ast.Crate, diagnost
             .Struct => try lowerStruct(&crate, &name_table, def_id, item, diagnostics, &next_type_id),
             .TypeAlias => try lowerTypeAlias(&crate, &name_table, def_id, item, diagnostics, &next_type_id),
             .Impl => try lowerImpl(&crate, def_id, item, &next_type_id),
+            .Const => try lowerConst(&crate, &name_table, def_id, item, diagnostics, &next_type_id),
             .Empty => try crate.items.append(crate.allocator(), .{ .id = @intCast(def_id), .kind = .Empty, .span = item.span }),
         }
     }
@@ -555,6 +574,29 @@ fn lowerTypeAlias(
         .span = data.span,
     };
     try crate.items.append(crate.allocator(), .{ .id = @intCast(def_id), .kind = .{ .TypeAlias = alias_item }, .span = item.span });
+}
+
+// Lowers an AST const item to an HIR const item.
+fn lowerConst(
+    crate: *Crate,
+    name_table: *std.StringHashMap(Span),
+    def_id: DefId,
+    item: ast.Item,
+    diagnostics: *diag.Diagnostics,
+    next_type_id: *TypeId,
+) LowerError!void {
+    const data = item.data.Const;
+    const owned_name = try internName(crate, name_table, data.name, diagnostics);
+    const const_type = try lowerType(crate, data.ty, diagnostics, next_type_id);
+    const value_expr = try lowerExpr(crate, data.value.*, diagnostics, next_type_id);
+    const const_item = Const{
+        .def_id = def_id,
+        .name = owned_name,
+        .ty = const_type,
+        .value = value_expr,
+        .span = data.span,
+    };
+    try crate.items.append(crate.allocator(), .{ .id = @intCast(def_id), .kind = .{ .Const = const_item }, .span = item.span });
 }
 
 // Lowers an AST impl block to HIR, adding each method as a separate function item.

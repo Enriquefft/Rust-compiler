@@ -47,6 +47,7 @@ pub fn typecheck(crate: *hir.Crate, diagnostics: *diag.Diagnostics) Error!void {
             .Function => |*func| try typecheckFunction(crate, func, diagnostics),
             .Struct => |*structure| try typecheckStruct(crate, structure, diagnostics),
             .TypeAlias => |*alias| try ensureKnownType(crate, alias.target, item.span, diagnostics),
+            .Const => |*const_item| try typecheckConst(crate, const_item, diagnostics),
             else => {},
         }
     }
@@ -82,6 +83,16 @@ fn typecheckFunction(crate: *hir.Crate, func: *hir.Function, diagnostics: *diag.
 fn typecheckStruct(crate: *hir.Crate, structure: *hir.Struct, diagnostics: *diag.Diagnostics) Error!void {
     for (structure.fields) |field| {
         try ensureKnownType(crate, field.ty, field.span, diagnostics);
+    }
+}
+
+// Type checks a const definition, ensuring type matches value.
+fn typecheckConst(crate: *hir.Crate, const_item: *hir.Const, diagnostics: *diag.Diagnostics) Error!void {
+    var empty_locals = std.AutoHashMap(hir.LocalId, hir.TypeId).init(crate.allocator());
+    defer empty_locals.deinit();
+    const value_ty = try checkExpr(crate, const_item.value, diagnostics, &empty_locals, false);
+    if (!typesCompatible(crate, const_item.ty, value_ty)) {
+        diagnostics.reportError(const_item.span, "const type does not match initializer");
     }
 }
 
@@ -148,6 +159,7 @@ fn checkExpr(
                         expr.ty = try ensureType(crate, .{ .Struct = .{ .def_id = def_id, .type_args = &[_]hir.TypeId{} } });
                     },
                     .TypeAlias => |alias| expr.ty = alias.target,
+                    .Const => |const_item| expr.ty = const_item.ty,
                     else => expr.ty = try ensureType(crate, .Unknown),
                 }
             } else {

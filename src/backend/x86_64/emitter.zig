@@ -399,6 +399,10 @@ fn physName(reg: machine.PhysReg) []const u8 {
         .r9 => "r9",
         .r10 => "r10",
         .r11 => "r11",
+        .r12 => "r12",
+        .r13 => "r13",
+        .r14 => "r14",
+        .r15 => "r15",
         .rbp => "rbp",
         .rsp => "rsp",
     };
@@ -416,6 +420,10 @@ fn physByteName(reg: machine.PhysReg) []const u8 {
         .r9 => "r9b",
         .r10 => "r10b",
         .r11 => "r11b",
+        .r12 => "r12b",
+        .r13 => "r13b",
+        .r14 => "r14b",
+        .r15 => "r15b",
         .rbp => "bpl",
         .rsp => "spl",
     };

@@ -50,6 +50,7 @@ pub fn resolve(crate: *hir.Crate, diagnostics: *diag.Diagnostics) Error!void {
             },
             .Struct => |structure| try insertGlobal(&module_symbols, structure.name, structure.def_id, item.span, diagnostics),
             .TypeAlias => |alias| try insertGlobal(&module_symbols, alias.name, alias.def_id, item.span, diagnostics),
+            .Const => |const_item| try insertGlobal(&module_symbols, const_item.name, const_item.def_id, item.span, diagnostics),
             else => {},
         }
     }
