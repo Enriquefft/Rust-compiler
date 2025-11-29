@@ -1131,7 +1131,8 @@ test "parse unsafe block as tail expression" {
 
     const fn_item = fixture.crate.items[0].data.Fn;
     try std.testing.expect(fn_item.body.result != null);
-    // The result should be a Block (unsafe blocks are parsed as blocks in primary)
+    // When parsed as tail expression via parsePrimary(), unsafe blocks are returned as Block
+    // (see parsePrimary KwUnsafe case which returns Block, not Unsafe)
     try std.testing.expectEqual(ast.Expr.Tag.Block, fn_item.body.result.?.tag);
 }
 
@@ -1146,6 +1147,7 @@ test "parse unsafe block in expression context" {
     try std.testing.expectEqual(@as(usize, 1), fn_item.body.stmts.len);
     const let_stmt = fn_item.body.stmts[0].data.Let;
     try std.testing.expect(let_stmt.value != null);
+    // When parsed via parseExpr() at the start (like in let binding), it returns Unsafe
     try std.testing.expectEqual(ast.Expr.Tag.Unsafe, let_stmt.value.?.tag);
 }
 
