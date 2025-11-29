@@ -71,15 +71,11 @@ const Parser = struct {
         const name_tok = self.expectConsume(.Identifier, "expected function name") orelse return null;
         const name = self.makeIdent(name_tok);
 
-        std.debug.print("Parsing function: {s}\n", .{name.name});
-
         const generics = self.parseGenericParams();
         const params = self.parseParamList();
         const ret_ty = if (self.match(.Arrow)) self.parseType() else null;
         const body = self.parseBlock() orelse return null;
         const span = Span{ .file_id = fn_token.span.file_id, .start = fn_token.span.start, .end = body.span.end };
-
-        std.debug.print("Parsed function: {s}\n", .{name.name});
 
         return ast.Item{
             .tag = .Fn,
