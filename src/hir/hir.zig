@@ -753,7 +753,8 @@ fn evalArraySize(expr: ast.Expr) !?i64 {
     switch (expr.tag) {
         .Literal => {
             if (expr.data.Literal.kind == .Int) {
-                return std.fmt.parseInt(i64, expr.data.Literal.lexeme, 10) catch null;
+                const numeric_part = stripIntegerSuffix(expr.data.Literal.lexeme);
+                return std.fmt.parseInt(i64, numeric_part, 10) catch null;
             }
             return null;
         },
@@ -780,7 +781,11 @@ fn lowerExpr(crate: *Crate, expr: ast.Expr, diagnostics: *diag.Diagnostics, next
             const lit = expr.data.Literal;
             const ty = try literalType(crate, lit, diagnostics, next_type_id);
             const kind: Expr.Kind = switch (lit.kind) {
-                .Int => .{ .ConstInt = std.fmt.parseInt(i64, lit.lexeme, 10) catch 0 },
+                .Int => blk: {
+                    // Strip integer suffix (u8, u16, u32, u64, usize, i8, i16, i32, i64, isize) if present
+                    const numeric_part = stripIntegerSuffix(lit.lexeme);
+                    break :blk .{ .ConstInt = std.fmt.parseInt(i64, numeric_part, 10) catch 0 };
+                },
                 .Float => .{ .ConstFloat = std.fmt.parseFloat(f64, lit.lexeme) catch 0 },
                 .Bool => .{ .ConstBool = std.mem.eql(u8, lit.lexeme, "true") },
                 .Char => blk: {
@@ -1214,6 +1219,23 @@ fn parseCharLiteral(lexeme: []const u8) !u21 {
         return std.unicode.utf8Decode(cp) catch return error.InvalidLiteral;
     }
     return error.InvalidLiteral;
+}
+
+/// Strips the integer type suffix (u8, u16, u32, u64, usize, i8, i16, i32, i64, isize) from a literal.
+/// Returns the numeric part of the literal without the suffix.
+fn stripIntegerSuffix(lexeme: []const u8) []const u8 {
+    const suffixes = [_][]const u8{
+        "usize", "isize", // Check longer suffixes first
+        "u64", "u32", "u16", "u8",
+        "i64", "i32", "i16", "i8",
+    };
+
+    for (suffixes) |suffix| {
+        if (lexeme.len > suffix.len and std.mem.endsWith(u8, lexeme, suffix)) {
+            return lexeme[0 .. lexeme.len - suffix.len];
+        }
+    }
+    return lexeme;
 }
 
 // Allocates an Unknown expression (used as a placeholder for error recovery).
