@@ -28,6 +28,11 @@ const MAX_STRUCT_FIELDS: u32 = 4;
 /// This is a workaround for lack of full monomorphization - assumes 2-field structs (like Pair<T>).
 const ASSUMED_GENERIC_STRUCT_FIELDS: u32 = 2;
 
+/// Multiplier for local variable stack allocation.
+/// Each local gets this many 8-byte slots to accommodate arrays.
+/// Must match the same constant in backend/x86_64/isel.zig.
+const LOCAL_STACK_MULTIPLIER: u32 = 4;
+
 /// Lower a complete HIR crate to MIR representation.
 ///
 /// Iterates over all items in the HIR crate and lowers functions to MIR.
@@ -1055,8 +1060,12 @@ const FunctionBuilder = struct {
                                             }
                                         },
                                         else => {
-                                            // For scalar arrays, don't allocate extra slots
-                                            // The array is stored as a single local and elements are accessed via Index
+                                            // For scalar arrays, allocate enough slots to cover all elements
+                                            // Each slot is LOCAL_STACK_MULTIPLIER * 8 bytes = 32 bytes
+                                            // Array elements are stored at 8-byte intervals
+                                            // So we need ceil(array_len / LOCAL_STACK_MULTIPLIER) slots
+                                            num_slots = (array_len + LOCAL_STACK_MULTIPLIER - 1) / LOCAL_STACK_MULTIPLIER;
+                                            if (num_slots == 0) num_slots = 1;
                                         },
                                     }
                                 }

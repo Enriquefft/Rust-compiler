@@ -21,7 +21,7 @@ pub fn allocateRegisters(
     defer map.deinit();
 
     const available = [_]machine.PhysReg{
-        .rax, .rbx, .rcx, .rdx, .rsi, .rdi, .r8, .r9, .r10,
+        .rax, .rcx, .rdx, .rsi, .rdi, .r8, .r9, .r10,
     };
     const spill_scratch: machine.PhysReg = .r11;
 
