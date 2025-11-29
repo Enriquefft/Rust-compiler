@@ -275,12 +275,10 @@ const FunctionBuilder = struct {
         while (local >= self.locals.items.len) {
             try self.locals.append(self.allocator, .Unknown);
         }
-        // Only set the type if it's currently Unknown or if we're setting it for the first time.
-        // This prevents overwriting explicitly set types like .Pointer for reference iteration.
-        if (self.locals.items[local] == .Unknown) {
-            if (mir_ty) |ty| {
-                self.locals.items[local] = ty;
-            }
+        if (mir_ty) |ty| {
+            self.locals.items[local] = ty;
+        } else if (local < self.locals.items.len) {
+            self.locals.items[local] = .Unknown;
         }
     }
 
@@ -714,13 +712,6 @@ const FunctionBuilder = struct {
                 const elem_ty_id = array_info.?.elem;
                 const array_len = array_info.?.len;
 
-                // Check if iterator is a reference to an array (for p in &array)
-                // In this case, the loop variable should be a pointer to each element
-                const is_ref_iter = if (iter_expr.ty < self.hir_crate.types.items.len) blk: {
-                    const iter_type = self.hir_crate.types.items[iter_expr.ty];
-                    break :blk (iter_type.kind == .Ref or iter_type.kind == .Pointer);
-                } else false;
-
                 // Evaluate iterator expression once (nums, &nums, etc)
                 const array_op = try self.lowerExpr(for_expr.iter) orelse return null;
 
@@ -728,16 +719,7 @@ const FunctionBuilder = struct {
                 const loop_local: hir.LocalId = self.next_local;
                 self.next_local += 1;
                 try self.param_local_map.put(for_expr.pat.id, loop_local);
-
-                // For reference iteration, the loop variable is a pointer type
-                if (is_ref_iter) {
-                    try self.ensureLocal(loop_local, null, expr.span);
-                    if (loop_local < self.locals.items.len) {
-                        self.locals.items[loop_local] = .Pointer;
-                    }
-                } else {
-                    try self.ensureLocal(loop_local, elem_ty_id, expr.span);
-                }
+                try self.ensureLocal(loop_local, elem_ty_id, expr.span);
 
                 // Allocate a local for the index (we store an i64 counter there)
                 const idx_local: hir.LocalId = self.next_local;
@@ -813,73 +795,30 @@ const FunctionBuilder = struct {
                     .kind = .{ .LoadLocal = .{ .local = idx_local } },
                 });
 
-                if (is_ref_iter) {
-                    // For reference iteration: compute address of array[idx] and store it
-                    // First, Index operation gets us a temp with the element value,
-                    // but the backend also stores the address in dynamic_index_addr_map.
-                    // We need to use Ref to get the address explicitly.
-                    const elem_tmp = self.newTemp();
-                    _ = try self.emitInst(.{
-                        .ty = mapType(self.hir_crate, elem_ty_id, expr.span, self.diagnostics),
-                        .dest = elem_tmp,
-                        .kind = .{
-                            .Index = .{
-                                .target = array_op,
-                                .index = .{ .Temp = idx_body_tmp },
-                            },
+                // elem = array[idx]
+                const elem_tmp = self.newTemp();
+                _ = try self.emitInst(.{
+                    .ty = mapType(self.hir_crate, elem_ty_id, expr.span, self.diagnostics),
+                    .dest = elem_tmp,
+                    .kind = .{
+                        .Index = .{
+                            .target = array_op,
+                            .index = .{ .Temp = idx_body_tmp },
                         },
-                    });
+                    },
+                });
 
-                    // Take reference of the indexed element to get its address
-                    const addr_tmp = self.newTemp();
-                    _ = try self.emitInst(.{
-                        .ty = .Pointer,
-                        .dest = addr_tmp,
-                        .kind = .{
-                            .Unary = .{
-                                .op = .Ref,
-                                .operand = .{ .Temp = elem_tmp },
-                            },
+                // store elem into loop_local (pattern variable)
+                _ = try self.emitInst(.{
+                    .ty = mapType(self.hir_crate, elem_ty_id, expr.span, self.diagnostics),
+                    .dest = null,
+                    .kind = .{
+                        .StoreLocal = .{
+                            .local = loop_local,
+                            .src = .{ .Temp = elem_tmp },
                         },
-                    });
-
-                    // Store the address to loop_local
-                    _ = try self.emitInst(.{
-                        .ty = .Pointer,
-                        .dest = null,
-                        .kind = .{
-                            .StoreLocal = .{
-                                .local = loop_local,
-                                .src = .{ .Temp = addr_tmp },
-                            },
-                        },
-                    });
-                } else {
-                    // elem = array[idx]
-                    const elem_tmp = self.newTemp();
-                    _ = try self.emitInst(.{
-                        .ty = mapType(self.hir_crate, elem_ty_id, expr.span, self.diagnostics),
-                        .dest = elem_tmp,
-                        .kind = .{
-                            .Index = .{
-                                .target = array_op,
-                                .index = .{ .Temp = idx_body_tmp },
-                            },
-                        },
-                    });
-
-                    // store elem into loop_local (pattern variable)
-                    _ = try self.emitInst(.{
-                        .ty = mapType(self.hir_crate, elem_ty_id, expr.span, self.diagnostics),
-                        .dest = null,
-                        .kind = .{
-                            .StoreLocal = .{
-                                .local = loop_local,
-                                .src = .{ .Temp = elem_tmp },
-                            },
-                        },
-                    });
-                }
+                    },
+                });
 
                 // Lower loop body (uses loop_local via LocalRef)
                 _ = try self.lowerExpr(for_expr.body);
@@ -1732,21 +1671,10 @@ const FunctionBuilder = struct {
                     return null;
                 }
 
-                const spec_result = self.printfSpecifierWithDeref(args_ids[arg_idx], span) orelse return null;
-                try fmt_buf.appendSlice(self.allocator, spec_result.specifier);
+                const spec = self.printfSpecifier(args_ids[arg_idx], span) orelse return null;
+                try fmt_buf.appendSlice(self.allocator, spec);
                 if (try self.lowerExpr(args_ids[arg_idx])) |arg_op| {
-                    // If the argument is a reference type that needs to be dereferenced, do so
-                    if (spec_result.needs_deref) {
-                        const deref_tmp = self.newTemp();
-                        _ = try self.emitInst(.{
-                            .ty = spec_result.inner_ty,
-                            .dest = deref_tmp,
-                            .kind = .{ .Unary = .{ .op = .Deref, .operand = arg_op } },
-                        });
-                        try args.append(self.allocator, .{ .Temp = deref_tmp });
-                    } else {
-                        try args.append(self.allocator, arg_op);
-                    }
+                    try args.append(self.allocator, arg_op);
                 }
 
                 arg_idx += 1;
@@ -1782,23 +1710,15 @@ const FunctionBuilder = struct {
         return .{ .ImmInt = 0 };
     }
 
-    /// Result of determining printf format specifier
-    const PrintfSpecResult = struct {
-        specifier: []const u8,
-        needs_deref: bool,
-        inner_ty: ?mir.MirType,
-    };
-
-    /// Determine the printf format specifier for an expression's type, including
-    /// whether the value needs to be dereferenced before passing to printf.
-    fn printfSpecifierWithDeref(self: *FunctionBuilder, expr_id: hir.ExprId, span: hir.Span) ?PrintfSpecResult {
+    /// Determine the printf format specifier for an expression's type.
+    fn printfSpecifier(self: *FunctionBuilder, expr_id: hir.ExprId, span: hir.Span) ?[]const u8 {
         if (expr_id >= self.hir_crate.exprs.items.len) {
             self.diagnostics.reportError(span, "unknown argument in println!");
             return null;
         }
         const expr = self.hir_crate.exprs.items[expr_id];
 
-        // Check HIR type directly for references like &str, &String, &i32, etc.
+        // Check HIR type directly for references like &str
         if (expr.ty < self.hir_crate.types.items.len) {
             const hir_type = self.hir_crate.types.items[expr.ty].kind;
             switch (hir_type) {
@@ -1807,14 +1727,11 @@ const FunctionBuilder = struct {
                     if (ref_info.inner < self.hir_crate.types.items.len) {
                         const inner_kind = self.hir_crate.types.items[ref_info.inner].kind;
                         switch (inner_kind) {
-                            .Str => return .{ .specifier = "%s", .needs_deref = true, .inner_ty = .Str },
-                            .String => return .{ .specifier = "%s", .needs_deref = true, .inner_ty = .String },
+                            .Str => return "%s",
+                            .String => return "%s",
                             .PrimInt => |int_ty| return switch (int_ty) {
-                                .I32 => .{ .specifier = "%d", .needs_deref = true, .inner_ty = .I32 },
-                                .U32 => .{ .specifier = "%u", .needs_deref = true, .inner_ty = .U32 },
-                                .I64 => .{ .specifier = "%ld", .needs_deref = true, .inner_ty = .I64 },
-                                .U64 => .{ .specifier = "%lu", .needs_deref = true, .inner_ty = .U64 },
-                                .Usize => .{ .specifier = "%lu", .needs_deref = true, .inner_ty = .Usize },
+                                .I32, .U32 => "%d",
+                                .I64, .U64, .Usize => "%ld",
                             },
                             else => {},
                         }
@@ -1825,14 +1742,11 @@ const FunctionBuilder = struct {
                     if (ptr_info.inner < self.hir_crate.types.items.len) {
                         const inner_kind = self.hir_crate.types.items[ptr_info.inner].kind;
                         switch (inner_kind) {
-                            .Str => return .{ .specifier = "%s", .needs_deref = true, .inner_ty = .Str },
-                            .String => return .{ .specifier = "%s", .needs_deref = true, .inner_ty = .String },
+                            .Str => return "%s",
+                            .String => return "%s",
                             .PrimInt => |int_ty| return switch (int_ty) {
-                                .I32 => .{ .specifier = "%d", .needs_deref = true, .inner_ty = .I32 },
-                                .U32 => .{ .specifier = "%u", .needs_deref = true, .inner_ty = .U32 },
-                                .I64 => .{ .specifier = "%ld", .needs_deref = true, .inner_ty = .I64 },
-                                .U64 => .{ .specifier = "%lu", .needs_deref = true, .inner_ty = .U64 },
-                                .Usize => .{ .specifier = "%lu", .needs_deref = true, .inner_ty = .Usize },
+                                .I32, .U32 => "%d",
+                                .I64, .U64, .Usize => "%ld",
                             },
                             else => {},
                         }
@@ -1848,15 +1762,13 @@ const FunctionBuilder = struct {
         };
 
         return switch (ty) {
-            .I32 => .{ .specifier = "%d", .needs_deref = false, .inner_ty = null },
-            .U32 => .{ .specifier = "%u", .needs_deref = false, .inner_ty = null },
-            .I64 => .{ .specifier = "%ld", .needs_deref = false, .inner_ty = null },
-            .U64, .Usize => .{ .specifier = "%lu", .needs_deref = false, .inner_ty = null },
-            .F32, .F64 => .{ .specifier = "%f", .needs_deref = false, .inner_ty = null },
-            .Bool => .{ .specifier = "%d", .needs_deref = false, .inner_ty = null },
-            .Char => .{ .specifier = "%c", .needs_deref = false, .inner_ty = null },
-            .String, .Str => .{ .specifier = "%s", .needs_deref = false, .inner_ty = null },
-            .Pointer => .{ .specifier = "%p", .needs_deref = false, .inner_ty = null }, // Default pointer format
+            .I32, .U32 => "%d",
+            .I64, .U64, .Usize => "%ld",
+            .F32, .F64 => "%f",
+            .Bool => "%d",
+            .Char => "%c",
+            .String, .Str => "%s",
+            .Pointer => "%p", // Default pointer format
             else => {
                 self.diagnostics.reportError(span, "println! argument type cannot be formatted");
                 return null;
