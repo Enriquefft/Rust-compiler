@@ -725,11 +725,12 @@ fn lowerImpl(
         else
             try crate.allocator().dupe(u8, method.name.name);
 
-        // Methods inherit type params from the impl block
+        // Methods inherit type params from the impl block - create a copy for each method
+        const method_type_params = try crate.allocator().dupe([]const u8, impl_type_params.items);
         const fn_item = Function{
             .def_id = method_def_id,
             .name = method_name,
-            .type_params = impl_type_params.items,
+            .type_params = method_type_params,
             .params = try params_buffer.toOwnedSlice(crate.allocator()),
             .param_types = try param_types.toOwnedSlice(crate.allocator()),
             .return_type = return_ty,
