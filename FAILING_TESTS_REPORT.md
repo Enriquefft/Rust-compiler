@@ -1,83 +1,39 @@
 # Failing Tests Analysis Report
 
-**Generated:** 2025-11-28  
-**Test Results:** 27 passed, 6 failed, 0 skipped
+**Generated:** 2025-11-29  
+**Test Results:** 29 passed, 3 failed, 1 skipped
 
 This report provides a comprehensive analysis of failing tests, their root causes, required fixes, and any grammar changes needed.
 
 ---
 
-## Summary of Failing Tests
+## Summary
 
+Since the initial report (2025-11-28), significant progress has been made:
+
+### ✅ **Fixed Issues** (now passing)
+| Test File | Original Issue | Status |
+|-----------|---------------|--------|
+| `expressions_test1.rs` | `idiv` operand size bug | ✅ FIXED |
+| `functions_and_methods_test2.rs` | Unresolved associated function | ✅ FIXED |
+
+### ⏭️ **Handled by Design**
+| Test File | Reason | Status |
+|-----------|--------|--------|
+| `dummy_lib.rs` | Library crate (no main) | ⏭️ SKIPPED |
+
+### ❌ **Still Failing**
 | Test File | Failure Type | Root Cause | Severity |
 |-----------|-------------|------------|----------|
-| `arrays3.rs` | Compilation failed | Unsupported index base for x86_64 lowering | Medium |
-| `dummy_lib.rs` | Execution failed | Missing `main` function (by design) | Low (Expected) |
-| `expressions_test1.rs` | Execution failed | Assembly error: ambiguous operand size for `idiv` | High |
-| `functions_and_methods_test2.rs` | Compilation failed | Unresolved associated function `Counter::new` | High |
-| `generics_test1.rs` | Compilation failed | Generic type inference failure | High |
-| `generics_test2.rs` | Compilation failed | Missing struct field shorthand syntax + integer suffix parsing | High |
+| `arrays3.rs` | Compilation failed | Unsupported index base for x86_64 lowering | High |
+| `generics_test1.rs` | Output mismatch | Generic struct ABI and field access issues | High |
+| `generics_test2.rs` | Output mismatch | Generic method return type + format specifier issues | High |
 
 ---
 
-## Detailed Analysis
+## Detailed Analysis of Remaining Failures
 
-### 1. expressions_test1.rs - Assembly `idiv` Operand Size Bug
-
-**Test File:**
-```rust
-fn main() {
-    let a:i32 = 8;
-    let b:i32 = 3;
-    let arithmetic = (a + b) * (a - b) / b;
-    let comparisons = (a > b) as i32 + (a == b) as i32 + (a <= b) as i32;
-    let boolean = (a > b && b % 2 == 1) || false;
-    println!("{} {} {}", arithmetic, comparisons, boolean);
-}
-```
-
-**Expected Output:** `18 1 true`
-
-**Error Message:**
-```
-/tmp/.../expressions_test1.s:27: Error: ambiguous operand size for `idiv'
-```
-
-**Root Cause:**  
-The x86-64 backend emitter generates `idiv [rbp-64]` without a size qualifier. When the divisor is a memory operand, the assembler needs to know whether it's a 32-bit or 64-bit operation.
-
-**Bug Location:** `src/backend/x86_64/emitter.zig:138`
-
-**Current Code (problematic):**
-```zig
-} else {
-    try writer.writeAll("    idiv ");
-    try writeOperand(writer, payload.rhs);
-    try writer.writeByte('\n');
-}
-```
-
-**Fix Required:**
-When `payload.rhs` is a `.Mem` operand, prefix it with `qword ptr`:
-```zig
-} else {
-    if (payload.rhs == .Mem) {
-        try writer.writeAll("    idiv qword ptr ");
-        try writeMem(writer, payload.rhs.Mem);
-    } else {
-        try writer.writeAll("    idiv ");
-        try writeOperand(writer, payload.rhs);
-    }
-    try writer.writeByte('\n');
-}
-```
-
-**Difficulty:** Easy  
-**Files to Modify:** `src/backend/x86_64/emitter.zig`
-
----
-
-### 2. arrays3.rs - Unsupported Index Base for Nested Struct Field Access
+### 1. arrays3.rs - Complex Array Indexing with Field Access
 
 **Test File:**
 ```rust
@@ -113,105 +69,49 @@ fn main() {
 error: unsupported index base for x86_64 lowering
 ```
 
-**Root Cause:**  
+**Root Cause Analysis:**
+
 The x86-64 instruction selection code (`isel.zig`) cannot handle compound place expressions like `points[i].x`. When indexing into an array element and then accessing a field, the backend encounters an unsupported operand combination.
 
-**Bug Location:** `src/backend/x86_64/isel.zig:664-667`
-
-**Current Limitation:**
-```zig
-else => {
-    ctx.diagnostics.reportError(zero_span, "unsupported index base for x86_64 lowering");
-    return error.Unsupported;
-}
-```
+**Bug Location:** `src/backend/x86_64/isel.zig:703-706`
 
 **What's Missing:**
-1. The `Index` instruction handling in `isel.zig` needs to support cases where the target is not a simple `Mem` operand
-2. For array-of-structs with dynamic indexing and field access, the backend needs to:
-   - Calculate the element address dynamically
-   - Then apply the field offset to get the final address
-3. The `for p in &points` iteration over references is also unimplemented
+1. **Dynamic array indexing with field access**: When the index is a runtime variable (`i`), the backend needs to:
+   - Load the loop index value
+   - Calculate `base_address + (index * element_size) + field_offset`
+   - Use this computed address for the load/store
+
+2. **Reference iteration** (`for p in &points`): Iterating over references to array elements is unimplemented
+
+**Technical Details:**
+The `Index` instruction handling at line 703 falls into the `else` branch because the base operand after dynamic indexing doesn't produce a simple `Mem` operand that subsequent `Field` operations can work with.
 
 **Fix Required:**
-Extend the `Index` and `Field` instruction lowering to handle:
-- Dynamic array indexing with subsequent field access
-- Reference iteration (`&points`)
+
+In `src/backend/x86_64/isel.zig`, extend the `Index` instruction handling to:
+1. When the index is dynamic (VReg), compute element address in a temporary register
+2. Return this register as the base for subsequent field access
+3. Handle the case where `Field` follows an `Index` by combining the offsets
+
+Example approach:
+```zig
+// For dynamic indexing:
+// 1. Load base array address into temp register
+// 2. Multiply index by element size
+// 3. Add to get element address
+// 4. For subsequent field access, add field offset
+```
+
+For `for p in &points`, the lowering needs to:
+1. Create an iterator that yields pointers to array elements
+2. Track the current element pointer in a loop variable
 
 **Difficulty:** Hard  
 **Files to Modify:** `src/backend/x86_64/isel.zig`, potentially `src/mir/lower.zig`
 
 ---
 
-### 3. functions_and_methods_test2.rs - Unresolved Associated Function
-
-**Test File:**
-```rust
-struct Counter { value: i32 }
-
-impl Counter {
-    fn new() -> Counter { Counter { value: 0 } }
-    fn inc(&mut self) { self.value += 1; }
-    fn current(&self) -> i32 { self.value }
-}
-
-fn main() {
-    let mut counter = Counter::new();
-    counter.inc();
-    counter.inc();
-    println!("{}", counter.current());
-}
-```
-
-**Expected Output:** `2`
-
-**Error Message:**
-```
-error: unresolved path ending in `new`
-    let mut counter = Counter::new();
-                      ^^^^^^^^^^^^
-```
-
-**Root Cause:**  
-The name resolution system in `src/hir/name_res.zig` does not resolve **associated functions** (static methods) called via path syntax like `Counter::new()`. It only recognizes:
-1. Local variable names
-2. Top-level function names in module scope
-
-It does NOT look up functions defined in `impl` blocks when called via `Type::method()` syntax.
-
-**Bug Location:** `src/hir/name_res.zig:324-333`
-
-**Current Code:**
-```zig
-} else if (path.segments.len > 0) {
-    const name = path.segments[path.segments.len - 1];
-    if (module_symbols.get(name)) |def_id| {
-        expr.kind = .{ .GlobalRef = def_id };
-        return;
-    }
-    // ... error reporting
-}
-```
-
-**What's Missing:**
-1. During resolution, when encountering a path like `Counter::new`:
-   - Look up `Counter` as a type/struct
-   - Find the corresponding `impl Counter` block
-   - Search for a method named `new` in that impl block
-2. Build an index of impl methods per type during HIR construction
-
-**Fix Required:**
-1. In HIR lowering (`hir.zig`), build a map from type names to their impl methods
-2. In name resolution (`name_res.zig`), when resolving multi-segment paths:
-   - If the first segment is a type name, look for the method in that type's impl block
-   - Mark the expression as an associated function call
-
-**Difficulty:** Medium-Hard  
-**Files to Modify:** `src/hir/hir.zig`, `src/hir/name_res.zig`
-
----
-
-### 4. generics_test1.rs - Generic Type Inference Failure
+### 2. generics_test1.rs - Generic Struct ABI and Field Access
 
 **Test File:**
 ```rust
@@ -228,50 +128,65 @@ fn main() {
 
 **Expected Output:** `1 2`
 
-**Error Messages:**
+**Actual Output:** `1 140726689479992` (second field is garbage)
+
+**Root Cause Analysis:**
+
+The test now compiles and runs, but produces incorrect output. Analysis of the generated assembly shows:
+
+**Generated Assembly (key sections):**
+```asm
+identity:
+    mov [rbp-32], rdi       # Only stores first argument
+    mov rax, [rbp-32]       # Returns only rax
+    ret
+
+main:
+    mov qword ptr [rbp-64], 1   # Store a = 1
+    mov qword ptr [rbp-96], 2   # Store b = 2
+    mov rdi, [rbp-64]           # Pass only 'a' field
+    mov rsi, [rbp-96]           # Pass 'b' in rsi (but identity ignores it!)
+    call identity
+    mov [rbp-192], rax          # Store return value (only 'a')
+    mov [rbp-200], rdx          # Store rdx as 'b' (but rdx was never set!)
 ```
-error: struct field type mismatch
-    let numbers = Pair { a: 1, b: 2};
-                  ^^^^^^^^^^^^^^^^^^
-error: argument type does not match parameter
-    let mirrored = identity(numbers);
-                   ^^^^^^^^^^^^^^^^^
-error: unresolved path type for field access
-    println!("{} {}", mirrored.a, mirrored.b);
-                      ^^^^^^^^^^
-```
 
-**Root Cause:**  
-The type checker does not properly handle **generic type instantiation**:
+**Issues Identified:**
 
-1. **Struct initialization without explicit type parameters**: When writing `Pair { a: 1, b: 2 }`, the compiler doesn't infer `T = i64` from the field values
-2. **Generic function instantiation**: The call `identity(numbers)` requires instantiating `identity<T>` with the concrete type, but type inference fails
-3. **Cascading errors**: Because the type is unknown, field access on `mirrored.a` also fails
+1. **Struct passing ABI violation**: The `Pair` struct (16 bytes, 2 x i64) should be passed as two separate registers OR on the stack. Currently:
+   - Caller passes `a` in `rdi` and `b` in `rsi`
+   - Callee (`identity`) only reads `rdi` and stores it, ignoring `rsi`
 
-**Bug Locations:** 
-- `src/hir/typecheck.zig` - Type inference for generic structs and functions
-- `src/hir/hir.zig` - Generic type substitution
+2. **Struct return ABI violation**: According to System V AMD64 ABI:
+   - Structs ≤16 bytes with two INTEGER fields should return in `rax` + `rdx`
+   - Currently `identity` only returns `rax`, leaving `rdx` uninitialized
 
-**What's Missing:**
-1. **Generic struct instantiation**: Infer `T` from field initializers when `Pair { a: 1, b: 2 }` is used without `Pair::<i64> { ... }`
-2. **Generic function type inference**: When calling `identity(x)`, infer `T` from argument type
-3. **Type substitution**: Replace type parameters with concrete types during instantiation
+3. **Generic type size handling**: The generic function `identity<T>` doesn't know the actual size of `T` at codegen time and defaults to single-value handling
+
+**Bug Locations:**
+- `src/mir/lower.zig:76-145` - Parameter expansion for generic functions
+- `src/backend/x86_64/isel.zig` - Return value handling for multi-register types
+- `src/hir/typecheck.zig` - Generic type instantiation
 
 **Fix Required:**
-Implement basic generic type inference and substitution:
-1. In type checking, when checking `StructInit` for a generic struct:
-   - Infer type parameter from field types
-   - Create a concrete instantiation of the generic type
-2. In type checking, when checking `Call` to a generic function:
-   - Infer type parameters from argument types
-   - Substitute type parameters in return type
+
+1. **Generic monomorphization**: When instantiating `identity<Pair<i64>>`, substitute the concrete type and generate code aware of the struct's size
+   
+2. **Multi-field struct ABI**: Ensure all struct fields are:
+   - Passed in appropriate registers/stack slots
+   - Returned in `rax` + `rdx` (for 2-field structs)
+
+3. **Type-aware codegen for generics**: The lowering phase needs to know the concrete type `T = Pair<i64>` to generate correct ABI
 
 **Difficulty:** Hard  
-**Files to Modify:** `src/hir/typecheck.zig`, `src/hir/hir.zig`
+**Files to Modify:** 
+- `src/hir/typecheck.zig` - Generic instantiation
+- `src/mir/lower.zig` - Generic function lowering
+- `src/backend/x86_64/isel.zig` - Multi-register return handling
 
 ---
 
-### 5. generics_test2.rs - Multiple Parser and Lexer Issues
+### 3. generics_test2.rs - Generic Method Return Types and Format Specifiers
 
 **Test File:**
 ```rust
@@ -291,173 +206,145 @@ fn main() {
 
 **Expected Output:** `hi 42`
 
-**Error Messages:**
-```
-error: expected ':' after field name
-    fn new(value: T) -> Wrapper<T> { Wrapper { value } }
-                                                     ^
-error: expected ')' after call
-    let number = Wrapper::new(42u64);
-                                ^^^
-```
+**Actual Output:** `0x7ffd12ec3cd0 0x7ffd12ec3cb0` (pointers instead of values)
 
-**Root Causes:**
+**Root Cause Analysis:**
 
-#### Issue A: Struct Field Shorthand Syntax Not Supported
+Analysis of the generated assembly reveals multiple issues:
 
-The parser requires explicit `name: value` syntax for struct initialization but Rust allows `{ value }` as shorthand for `{ value: value }`.
+**Generated Assembly (key sections):**
+```asm
+Wrapper_get:
+    mov rax, [rbp-32]       # Load 'self' pointer
+    mov rbx, [rax]          # Dereference to get value (but result ignored!)
+    mov rax, rax            # Returns pointer, not dereferenced value
+    ret
 
-**Bug Location:** `src/frontend/parser.zig:703-706`
-
-**Current Code:**
-```zig
-const field_name_tok = self.expectConsume(.Identifier, "expected field name") orelse break;
-_ = self.expectConsume(.Colon, "expected ':' after field name") orelse break;
+main:
+    mov rdi, 0              # 42u64 becomes 0 (integer suffix not used!)
+    call Wrapper_new
+    ...
+    lea rdi, [rip + .Lstr1] # Format string is "%p %p" (pointer format!)
 ```
 
-**Grammar Change Required:**
-```ebnf
-Init = Ident , ":" , Expr 
-     | Ident ;  (* shorthand: { value } means { value: value } *)
-```
+**Issues Identified:**
+
+1. **`get()` returns pointer instead of value**:
+   - The method `get(&self) -> &T` should return a reference to `self.value`
+   - Currently it returns `&self` (the struct pointer) instead of `&self.value`
+   - The `mov rbx, [rax]` loads the value but then `mov rax, rax` overwrites it with the pointer
+
+2. **Integer suffix not propagated**:
+   - `42u64` is parsed correctly (lexer has suffix support)
+   - But the literal value `0` is passed instead of `42`
+   - The suffix type information may be lost during lowering
+
+3. **Printf format specifier wrong**:
+   - Format string is `"%p %p"` (pointer format)
+   - Should be `"%s %llu"` for String and u64 (unsigned)
+   - The `printfSpecifier` function at line 1636 defaults to `%p` for `Pointer` type
+   - For `&T` where `T` is String or integer, it should dereference and use the inner type's format
+
+**Bug Locations:**
+- `src/mir/lower.zig:1591-1641` - `printfSpecifier` function doesn't handle generic refs properly
+- `src/backend/x86_64/isel.zig` - Return value handling for `&T` types
+- `src/frontend/parser.zig` or `src/hir/hir.zig` - Integer suffix value preservation
 
 **Fix Required:**
-Make the `:` optional when parsing struct init fields:
-```zig
-const field_name_tok = self.expectConsume(.Identifier, "expected field name") orelse break;
-const value: ast.Expr = if (self.match(.Colon)) {
-    self.parseExpr() orelse break
-} else {
-    // Shorthand: { field } means { field: field }
-    ast.Expr{ .tag = .Path, .span = field_name_tok.span, .data = .{ .Path = ... } }
-};
-```
 
-#### Issue B: Integer Literal Suffixes Not Supported
+1. **Fix `get()` return value**: The field access `&self.value` should:
+   - Compute `&self + field_offset` 
+   - Return this address (reference to the field)
+   - Currently returning `&self` instead
 
-The lexer does not recognize integer literal suffixes like `42u64`, `10i32`, etc. It tokenizes `42` as an integer literal and then fails when encountering `u64`.
+2. **Integer suffix propagation**: When parsing `42u64`:
+   - The lexer correctly scans "42u64" as one token
+   - Ensure the parser extracts the value `42` and type `u64`
+   - Propagate type info to HIR literal expression
 
-**Bug Location:** `src/frontend/lexer.zig:174-184`
+3. **Printf format for generic references**:
+   ```zig
+   // In printfSpecifier, for Ref types:
+   .Ref => |ref_info| {
+       // Recursively get format for inner type
+       const inner_format = getFormatForType(ref_info.inner);
+       // For &String -> "%s", for &u64 -> "%llu"
+       return inner_format;
+   }
+   ```
 
-**Current Code:**
-```zig
-'0'...'9' => {
-    const start = i;
-    var end = scanNumber(src, i);
-    // ... handles float but not suffixes
-    try appendSimple(&list, allocator, .IntLit, file_id, start, end, src);
-    i = end;
-}
-```
-
-**Grammar Change Required:**
-```ebnf
-IntLit = digit , { digit } , [ IntSuffix ] ;
-IntSuffix = "u8" | "u16" | "u32" | "u64" | "usize"
-          | "i8" | "i16" | "i32" | "i64" | "isize" ;
-```
-
-**Fix Required:**
-After scanning digits, check for valid integer suffixes:
-```zig
-'0'...'9' => {
-    const start = i;
-    var end = scanNumber(src, i);
-    const is_float = ...;
-    if (is_float) {
-        // handle float
-    } else {
-        // Check for integer suffix
-        end = scanIntegerSuffix(src, end);
-        try appendSimple(&list, allocator, .IntLit, file_id, start, end, src);
-    }
-    i = end;
-}
-```
-
-**Difficulty:** Medium  
-**Files to Modify:** `src/frontend/parser.zig`, `src/frontend/lexer.zig`, `grammar.ebnf`
+**Difficulty:** Medium-Hard  
+**Files to Modify:**
+- `src/mir/lower.zig` - Printf specifier logic
+- `src/backend/x86_64/isel.zig` - Reference return handling
+- `src/hir/hir.zig` or `src/frontend/parser.zig` - Integer suffix handling
 
 ---
 
-### 6. dummy_lib.rs - Expected Failure (Library Crate)
+## Grammar Status
 
-**Test File:**
-```rust
-// dummy_lib.rs
-// Exists only so Cargo has a target; not actually used.
-fn _dummy() {}
-```
+The grammar has already been updated with the required changes:
 
-**Expected Output:** (empty)
-
-**Error Message:**
-```
-/usr/bin/ld: undefined reference to `main'
-```
-
-**Root Cause:**  
-This file intentionally has no `main` function as it's meant to be a library. The test harness treats it as an executable and fails during linking.
-
-**Fix Required:**  
-Either:
-1. Remove `dummy_lib.rs` from the test expected outputs, OR
-2. Mark it as a library crate and skip execution, OR
-3. Add a dummy `main` function for testing purposes
-
-**Difficulty:** Very Easy  
-**Files to Modify:** `codes/expected_outputs.txt` or `codes/dummy_lib.rs`
-
----
-
-## Summary of Required Changes
-
-### Bug Fixes
-
-| Priority | Issue | File(s) | Effort |
-|----------|-------|---------|--------|
-| High | `idiv` memory operand size | `src/backend/x86_64/emitter.zig` | Easy |
-| High | Associated function resolution | `src/hir/name_res.zig`, `src/hir/hir.zig` | Medium |
-| High | Generic type inference | `src/hir/typecheck.zig`, `src/hir/hir.zig` | Hard |
-| Medium | Complex array indexing with field access | `src/backend/x86_64/isel.zig` | Hard |
-
-### Grammar Changes
-
+### ✅ Struct Field Initialization Shorthand (Already Implemented)
 ```ebnf
-(* Add struct field initialization shorthand *)
+(* Current grammar allows shorthand *)
 Init = Ident , [ ":" , Expr ] ;
+```
+Verified: Parser at `parser.zig:703-723` handles shorthand syntax.
 
-(* Add integer literal suffixes *)
+### ✅ Integer Literal Suffixes (Already Implemented)
+```ebnf
 IntLit = digit , { digit } , [ IntSuffix ] ;
 IntSuffix = "u8" | "u16" | "u32" | "u64" | "usize"
           | "i8" | "i16" | "i32" | "i64" | "isize" ;
 ```
+Verified: Lexer at `lexer.zig:182-184` calls `scanIntegerSuffix`.
 
-### New Features to Implement
+**Note:** The grammar changes are implemented in the lexer/parser, but the type information from suffixes may not be properly propagated to later phases.
 
-1. **Struct field shorthand syntax**: `{ value }` → `{ value: value }`
-2. **Integer literal suffixes**: `42u64`, `10i32`, etc.
-3. **Associated function resolution**: `Type::method()` syntax
-4. **Basic generic type inference**: Infer type parameters from usage
+---
+
+## Summary of Required Fixes
+
+### High Priority
+
+| Issue | Description | Files | Effort |
+|-------|-------------|-------|--------|
+| Generic struct ABI | Multi-field structs not correctly passed/returned | `isel.zig`, `lower.zig` | Hard |
+| Generic method returns | `&T` field access returns wrong pointer | `isel.zig` | Medium |
+| Printf for generic refs | `%p` used instead of inner type format | `lower.zig` | Easy |
+| Integer suffix value | Value from suffixed literals may be lost | `parser.zig`, `hir.zig` | Medium |
+
+### Medium Priority
+
+| Issue | Description | Files | Effort |
+|-------|-------------|-------|--------|
+| Dynamic array indexing | `array[i].field` pattern unsupported | `isel.zig` | Hard |
+| Reference iteration | `for p in &array` unsupported | `lower.zig` | Medium |
 
 ---
 
 ## Recommended Fix Order
 
-1. **Easy wins first:**
-   - Fix `idiv` size qualifier (unblocks `expressions_test1.rs`)
-   - Fix `dummy_lib.rs` expected output
+1. **Printf format specifier** (Easy win)
+   - Fix `printfSpecifier` to handle `&T` types by looking at inner type
+   - Partial fix for `generics_test2.rs`
 
-2. **Parser/Lexer fixes:**
-   - Add integer suffix support (unblocks parsing `42u64`)
-   - Add struct field shorthand (unblocks `Wrapper { value }`)
+2. **Integer suffix propagation** (Medium)
+   - Ensure `42u64` stores value `42` with type `u64`
+   - Helps `generics_test2.rs`
 
-3. **Semantic analysis:**
-   - Implement associated function resolution (unblocks `Counter::new()`)
-   - Improve generic type inference (unblocks `Pair { a: 1, b: 2 }`)
+3. **Generic method return (`&T`)** (Medium)
+   - Fix field reference access to return correct address
+   - Fixes `generics_test2.rs`
 
-4. **Backend improvements:**
-   - Handle complex array indexing patterns (unblocks `arrays3.rs`)
+4. **Generic struct ABI** (Hard)
+   - Implement proper multi-register passing/return for structs in generic contexts
+   - Fixes `generics_test1.rs`
+
+5. **Dynamic array indexing** (Hard)
+   - Implement runtime index computation for array-of-structs
+   - Fixes `arrays3.rs`
 
 ---
 
@@ -465,12 +352,18 @@ IntSuffix = "u8" | "u16" | "u32" | "u64" | "usize"
 
 | File | Changes Needed |
 |------|---------------|
-| `src/backend/x86_64/emitter.zig` | Fix `idiv` memory operand size qualifier |
-| `src/backend/x86_64/isel.zig` | Handle complex indexing patterns |
-| `src/frontend/lexer.zig` | Add integer suffix scanning |
-| `src/frontend/parser.zig` | Add struct field shorthand parsing |
-| `src/hir/name_res.zig` | Add associated function resolution |
-| `src/hir/hir.zig` | Build impl method index, type substitution |
-| `src/hir/typecheck.zig` | Implement generic type inference |
-| `grammar.ebnf` | Document Init shorthand, IntSuffix |
-| `codes/expected_outputs.txt` | Fix `dummy_lib.rs` expectation |
+| `src/mir/lower.zig` | Fix printf specifier for generic refs; improve generic lowering |
+| `src/backend/x86_64/isel.zig` | Handle multi-register returns; fix &T field access; support dynamic array indexing |
+| `src/hir/typecheck.zig` | Generic type instantiation improvements |
+| `src/frontend/parser.zig` | Ensure integer suffix type info is preserved |
+
+---
+
+## Test Status History
+
+| Date | Passed | Failed | Skipped |
+|------|--------|--------|---------|
+| 2025-11-28 | 27 | 6 | 0 |
+| 2025-11-29 | 29 | 3 | 1 |
+
+Progress: +2 tests fixed, +1 properly skipped
