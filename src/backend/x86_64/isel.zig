@@ -411,13 +411,15 @@ fn lowerInst(
                 const target = try lowerOperand(ctx, payload.target, vreg_count);
                 switch (target) {
                     .Mem => |base_mem| {
-                        // Basic field layout: assume packed i64 fields and use a deterministic pseudo-offset based on the name.
+                        // Field layout uses hash-indexed local slots
+                        // Each field is stored at base_local + hash_index, which maps to 
+                        // offset = -(base_local + hash_index + 1) * LOCAL_STACK_MULTIPLIER * 8
                         var hash: u32 = 0;
                         for (payload.name) |ch| hash = hash *% 31 +% ch;
                         const field_index: i32 = @intCast(hash % MAX_STRUCT_FIELDS);
-                        // Subtract offset since locals grow downward (negative offsets from rbp)
-                        const offset = base_mem.offset - field_index * @as(i32, @intCast(@sizeOf(i64)));
-                        const mem = machine.MOperand{ .Mem = .{ .base = base_mem.base, .offset = offset } };
+                        // Compute the field's local offset: each additional index adds -LOCAL_STACK_MULTIPLIER * 8
+                        const field_offset = base_mem.offset - field_index * @as(i32, @intCast(@sizeOf(i64) * LOCAL_STACK_MULTIPLIER));
+                        const mem = machine.MOperand{ .Mem = .{ .base = base_mem.base, .offset = field_offset } };
                         try insts.append(ctx.allocator, .{ .Mov = .{ .dst = mem, .src = src } });
                     },
                     .VReg => |vreg| {
@@ -755,13 +757,15 @@ fn lowerInst(
                     const target = try lowerOperand(ctx, payload.target, vreg_count);
                     switch (target) {
                         .Mem => |base_mem| {
-                            // Basic field layout: assume packed i64 fields and use a deterministic pseudo-offset based on the name.
+                            // Field layout uses hash-indexed local slots
+                            // Each field is stored at base_local + hash_index, which maps to 
+                            // offset = -(base_local + hash_index + 1) * LOCAL_STACK_MULTIPLIER * 8
                             var hash: u32 = 0;
                             for (payload.name) |ch| hash = hash *% 31 +% ch;
                             const field_index: i32 = @intCast(hash % MAX_STRUCT_FIELDS);
-                            // Subtract offset since locals grow downward (negative offsets from rbp)
-                            const offset = base_mem.offset - field_index * @as(i32, @intCast(@sizeOf(i64)));
-                            const mem = machine.MOperand{ .Mem = .{ .base = base_mem.base, .offset = offset } };
+                            // Compute the field's local offset: each additional index adds -LOCAL_STACK_MULTIPLIER * 8
+                            const field_offset = base_mem.offset - field_index * @as(i32, @intCast(@sizeOf(i64) * LOCAL_STACK_MULTIPLIER));
+                            const mem = machine.MOperand{ .Mem = .{ .base = base_mem.base, .offset = field_offset } };
                             try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .VReg = dst }, .src = mem } });
                         },
                     .VReg => |vreg| {
