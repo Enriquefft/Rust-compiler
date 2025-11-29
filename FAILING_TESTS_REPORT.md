@@ -1,7 +1,7 @@
 # Failing Tests Analysis Report
 
 **Generated:** 2025-11-29  
-**Test Results:** 30 passed, 3 failed, 1 skipped
+**Test Results:** 31 passed, 2 failed, 1 skipped
 
 This report provides a comprehensive analysis of failing tests, their root causes, required fixes, and any grammar changes needed.
 
@@ -17,6 +17,7 @@ Since the initial report (2025-11-28), significant progress has been made:
 | `expressions_test1.rs` | `idiv` operand size bug | ✅ FIXED |
 | `functions_and_methods_test2.rs` | Unresolved associated function | ✅ FIXED |
 | `generics_test1.rs` | Generic struct ABI / field access issues | ✅ FIXED |
+| `arrays3.rs` | Field access within array iteration | ✅ FIXED |
 
 ### ⏭️ **Handled by Design**
 | Test File | Reason | Status |
@@ -26,7 +27,6 @@ Since the initial report (2025-11-28), significant progress has been made:
 ### ❌ **Still Failing**
 | Test File | Failure Type | Root Cause | Severity |
 |-----------|-------------|------------|----------|
-| `arrays3.rs` | Output mismatch | Field access within array iteration produces wrong y-values | High |
 | `generics_test2.rs` | Output mismatch | Generic method returns pointer instead of dereferenced value + printf format specifier issues | High |
 | `optimizations.rs` | Compilation hangs | Missing `const` item support and `loop` construct in grammar/parser | High |
 
@@ -34,80 +34,7 @@ Since the initial report (2025-11-28), significant progress has been made:
 
 ## Detailed Analysis of Remaining Failures
 
-### 1. arrays3.rs - Field Access Bug in Array Iteration
-
-**Test File:**
-```rust
-struct Point { x: i32, y: i32 }
-
-fn main() {
-    let mut points: [Point; 3] = [
-        Point { x: 1, y: 2 },
-        Point { x: -3, y: 4 },
-        Point { x: 10, y: -5 },
-    ];
-
-    for i in 0..points.len() {
-        points[i].x += 1;
-        points[i].y += 1;
-    }
-
-    for p in &points {
-        println!("({}, {})", p.x, p.y);
-    }
-}
-```
-
-**Expected Output:**
-```
-(2, 3)
-(-2, 5)
-(11, -4)
-```
-
-**Actual Output:**
-```
-(2, 0)
-(-2, 1)
-(11, 2)
-```
-
-**Root Cause Analysis:**
-
-The test now compiles and runs, but produces incorrect y-values. The x-values are correct (`2, -2, 11` = original + 1), but y-values are `0, 1, 2` instead of `3, 5, -4`.
-
-**Observed Pattern:**
-- The y-values `0, 1, 2` correspond to the loop index `i` rather than the actual field values
-- This suggests the loop counter is being printed or stored instead of `points[i].y`
-
-**Root Cause Hypothesis:**
-The issue appears to be in how compound place expressions `points[i].y` are lowered. The x-field access works correctly, but y-field access (second field) may be reading from the wrong memory location or using the index value instead.
-
-**Bug Location:** `src/backend/x86_64/isel.zig` or `src/mir/lower.zig`
-
-**Potential Issues:**
-1. **Field offset calculation**: For the second field `y`, the offset should be `sizeof(i32) = 4 bytes` from the element base, but may be incorrectly computed
-2. **Register allocation conflict**: The loop index register may be clobbering the field access result
-3. **Memory addressing mode**: The compound address `base + (index * element_size) + field_offset` may have incorrect field offset for non-first fields
-
-**Limitations:**
-- Complex place expressions like `array[dynamic_index].field` require multi-step address calculation
-- The current x86-64 backend may not correctly combine dynamic indexing with field offsets
-
-**Potential Solutions:**
-
-| Approach | Description | Complexity |
-|----------|-------------|------------|
-| **Separate address computation** | Compute the element address first, then add field offset in a second step | Medium |
-| **Register-based addressing** | Use LEA instruction to compute `base + index*size`, then add field offset | Medium |
-| **MIR-level decomposition** | Split `array[i].field` into `let elem = &array[i]; elem.field` during lowering | Hard |
-
-**Difficulty:** Medium  
-**Files to Modify:** `src/backend/x86_64/isel.zig`
-
----
-
-### 2. generics_test2.rs - Generic Method Return Types and Format Specifiers
+### 1. generics_test2.rs - Generic Method Return Types and Format Specifiers
 
 **Test File:**
 ```rust
@@ -177,7 +104,7 @@ The `get()` method returns pointers (memory addresses) instead of the dereferenc
 
 ---
 
-### 3. optimizations.rs - Missing Grammar Constructs
+### 2. optimizations.rs - Missing Grammar Constructs
 
 **Test File:**
 ```rust
@@ -344,7 +271,6 @@ When the parser encounters `const USE_FAST_PATH`, it doesn't recognize `const` a
 
 | Issue | Description | Files | Effort | Blocks |
 |-------|-------------|-------|--------|--------|
-| Array field offset bug | Second field (`y`) returns loop index instead of value | `src/backend/x86_64/isel.zig` | Medium | `arrays3.rs` |
 | Generic method returns | `&T` field access returns struct pointer instead of field pointer | `src/backend/x86_64/isel.zig` | Medium | `generics_test2.rs` |
 | Printf for generic refs | `%p` format used instead of inner type format | `src/mir/lower.zig` | Easy | `generics_test2.rs` |
 
@@ -368,15 +294,11 @@ When the parser encounters `const USE_FAST_PATH`, it doesn't recognize `const` a
    - Fix `printfSpecifier` to recursively unwrap `&T` types
    - Partial fix for `generics_test2.rs`
 
-3. **Array field offset calculation** (Medium)
-   - Fix second field access in `array[i].field` pattern
-   - Fixes `arrays3.rs`
-
-4. **Generic method return (`&T`)** (Medium)
+3. **Generic method return (`&T`)** (Medium)
    - Fix field reference access to return `&self.value` not `&self`
    - Fixes `generics_test2.rs`
 
-5. **Add `loop` support** (Easy - future improvement)
+4. **Add `loop` support** (Easy - future improvement)
    - Extend grammar for `loop { }` construct
 
 ---
@@ -389,7 +311,7 @@ When the parser encounters `const USE_FAST_PATH`, it doesn't recognize `const` a
 | `src/frontend/tokens.zig` | Add `const` and `loop` keywords |
 | `src/frontend/parser.zig` | Implement const item parsing |
 | `src/mir/lower.zig` | Fix printf specifier for generic refs |
-| `src/backend/x86_64/isel.zig` | Fix array field offset; fix &T field access |
+| `src/backend/x86_64/isel.zig` | Fix &T field access |
 
 ---
 
@@ -399,11 +321,11 @@ When the parser encounters `const USE_FAST_PATH`, it doesn't recognize `const` a
 |------|--------|--------|---------|-------|
 | 2025-11-28 | 27 | 6 | 0 | Initial report |
 | 2025-11-29 (AM) | 29 | 3 | 1 | Fixed `expressions_test1.rs`, `functions_and_methods_test2.rs` |
-| 2025-11-29 (Current) | 30 | 3 | 1 | Fixed `generics_test1.rs` |
+| 2025-11-29 (PM) | 30 | 3 | 1 | Fixed `generics_test1.rs` |
+| 2025-11-29 (Current) | 31 | 2 | 1 | Fixed `arrays3.rs` |
 
-**Current Status:** 30 passed, 3 failed, 1 skipped
+**Current Status:** 31 passed, 2 failed, 1 skipped
 
 **Remaining Failures:**
-- `arrays3.rs` - Output mismatch (field offset bug)
 - `generics_test2.rs` - Output mismatch (pointer instead of value)
 - `optimizations.rs` - Compilation hangs (missing `const` support)
