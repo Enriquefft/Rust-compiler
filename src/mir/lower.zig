@@ -715,11 +715,41 @@ const FunctionBuilder = struct {
                 // Evaluate iterator expression once (nums, &nums, etc)
                 const array_op = try self.lowerExpr(for_expr.iter) orelse return null;
 
-                // Allocate a local for the loop variable (element) and map pattern ID
+                // Determine how many local slots are needed for the loop variable
+                // For struct elements, we need MAX_STRUCT_FIELDS slots for hash-indexed fields
+                var num_elem_slots: hir.LocalId = 1;
+                if (elem_ty_id < self.hir_crate.types.items.len) {
+                    const elem_ty = self.hir_crate.types.items[elem_ty_id];
+                    switch (elem_ty.kind) {
+                        .Struct => |info| {
+                            if (info.def_id < self.hir_crate.items.items.len) {
+                                const s = self.hir_crate.items.items[info.def_id];
+                                if (s.kind == .Struct) {
+                                    num_elem_slots = MAX_STRUCT_FIELDS;
+                                }
+                            }
+                        },
+                        .Path => |path| {
+                            if (path.segments.len == 1) {
+                                for (self.hir_crate.items.items) |item| {
+                                    if (item.kind == .Struct and std.mem.eql(u8, item.kind.Struct.name, path.segments[0])) {
+                                        num_elem_slots = MAX_STRUCT_FIELDS;
+                                        break;
+                                    }
+                                }
+                            }
+                        },
+                        else => {},
+                    }
+                }
+
+                // Allocate locals for the loop variable (element) and map pattern ID
                 const loop_local: hir.LocalId = self.next_local;
-                self.next_local += 1;
+                self.next_local += num_elem_slots;
                 try self.param_local_map.put(for_expr.pat.id, loop_local);
-                try self.ensureLocal(loop_local, elem_ty_id, expr.span);
+                for (0..num_elem_slots) |i| {
+                    try self.ensureLocal(loop_local + @as(hir.LocalId, @intCast(i)), elem_ty_id, expr.span);
+                }
 
                 // Allocate a local for the index (we store an i64 counter there)
                 const idx_local: hir.LocalId = self.next_local;
