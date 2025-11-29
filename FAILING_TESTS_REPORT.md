@@ -1,7 +1,7 @@
 # Failing Tests Analysis Report
 
 **Generated:** 2025-11-29  
-**Test Results:** 29 passed, 3 failed, 1 skipped
+**Test Results:** 30 passed, 2 failed, 2 skipped
 
 This report provides a comprehensive analysis of failing tests, their root causes, required fixes, and any grammar changes needed.
 
@@ -16,24 +16,25 @@ Since the initial report (2025-11-28), significant progress has been made:
 |-----------|---------------|--------|
 | `expressions_test1.rs` | `idiv` operand size bug | ✅ FIXED |
 | `functions_and_methods_test2.rs` | Unresolved associated function | ✅ FIXED |
+| `generics_test1.rs` | Generic struct ABI issues | ✅ FIXED |
 
 ### ⏭️ **Handled by Design**
 | Test File | Reason | Status |
 |-----------|--------|--------|
 | `dummy_lib.rs` | Library crate (no main) | ⏭️ SKIPPED |
+| `optimizations.rs` | No expected output defined | ⏭️ SKIPPED |
 
 ### ❌ **Still Failing**
 | Test File | Failure Type | Root Cause | Severity |
 |-----------|-------------|------------|----------|
-| `arrays3.rs` | Compilation failed | Unsupported index base for x86_64 lowering | High |
-| `generics_test1.rs` | Output mismatch | Generic struct ABI and field access issues | High |
+| `arrays3.rs` | Output mismatch | Incorrect field offset in array element access | High |
 | `generics_test2.rs` | Output mismatch | Generic method return type + format specifier issues | High |
 
 ---
 
 ## Detailed Analysis of Remaining Failures
 
-### 1. arrays3.rs - Complex Array Indexing with Field Access
+### 1. arrays3.rs - Multi-field Struct Array Field Access Bug
 
 **Test File:**
 ```rust
@@ -64,129 +65,65 @@ fn main() {
 (11, -4)
 ```
 
-**Error Message:**
+**Actual Output:**
 ```
-error: unsupported index base for x86_64 lowering
+(2, 0)
+(-2, 1)
+(11, 2)
 ```
 
 **Root Cause Analysis:**
 
-The x86-64 instruction selection code (`isel.zig`) cannot handle compound place expressions like `points[i].x`. When indexing into an array element and then accessing a field, the backend encounters an unsupported operand combination.
+The test now compiles and runs, but produces incorrect output. Analysis shows:
+- The `x` field values are correct after `+= 1`: 1+1=2, -3+1=-2, 10+1=11 ✓
+- The `y` field values are completely wrong: showing 0, 1, 2 instead of 3, 5, -4
 
-**Bug Location:** `src/backend/x86_64/isel.zig:703-706`
+The issue is in the **field access within `for p in &points`** loop:
+1. The loop variable `p` is correctly a pointer to each Point element
+2. When accessing `p.y`, the compiler reads from the wrong memory location
+3. The `y` values (0, 1, 2) match the loop indices, suggesting the loop counter is being read instead of the field
 
-**What's Missing:**
-1. **Dynamic array indexing with field access**: When the index is a runtime variable (`i`), the backend needs to:
-   - Load the loop index value
-   - Calculate `base_address + (index * element_size) + field_offset`
-   - Use this computed address for the load/store
-
-2. **Reference iteration** (`for p in &points`): Iterating over references to array elements is unimplemented
+**Bug Location:** `src/backend/x86_64/isel.zig` - Field access through reference/pointer
 
 **Technical Details:**
-The `Index` instruction handling at line 703 falls into the `else` branch because the base operand after dynamic indexing doesn't produce a simple `Mem` operand that subsequent `Field` operations can work with.
 
-**Fix Required:**
-
-In `src/backend/x86_64/isel.zig`, extend the `Index` instruction handling to:
-1. When the index is dynamic (VReg), compute element address in a temporary register
-2. Return this register as the base for subsequent field access
-3. Handle the case where `Field` follows an `Index` by combining the offsets
-
-Example approach:
-```zig
-// For dynamic indexing:
-// 1. Load base array address into temp register
-// 2. Multiply index by element size
-// 3. Add to get element address
-// 4. For subsequent field access, add field offset
-```
-
-For `for p in &points`, the lowering needs to:
-1. Create an iterator that yields pointers to array elements
-2. Track the current element pointer in a loop variable
-
-**Difficulty:** Hard  
-**Files to Modify:** `src/backend/x86_64/isel.zig`, potentially `src/mir/lower.zig`
-
----
-
-### 2. generics_test1.rs - Generic Struct ABI and Field Access
-
-**Test File:**
-```rust
-fn identity<T>(value: T) -> T { value }
-
-struct Pair<T> { a: T, b: T }
-
-fn main() {
-    let numbers = Pair { a: 1, b: 2};
-    let mirrored = identity(numbers);
-    println!("{} {}", mirrored.a, mirrored.b);
-}
-```
-
-**Expected Output:** `1 2`
-
-**Actual Output:** `1 140726689479992` (second field is garbage)
-
-**Root Cause Analysis:**
-
-The test now compiles and runs, but produces incorrect output. Analysis of the generated assembly shows:
-
-**Generated Assembly (key sections):**
+Looking at the generated assembly in the print loop:
 ```asm
-identity:
-    mov [rbp-32], rdi       # Only stores first argument
-    mov rax, [rbp-32]       # Returns only rax
-    ret
-
-main:
-    mov qword ptr [rbp-64], 1   # Store a = 1
-    mov qword ptr [rbp-96], 2   # Store b = 2
-    mov rdi, [rbp-64]           # Pass only 'a' field
-    mov rsi, [rbp-96]           # Pass 'b' in rsi (but identity ignores it!)
-    call identity
-    mov [rbp-192], rax          # Store return value (only 'a')
-    mov [rbp-200], rdx          # Store rdx as 'b' (but rdx was never set!)
+mov r11, [rbp-376]            # Load p.x correctly
+mov [rbp-256], r11
+mov r11, [rbp-288]            # This should load p.y...
+mov [rbp-360], r11            # ...but it loads the loop index instead!
 ```
 
-**Issues Identified:**
+The issue is that the second field access (`p.y`) reads from `[rbp-288]` which is the loop index variable, not the offset within the Point struct. The field offset calculation for the `y` field (offset 32 from Point base, since each i32 is stored in 8-byte slots) is not being correctly combined with the dereferenced pointer address.
 
-1. **Struct passing ABI violation**: The `Pair` struct (16 bytes, 2 x i64) should be passed as two separate registers OR on the stack. Currently:
-   - Caller passes `a` in `rdi` and `b` in `rsi`
-   - Callee (`identity`) only reads `rdi` and stores it, ignoring `rsi`
+**Limitation:** The current x86-64 instruction selection only supports field offset 0 for pointer-based struct access (see `isel.zig` line 831: `const field_offset: i64 = 0`).
 
-2. **Struct return ABI violation**: According to System V AMD64 ABI:
-   - Structs ≤16 bytes with two INTEGER fields should return in `rax` + `rdx`
-   - Currently `identity` only returns `rax`, leaving `rdx` uninitialized
+**Potential Solutions:**
 
-3. **Generic type size handling**: The generic function `identity<T>` doesn't know the actual size of `T` at codegen time and defaults to single-value handling
+1. **Track struct layout information** (Recommended):
+   - Store field offset information in the MIR or pass it to isel
+   - When accessing a field through a pointer, compute `pointer_value + field_offset`
+   - Currently the code at line 834 handles non-zero offsets but `field_offset` is hardcoded to 0
 
-**Bug Locations:**
-- `src/mir/lower.zig:76-145` - Parameter expansion for generic functions
-- `src/backend/x86_64/isel.zig` - Return value handling for multi-register types
-- `src/hir/typecheck.zig` - Generic type instantiation
-
-**Fix Required:**
-
-1. **Generic monomorphization**: When instantiating `identity<Pair<i64>>`, substitute the concrete type and generate code aware of the struct's size
+2. **Implement proper field index tracking**:
+   - The `Field` instruction has a `field_idx` that should be used to compute offset
+   - Need to know the struct's type to calculate `field_idx * field_size`
    
-2. **Multi-field struct ABI**: Ensure all struct fields are:
-   - Passed in appropriate registers/stack slots
-   - Returned in `rax` + `rdx` (for 2-field structs)
+3. **Quick fix** (Limited scope):
+   - For 2-field structs with known layout, calculate offset as `field_idx * 8`
+   - Add this calculation before the field access instruction
 
-3. **Type-aware codegen for generics**: The lowering phase needs to know the concrete type `T = Pair<i64>` to generate correct ABI
+**Files to Modify:**
+- `src/backend/x86_64/isel.zig:802-844` - Add field offset calculation for pointer-based access
+- `src/mir/lower.zig` - Consider passing struct type info to field operations
 
-**Difficulty:** Hard  
-**Files to Modify:** 
-- `src/hir/typecheck.zig` - Generic instantiation
-- `src/mir/lower.zig` - Generic function lowering
-- `src/backend/x86_64/isel.zig` - Multi-register return handling
+**Difficulty:** Medium
+**Estimated Fix:** 20-50 lines of code to properly track and apply field offsets
 
 ---
 
-### 3. generics_test2.rs - Generic Method Return Types and Format Specifiers
+### 2. generics_test2.rs - Generic Method Return Types and Format Specifiers
 
 **Test File:**
 ```rust
@@ -206,101 +143,107 @@ fn main() {
 
 **Expected Output:** `hi 42`
 
-**Actual Output:** `0x7ffd12ec3cd0 0x7ffd12ec3cb0` (pointers instead of values)
+**Actual Output:** `0x7ffc3c6df280 0x7ffc3c6df260` (pointers instead of values)
 
 **Root Cause Analysis:**
 
-Analysis of the generated assembly reveals multiple issues:
+Analysis of the generated assembly reveals multiple independent issues:
 
 **Generated Assembly (key sections):**
 ```asm
 Wrapper_get:
-    mov rax, [rbp-32]       # Load 'self' pointer
-    mov rbx, [rax]          # Dereference to get value (but result ignored!)
-    mov rax, rax            # Returns pointer, not dereferenced value
+    mov [rbp-32], rdi           # Store self pointer
+    mov rax, [rbp-32]           # Load self pointer
+    mov rbx, [rax]              # Dereference (loads value but unused!)
+    mov rax, rax                # Returns self pointer, not &self.value!
     ret
 
 main:
-    mov rdi, 0              # 42u64 becomes 0 (integer suffix not used!)
+    mov rdi, 42                 # Integer value is correct!
     call Wrapper_new
     ...
-    lea rdi, [rip + .Lstr1] # Format string is "%p %p" (pointer format!)
+    lea rdi, [rip + .Lstr1]     # Format string is "%p %p" (wrong!)
 ```
 
 **Issues Identified:**
 
-1. **`get()` returns pointer instead of value**:
-   - The method `get(&self) -> &T` should return a reference to `self.value`
-   - Currently it returns `&self` (the struct pointer) instead of `&self.value`
-   - The `mov rbx, [rax]` loads the value but then `mov rax, rax` overwrites it with the pointer
+1. **`get()` returns wrong reference** (Most Critical):
+   - The method `get(&self) -> &T` should return `&self.value` (pointer to the value field)
+   - Currently it returns `&self` (pointer to the struct itself)
+   - The line `mov rax, rax` shows the pointer is being returned unchanged
+   - This is a field access issue similar to arrays3.rs
 
-2. **Integer suffix not propagated**:
-   - `42u64` is parsed correctly (lexer has suffix support)
-   - But the literal value `0` is passed instead of `42`
-   - The suffix type information may be lost during lowering
-
-3. **Printf format specifier wrong**:
-   - Format string is `"%p %p"` (pointer format)
-   - Should be `"%s %llu"` for String and u64 (unsigned)
-   - The `printfSpecifier` function at line 1636 defaults to `%p` for `Pointer` type
-   - For `&T` where `T` is String or integer, it should dereference and use the inner type's format
+2. **Printf format specifier wrong** (Secondary Issue):
+   - Format string is `"%p %p"` (pointer format for both arguments)
+   - Should be `"%s %ld"` for String and u64 dereferenced values
+   - The `printfSpecifier` function defaults to `%p` for `Pointer` types returned from generic methods
+   - Even if the format were correct, the wrong values would be printed due to issue #1
 
 **Bug Locations:**
-- `src/mir/lower.zig:1591-1641` - `printfSpecifier` function doesn't handle generic refs properly
-- `src/backend/x86_64/isel.zig` - Return value handling for `&T` types
-- `src/frontend/parser.zig` or `src/hir/hir.zig` - Integer suffix value preservation
+- `src/backend/x86_64/isel.zig:802-844` - Field access returns wrong address
+- `src/mir/lower.zig:1714-1777` - `printfSpecifier` function should look through generic returns
 
-**Fix Required:**
+**Potential Solutions:**
 
-1. **Fix `get()` return value**: The field access `&self.value` should:
-   - Compute `&self + field_offset` 
-   - Return this address (reference to the field)
-   - Currently returning `&self` instead
-
-2. **Integer suffix propagation**: When parsing `42u64`:
-   - The lexer correctly scans "42u64" as one token
-   - Ensure the parser extracts the value `42` and type `u64`
-   - Propagate type info to HIR literal expression
-
-3. **Printf format for generic references**:
-   ```zig
-   // In printfSpecifier, for Ref types:
-   .Ref => |ref_info| {
-       // Recursively get format for inner type
-       const inner_format = getFormatForType(ref_info.inner);
-       // For &String -> "%s", for &u64 -> "%llu"
-       return inner_format;
-   }
+1. **Fix field reference return** (Primary fix):
+   ```asm
+   # Current (wrong):
+   mov rax, [rbp-32]    # rax = self
+   mov rbx, [rax]       # load value (unused!)
+   mov rax, rax         # return self (wrong!)
+   
+   # Correct:
+   mov rax, [rbp-32]    # rax = self  
+   add rax, 0           # rax = &self.value (field_offset = 0 for first field)
    ```
+   For the `value` field in `Wrapper<T>`, the offset is 0, so `&self.value == self`.
+   But the current code doesn't correctly handle the reference-to-field operation.
 
-**Difficulty:** Medium-Hard  
+2. **Enhance printf format detection**:
+   - When the argument type is `&T` from a generic method return:
+     - Resolve `T` to the concrete type (String or u64)
+     - Use the format for `&String` → `"%s"` or `&u64` → `"%ld"`
+   - Add automatic dereferencing for reference types in println! handling
+
+3. **Alternative approach - Auto-dereference in println!**:
+   - Detect when println! receives a reference type
+   - Generate code to dereference before passing to printf
+   - Use the dereferenced type's format specifier
+
+**Difficulty:** Medium-Hard
+
 **Files to Modify:**
-- `src/mir/lower.zig` - Printf specifier logic
-- `src/backend/x86_64/isel.zig` - Reference return handling
-- `src/hir/hir.zig` or `src/frontend/parser.zig` - Integer suffix handling
+| File | Changes |
+|------|---------|
+| `src/backend/x86_64/isel.zig` | Fix reference return for field access |
+| `src/mir/lower.zig` | Improve printf specifier for generic refs |
+| `src/hir/typecheck.zig` | Better type resolution for generic returns |
+
+**Estimated Fix:** 
+- Issue 1 (field reference): ~30 lines
+- Issue 2 (printf format): ~20 lines
 
 ---
 
 ## Grammar Status
 
-The grammar has already been updated with the required changes:
+The grammar is complete and correctly implemented. All language features needed for the test cases are supported at the parsing level.
 
-### ✅ Struct Field Initialization Shorthand (Already Implemented)
+### ✅ Struct Field Initialization Shorthand (Implemented)
 ```ebnf
-(* Current grammar allows shorthand *)
 Init = Ident , [ ":" , Expr ] ;
 ```
 Verified: Parser at `parser.zig:703-723` handles shorthand syntax.
 
-### ✅ Integer Literal Suffixes (Already Implemented)
+### ✅ Integer Literal Suffixes (Implemented)
 ```ebnf
 IntLit = digit , { digit } , [ IntSuffix ] ;
 IntSuffix = "u8" | "u16" | "u32" | "u64" | "usize"
           | "i8" | "i16" | "i32" | "i64" | "isize" ;
 ```
-Verified: Lexer at `lexer.zig:182-184` calls `scanIntegerSuffix`.
+Verified: Lexer at `lexer.zig:182-184` correctly parses integer suffixes.
 
-**Note:** The grammar changes are implemented in the lexer/parser, but the type information from suffixes may not be properly propagated to later phases.
+**Note:** Grammar and parsing are correct. The remaining issues are in the code generation (x86-64 backend) and type handling phases, not in parsing.
 
 ---
 
@@ -310,60 +253,86 @@ Verified: Lexer at `lexer.zig:182-184` calls `scanIntegerSuffix`.
 
 | Issue | Description | Files | Effort |
 |-------|-------------|-------|--------|
-| Generic struct ABI | Multi-field structs not correctly passed/returned | `isel.zig`, `lower.zig` | Hard |
-| Generic method returns | `&T` field access returns wrong pointer | `isel.zig` | Medium |
-| Printf for generic refs | `%p` used instead of inner type format | `lower.zig` | Easy |
-| Integer suffix value | Value from suffixed literals may be lost | `parser.zig`, `hir.zig` | Medium |
+| Field offset in pointer access | Second+ fields accessed incorrectly through pointers | `isel.zig` | Medium |
+| Generic method return value | `&self.value` returns `&self` instead | `isel.zig` | Medium |
+| Printf format for refs | `%p` used for reference types in println! | `lower.zig` | Easy |
 
-### Medium Priority
+### Root Cause Pattern
 
-| Issue | Description | Files | Effort |
-|-------|-------------|-------|--------|
-| Dynamic array indexing | `array[i].field` pattern unsupported | `isel.zig` | Hard |
-| Reference iteration | `for p in &array` unsupported | `lower.zig` | Medium |
+Both failing tests share a common underlying issue: **field access through pointers/references doesn't correctly compute field offsets**. The code at `isel.zig:831` hardcodes `field_offset = 0`, which works for single-field structs and first fields, but fails for:
+- Second field (`y`) in `Point { x, y }`
+- Field access via generic return type (`&self.value`)
 
 ---
 
 ## Recommended Fix Order
 
-1. **Printf format specifier** (Easy win)
-   - Fix `printfSpecifier` to handle `&T` types by looking at inner type
-   - Partial fix for `generics_test2.rs`
+1. **Field offset calculation** (Fixes both tests partially)
+   - In `isel.zig`, replace `const field_offset: i64 = 0;` with proper offset calculation
+   - Use `field_idx * 8` for i64/pointer fields (simplest approach)
+   - This would fix arrays3.rs and help generics_test2.rs
 
-2. **Integer suffix propagation** (Medium)
-   - Ensure `42u64` stores value `42` with type `u64`
-   - Helps `generics_test2.rs`
+2. **Printf format specifier** (Easy win for generics_test2.rs)
+   - In `printfSpecifier`, when type is `Pointer` pointing to a known type:
+     - `Pointer -> String` → use `"%s"`
+     - `Pointer -> PrimInt` → use the integer's format
+   - This is a straightforward pattern match addition
 
-3. **Generic method return (`&T`)** (Medium)
-   - Fix field reference access to return correct address
-   - Fixes `generics_test2.rs`
-
-4. **Generic struct ABI** (Hard)
-   - Implement proper multi-register passing/return for structs in generic contexts
-   - Fixes `generics_test1.rs`
-
-5. **Dynamic array indexing** (Hard)
-   - Implement runtime index computation for array-of-structs
-   - Fixes `arrays3.rs`
+3. **Generic method return** (May be fixed by #1)
+   - If field offsets are handled correctly, `&self.value` should work
+   - May need additional work if field types are different sizes
 
 ---
 
 ## Files Summary
 
-| File | Changes Needed |
-|------|---------------|
-| `src/mir/lower.zig` | Fix printf specifier for generic refs; improve generic lowering |
-| `src/backend/x86_64/isel.zig` | Handle multi-register returns; fix &T field access; support dynamic array indexing |
-| `src/hir/typecheck.zig` | Generic type instantiation improvements |
-| `src/frontend/parser.zig` | Ensure integer suffix type info is preserved |
+| File | Priority | Changes Needed |
+|------|----------|---------------|
+| `src/backend/x86_64/isel.zig` | **High** | Fix field offset calculation for pointer-based access (~20 lines) |
+| `src/mir/lower.zig` | Medium | Enhance `printfSpecifier` for pointer types (~10 lines) |
+
+---
+
+## Alternative Approaches
+
+### 1. Passing Struct Type Info to Backend
+Instead of hardcoding field offsets, pass struct type information through MIR:
+- Add `struct_type_id` to Field instruction
+- Look up field offsets from type registry
+- **Pros:** Handles arbitrary struct layouts
+- **Cons:** Requires changes across multiple compiler phases
+
+### 2. Computing Offsets at MIR Level
+Generate explicit pointer arithmetic in MIR instead of Field instructions:
+- Lower `p.y` to `*(p + 8)` in MIR
+- Backend only sees simple pointer operations
+- **Pros:** Simpler backend
+- **Cons:** More complex MIR lowering
+
+### 3. Quick Fix: Assume 8-byte Fields
+For the current test cases, assume all fields are 8 bytes:
+```zig
+const field_offset: i64 = @intCast(payload.field_idx * 8);
+```
+- **Pros:** Minimal code change, fixes current tests
+- **Cons:** Won't work for mixed-size fields
 
 ---
 
 ## Test Status History
 
-| Date | Passed | Failed | Skipped |
-|------|--------|--------|---------|
-| 2025-11-28 | 27 | 6 | 0 |
-| 2025-11-29 | 29 | 3 | 1 |
+| Date | Passed | Failed | Skipped | Notes |
+|------|--------|--------|---------|-------|
+| 2025-11-28 | 27 | 6 | 0 | Initial run |
+| 2025-11-29 (morning) | 29 | 3 | 1 | +2 fixed, +1 skip |
+| 2025-11-29 (current) | 30 | 2 | 2 | generics_test1.rs now passes! |
 
-Progress: +2 tests fixed, +1 properly skipped
+**Progress:** +3 tests fixed since 2025-11-28, +1 additional skip identified
+
+---
+
+## Conclusion
+
+The remaining 2 failures (`arrays3.rs` and `generics_test2.rs`) share a common root cause: **incorrect field offset handling for pointer/reference-based struct access**. A targeted fix in `src/backend/x86_64/isel.zig` (approximately 20-30 lines of code) should resolve both issues.
+
+The compiler's parsing, type checking, and basic code generation are working correctly. The issue is localized to the x86-64 instruction selection phase's handling of multi-field struct access through indirection.
