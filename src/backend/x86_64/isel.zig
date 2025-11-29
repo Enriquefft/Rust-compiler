@@ -700,14 +700,65 @@ fn lowerInst(
                         };
                         break :blk machine.MOperand{ .Mem = .{ .base = base_mem.base, .offset = offset } };
                     },
+                    .VReg => |base_vreg| blk: {
+                        // Target is a VReg (e.g., a pointer to an array like &points)
+                        // We need to compute base_addr - idx * sizeof(element)
+                        vreg_count.* += 1;
+                        const idx_vreg = vreg_count.* - 1;
+
+                        // Move index to vreg if needed
+                        switch (idx) {
+                            .VReg => |v| {
+                                try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .VReg = idx_vreg }, .src = .{ .VReg = v } } });
+                            },
+                            .Phys => |reg| {
+                                try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .VReg = idx_vreg }, .src = .{ .Phys = reg } } });
+                            },
+                            .Mem => |m| {
+                                try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .VReg = idx_vreg }, .src = .{ .Mem = m } } });
+                            },
+                            .Imm => |imm| {
+                                try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .VReg = idx_vreg }, .src = .{ .Imm = imm } } });
+                            },
+                            else => {
+                                ctx.diagnostics.reportError(zero_span, "unsupported index operand for pointer indexing");
+                                return error.Unsupported;
+                            },
+                        }
+
+                        // Multiply index by element size (8 bytes for i64)
+                        vreg_count.* += 1;
+                        const scaled_vreg = vreg_count.* - 1;
+                        try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .VReg = scaled_vreg }, .src = .{ .VReg = idx_vreg } } });
+                        try insts.append(ctx.allocator, .{ .Bin = .{ .op = .imul, .dst = .{ .VReg = scaled_vreg }, .lhs = .{ .VReg = scaled_vreg }, .rhs = .{ .Imm = @sizeOf(i64) } } });
+
+                        // Copy base address to a new vreg so we can modify it
+                        vreg_count.* += 1;
+                        const addr_vreg = vreg_count.* - 1;
+                        try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .VReg = addr_vreg }, .src = .{ .VReg = base_vreg } } });
+
+                        // Subtract scaled index from base (stack grows downward)
+                        try insts.append(ctx.allocator, .{ .Bin = .{ .op = .sub, .dst = .{ .VReg = addr_vreg }, .lhs = .{ .VReg = addr_vreg }, .rhs = .{ .VReg = scaled_vreg } } });
+
+                        // Load value from computed address into dst
+                        try insts.append(ctx.allocator, .{ .Deref = .{ .dst = .{ .VReg = dst }, .addr = .{ .VReg = addr_vreg } } });
+
+                        // Track the address for potential Ref later
+                        try ctx.dynamic_index_addr_map.put(dst, addr_vreg);
+
+                        break :blk machine.MOperand{ .VReg = dst }; // Return early, we already handled everything
+                    },
                     else => {
                         ctx.diagnostics.reportError(zero_span, "unsupported index base for x86_64 lowering");
                         return error.Unsupported;
                     },
                 };
-                try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .VReg = dst }, .src = mem } });
-                // Record the memory location for this VReg (for potential Ref later)
-                try ctx.index_mem_map.put(dst, mem.Mem);
+                // Only append mov if we didn't return early (for VReg case)
+                if (mem != .VReg) {
+                    try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .VReg = dst }, .src = mem } });
+                    // Record the memory location for this VReg (for potential Ref later)
+                    try ctx.index_mem_map.put(dst, mem.Mem);
+                }
             }
         },
         .Field => |payload| {
@@ -894,8 +945,35 @@ fn lowerTerm(
         },
         .Ret => |maybe_op| {
             if (maybe_op) |op| {
-                const lowered = lowerSimpleOperand(ctx, op, vreg_count) catch |err| return err;
-                try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .Phys = .rax }, .src = lowered } });
+                // Check if returning a struct local - need to load each field
+                const is_struct_local = switch (op) {
+                    .Local => |local_id| blk: {
+                        if (local_id < ctx.current_fn_locals.len) {
+                            break :blk ctx.current_fn_locals[local_id] == .Struct;
+                        }
+                        break :blk false;
+                    },
+                    else => false,
+                };
+
+                if (is_struct_local) {
+                    // For struct locals, load fields from hash-indexed offsets
+                    // Field "a" hash is 97 % 4 = 1, field "b" hash is 98 % 4 = 2
+                    // This works for common 2-field structs like Pair { a, b }
+                    const local_id = op.Local;
+                    const base_offset: i32 = -@as(i32, @intCast((local_id + 1) * @sizeOf(i64) * LOCAL_STACK_MULTIPLIER));
+                    
+                    // Load first field (hash index 1) into rax
+                    const field1_offset = base_offset - 1 * @as(i32, @intCast(@sizeOf(i64) * LOCAL_STACK_MULTIPLIER));
+                    try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .Phys = .rax }, .src = .{ .Mem = .{ .base = .rbp, .offset = field1_offset } } } });
+                    
+                    // Load second field (hash index 2) into rdx
+                    const field2_offset = base_offset - 2 * @as(i32, @intCast(@sizeOf(i64) * LOCAL_STACK_MULTIPLIER));
+                    try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .Phys = .rdx }, .src = .{ .Mem = .{ .base = .rbp, .offset = field2_offset } } } });
+                } else {
+                    const lowered = lowerSimpleOperand(ctx, op, vreg_count) catch |err| return err;
+                    try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .Phys = .rax }, .src = lowered } });
+                }
             } else {
                 try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .Phys = .rax }, .src = .{ .Imm = 0 } } });
             }

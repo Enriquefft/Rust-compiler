@@ -1548,10 +1548,17 @@ const FunctionBuilder = struct {
                     return null;
                 }
 
-                const spec = self.printfSpecifier(args_ids[arg_idx], span) orelse return null;
-                try fmt_buf.appendSlice(self.allocator, spec);
+                const spec_info = self.printfSpecifierWithDeref(args_ids[arg_idx], span) orelse return null;
+                try fmt_buf.appendSlice(self.allocator, spec_info.spec);
                 if (try self.lowerExpr(args_ids[arg_idx])) |arg_op| {
-                    try args.append(self.allocator, arg_op);
+                    if (spec_info.needs_deref) {
+                        // Emit a dereference for reference types to primitives
+                        const deref_tmp = self.newTemp();
+                        _ = try self.emitInst(.{ .ty = spec_info.deref_ty, .dest = deref_tmp, .kind = .{ .Unary = .{ .op = .Deref, .operand = arg_op } } });
+                        try args.append(self.allocator, .{ .Temp = deref_tmp });
+                    } else {
+                        try args.append(self.allocator, arg_op);
+                    }
                 }
 
                 arg_idx += 1;
@@ -1585,6 +1592,100 @@ const FunctionBuilder = struct {
 
         _ = try self.emitInst(.{ .ty = .I32, .dest = null, .kind = .{ .Call = .{ .target = .{ .Symbol = "printf" }, .args = call_args } } });
         return .{ .ImmInt = 0 };
+    }
+
+    /// Info about printf specifier with optional dereference requirement.
+    const PrintfSpecInfo = struct {
+        spec: []const u8,
+        needs_deref: bool,
+        deref_ty: ?mir.MirType,
+    };
+
+    /// Determine the printf format specifier for an expression's type, with info about whether dereferencing is needed.
+    fn printfSpecifierWithDeref(self: *FunctionBuilder, expr_id: hir.ExprId, span: hir.Span) ?PrintfSpecInfo {
+        if (expr_id >= self.hir_crate.exprs.items.len) {
+            self.diagnostics.reportError(span, "unknown argument in println!");
+            return null;
+        }
+        const expr = self.hir_crate.exprs.items[expr_id];
+
+        // Check HIR type directly for references
+        if (expr.ty < self.hir_crate.types.items.len) {
+            const hir_type = self.hir_crate.types.items[expr.ty].kind;
+            switch (hir_type) {
+                .Ref => |ref_info| {
+                    // Check what the reference is to
+                    if (ref_info.inner < self.hir_crate.types.items.len) {
+                        const inner_kind = self.hir_crate.types.items[ref_info.inner].kind;
+                        switch (inner_kind) {
+                            .Str, .String => return .{ .spec = "%s", .needs_deref = false, .deref_ty = null },
+                            .PrimInt => |int_ty| {
+                                const spec: []const u8 = switch (int_ty) {
+                                    .I32, .U32 => "%d",
+                                    .I64, .U64, .Usize => "%ld",
+                                };
+                                const mir_ty: mir.MirType = switch (int_ty) {
+                                    .I32 => .I32,
+                                    .U32 => .U32,
+                                    .I64 => .I64,
+                                    .U64 => .U64,
+                                    .Usize => .Usize,
+                                };
+                                return .{ .spec = spec, .needs_deref = true, .deref_ty = mir_ty };
+                            },
+                            .PrimFloat => |float_ty| {
+                                const mir_ty: mir.MirType = switch (float_ty) {
+                                    .F32 => .F32,
+                                    .F64 => .F64,
+                                };
+                                return .{ .spec = "%f", .needs_deref = true, .deref_ty = mir_ty };
+                            },
+                            .Bool => return .{ .spec = "%d", .needs_deref = true, .deref_ty = .Bool },
+                            .Char => return .{ .spec = "%c", .needs_deref = true, .deref_ty = .Char },
+                            else => {},
+                        }
+                    }
+                },
+                .Pointer => |ptr_info| {
+                    // Check what the pointer is to
+                    if (ptr_info.inner < self.hir_crate.types.items.len) {
+                        const inner_kind = self.hir_crate.types.items[ptr_info.inner].kind;
+                        switch (inner_kind) {
+                            .Str, .String => return .{ .spec = "%s", .needs_deref = false, .deref_ty = null },
+                            .PrimInt => |int_ty| {
+                                const spec: []const u8 = switch (int_ty) {
+                                    .I32, .U32 => "%d",
+                                    .I64, .U64, .Usize => "%ld",
+                                };
+                                const mir_ty: mir.MirType = switch (int_ty) {
+                                    .I32 => .I32,
+                                    .U32 => .U32,
+                                    .I64 => .I64,
+                                    .U64 => .U64,
+                                    .Usize => .Usize,
+                                };
+                                return .{ .spec = spec, .needs_deref = true, .deref_ty = mir_ty };
+                            },
+                            .PrimFloat => |float_ty| {
+                                const mir_ty: mir.MirType = switch (float_ty) {
+                                    .F32 => .F32,
+                                    .F64 => .F64,
+                                };
+                                return .{ .spec = "%f", .needs_deref = true, .deref_ty = mir_ty };
+                            },
+                            .Bool => return .{ .spec = "%d", .needs_deref = true, .deref_ty = .Bool },
+                            .Char => return .{ .spec = "%c", .needs_deref = true, .deref_ty = .Char },
+                            else => {},
+                        }
+                    }
+                },
+                else => {},
+            }
+        }
+
+        // Fall back to the original specifier logic without deref
+        const spec = self.printfSpecifier(expr_id, span) orelse return null;
+        return .{ .spec = spec, .needs_deref = false, .deref_ty = null };
     }
 
     /// Determine the printf format specifier for an expression's type.
