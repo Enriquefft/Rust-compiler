@@ -134,6 +134,11 @@ fn emitInst(writer: anytype, inst: machine.InstKind, fn_name: []const u8) !void 
                     try writer.writeAll("    mov r11, ");
                     try writeOperand(writer, payload.rhs);
                     try writer.writeAll("\n    idiv r11\n");
+                } else if (payload.rhs == .Mem) {
+                    // Memory operands need size qualifier to avoid ambiguous operand size
+                    try writer.writeAll("    idiv qword ptr ");
+                    try writeMem(writer, payload.rhs.Mem);
+                    try writer.writeByte('\n');
                 } else {
                     try writer.writeAll("    idiv ");
                     try writeOperand(writer, payload.rhs);

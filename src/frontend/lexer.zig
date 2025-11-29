@@ -179,6 +179,8 @@ pub fn lex(allocator: std.mem.Allocator, file_id: FileId, src: []const u8, diagn
                     end = scanFloatFraction(src, end + 1);
                     try appendSimple(&list, allocator, .FloatLit, file_id, start, end, src);
                 } else {
+                    // Check for integer suffix (u8, u16, u32, u64, usize, i8, i16, i32, i64, isize)
+                    end = scanIntegerSuffix(src, end);
                     try appendSimple(&list, allocator, .IntLit, file_id, start, end, src);
                 }
                 i = end;
@@ -249,6 +251,28 @@ fn scanFloatFraction(src: []const u8, start: usize) usize {
     var i = start;
     while (i < src.len and std.ascii.isDigit(src[i])) : (i += 1) {}
     return i;
+}
+
+/// Scans for integer literal suffixes like u8, u16, u32, u64, usize, i8, i16, i32, i64, isize.
+/// Returns the end position after any valid suffix.
+fn scanIntegerSuffix(src: []const u8, start: usize) usize {
+    // Valid integer suffixes
+    const suffixes = [_][]const u8{
+        "usize", "isize", // Must check longer suffixes first
+        "u64", "u32", "u16", "u8",
+        "i64", "i32", "i16", "i8",
+    };
+
+    for (suffixes) |suffix| {
+        if (matchPrefix(src, start, suffix)) {
+            // Make sure the suffix is not part of a longer identifier
+            const end = start + suffix.len;
+            if (end >= src.len or !std.ascii.isAlphanumeric(src[end]) and src[end] != '_') {
+                return end;
+            }
+        }
+    }
+    return start;
 }
 
 fn matchPrefix(src: []const u8, idx: usize, pat: []const u8) bool {
