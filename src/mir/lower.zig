@@ -1601,6 +1601,37 @@ const FunctionBuilder = struct {
         deref_ty: ?mir.MirType,
     };
 
+    /// Helper to get format spec for an inner type (used for reference/pointer types)
+    fn getInnerTypeSpec(inner_kind: hir.Type.Kind) ?PrintfSpecInfo {
+        return switch (inner_kind) {
+            .Str, .String => .{ .spec = "%s", .needs_deref = false, .deref_ty = null },
+            .PrimInt => |int_ty| blk: {
+                const spec: []const u8 = switch (int_ty) {
+                    .I32, .U32 => "%d",
+                    .I64, .U64, .Usize => "%ld",
+                };
+                const mir_ty: mir.MirType = switch (int_ty) {
+                    .I32 => .I32,
+                    .U32 => .U32,
+                    .I64 => .I64,
+                    .U64 => .U64,
+                    .Usize => .Usize,
+                };
+                break :blk .{ .spec = spec, .needs_deref = true, .deref_ty = mir_ty };
+            },
+            .PrimFloat => |float_ty| blk: {
+                const mir_ty: mir.MirType = switch (float_ty) {
+                    .F32 => .F32,
+                    .F64 => .F64,
+                };
+                break :blk .{ .spec = "%f", .needs_deref = true, .deref_ty = mir_ty };
+            },
+            .Bool => .{ .spec = "%d", .needs_deref = true, .deref_ty = .Bool },
+            .Char => .{ .spec = "%c", .needs_deref = true, .deref_ty = .Char },
+            else => null,
+        };
+    }
+
     /// Determine the printf format specifier for an expression's type, with info about whether dereferencing is needed.
     fn printfSpecifierWithDeref(self: *FunctionBuilder, expr_id: hir.ExprId, span: hir.Span) ?PrintfSpecInfo {
         if (expr_id >= self.hir_crate.exprs.items.len) {
@@ -1614,68 +1645,18 @@ const FunctionBuilder = struct {
             const hir_type = self.hir_crate.types.items[expr.ty].kind;
             switch (hir_type) {
                 .Ref => |ref_info| {
-                    // Check what the reference is to
                     if (ref_info.inner < self.hir_crate.types.items.len) {
                         const inner_kind = self.hir_crate.types.items[ref_info.inner].kind;
-                        switch (inner_kind) {
-                            .Str, .String => return .{ .spec = "%s", .needs_deref = false, .deref_ty = null },
-                            .PrimInt => |int_ty| {
-                                const spec: []const u8 = switch (int_ty) {
-                                    .I32, .U32 => "%d",
-                                    .I64, .U64, .Usize => "%ld",
-                                };
-                                const mir_ty: mir.MirType = switch (int_ty) {
-                                    .I32 => .I32,
-                                    .U32 => .U32,
-                                    .I64 => .I64,
-                                    .U64 => .U64,
-                                    .Usize => .Usize,
-                                };
-                                return .{ .spec = spec, .needs_deref = true, .deref_ty = mir_ty };
-                            },
-                            .PrimFloat => |float_ty| {
-                                const mir_ty: mir.MirType = switch (float_ty) {
-                                    .F32 => .F32,
-                                    .F64 => .F64,
-                                };
-                                return .{ .spec = "%f", .needs_deref = true, .deref_ty = mir_ty };
-                            },
-                            .Bool => return .{ .spec = "%d", .needs_deref = true, .deref_ty = .Bool },
-                            .Char => return .{ .spec = "%c", .needs_deref = true, .deref_ty = .Char },
-                            else => {},
+                        if (getInnerTypeSpec(inner_kind)) |spec_info| {
+                            return spec_info;
                         }
                     }
                 },
                 .Pointer => |ptr_info| {
-                    // Check what the pointer is to
                     if (ptr_info.inner < self.hir_crate.types.items.len) {
                         const inner_kind = self.hir_crate.types.items[ptr_info.inner].kind;
-                        switch (inner_kind) {
-                            .Str, .String => return .{ .spec = "%s", .needs_deref = false, .deref_ty = null },
-                            .PrimInt => |int_ty| {
-                                const spec: []const u8 = switch (int_ty) {
-                                    .I32, .U32 => "%d",
-                                    .I64, .U64, .Usize => "%ld",
-                                };
-                                const mir_ty: mir.MirType = switch (int_ty) {
-                                    .I32 => .I32,
-                                    .U32 => .U32,
-                                    .I64 => .I64,
-                                    .U64 => .U64,
-                                    .Usize => .Usize,
-                                };
-                                return .{ .spec = spec, .needs_deref = true, .deref_ty = mir_ty };
-                            },
-                            .PrimFloat => |float_ty| {
-                                const mir_ty: mir.MirType = switch (float_ty) {
-                                    .F32 => .F32,
-                                    .F64 => .F64,
-                                };
-                                return .{ .spec = "%f", .needs_deref = true, .deref_ty = mir_ty };
-                            },
-                            .Bool => return .{ .spec = "%d", .needs_deref = true, .deref_ty = .Bool },
-                            .Char => return .{ .spec = "%c", .needs_deref = true, .deref_ty = .Char },
-                            else => {},
+                        if (getInnerTypeSpec(inner_kind)) |spec_info| {
+                            return spec_info;
                         }
                     }
                 },

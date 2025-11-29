@@ -726,7 +726,9 @@ fn lowerInst(
                             },
                         }
 
-                        // Multiply index by element size (8 bytes for i64)
+                        // Multiply index by element size
+                        // LIMITATION: Currently hardcoded to 8 bytes (i64). For proper support,
+                        // element size should be determined from the array's element type.
                         vreg_count.* += 1;
                         const scaled_vreg = vreg_count.* - 1;
                         try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .VReg = scaled_vreg }, .src = .{ .VReg = idx_vreg } } });
@@ -957,17 +959,19 @@ fn lowerTerm(
                 };
 
                 if (is_struct_local) {
-                    // For struct locals, load fields from hash-indexed offsets
-                    // Field "a" hash is 97 % 4 = 1, field "b" hash is 98 % 4 = 2
-                    // This works for common 2-field structs like Pair { a, b }
+                    // For struct locals, load fields from hash-indexed offsets.
+                    // LIMITATION: This uses hardcoded hash indices 1 and 2, which assumes:
+                    // - hash("a") % 4 = 1, hash("b") % 4 = 2 for common 2-field structs
+                    // - Other field names may hash to different indices and won't work correctly
+                    // A proper fix would require tracking field names in the type system.
                     const local_id = op.Local;
                     const base_offset: i32 = -@as(i32, @intCast((local_id + 1) * @sizeOf(i64) * LOCAL_STACK_MULTIPLIER));
                     
-                    // Load first field (hash index 1) into rax
+                    // Load first field (hash index 1 for field "a") into rax
                     const field1_offset = base_offset - 1 * @as(i32, @intCast(@sizeOf(i64) * LOCAL_STACK_MULTIPLIER));
                     try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .Phys = .rax }, .src = .{ .Mem = .{ .base = .rbp, .offset = field1_offset } } } });
                     
-                    // Load second field (hash index 2) into rdx
+                    // Load second field (hash index 2 for field "b") into rdx
                     const field2_offset = base_offset - 2 * @as(i32, @intCast(@sizeOf(i64) * LOCAL_STACK_MULTIPLIER));
                     try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .Phys = .rdx }, .src = .{ .Mem = .{ .base = .rbp, .offset = field2_offset } } } });
                 } else {
