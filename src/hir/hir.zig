@@ -315,6 +315,8 @@ pub const Function = struct {
     def_id: DefId,
     /// Function name.
     name: []const u8,
+    /// Declared type parameters (e.g., T, U in fn foo<T, U>).
+    type_params: [][]const u8,
     /// Parameter local IDs (indices into the pattern arena).
     params: []LocalId,
     /// Parameter types (indices into the type arena).
@@ -333,6 +335,8 @@ pub const Struct = struct {
     def_id: DefId,
     /// Struct name.
     name: []const u8,
+    /// Declared type parameters (e.g., T in struct Foo<T>).
+    type_params: [][]const u8,
     /// List of struct fields.
     fields: []Field,
     /// Source location span for diagnostics.
@@ -367,6 +371,8 @@ pub const TypeAlias = struct {
 pub const Impl = struct {
     /// Definition ID for this impl block.
     def_id: DefId,
+    /// Declared type parameters (e.g., T in impl<T> Foo<T>).
+    type_params: [][]const u8,
     /// Target type for which methods are being implemented.
     target: TypeId,
     /// List of method item IDs.
@@ -492,6 +498,14 @@ fn lowerFn(
 ) LowerError!void {
     const fn_data = item.data.Fn;
     const owned_name = try internName(crate, name_table, fn_data.name, diagnostics);
+
+    // Lower generic type parameters
+    var type_params = std.ArrayListUnmanaged([]const u8){};
+    defer type_params.deinit(crate.allocator());
+    for (fn_data.generics) |generic| {
+        try type_params.append(crate.allocator(), try crate.allocator().dupe(u8, generic.name));
+    }
+
     var params_buffer = std.ArrayListUnmanaged(LocalId){};
     defer params_buffer.deinit(crate.allocator());
     var param_types = std.ArrayListUnmanaged(TypeId){};
@@ -517,6 +531,7 @@ fn lowerFn(
     const fn_item = Function{
         .def_id = def_id,
         .name = owned_name,
+        .type_params = try type_params.toOwnedSlice(crate.allocator()),
         .params = try params_buffer.toOwnedSlice(crate.allocator()),
         .param_types = try param_types.toOwnedSlice(crate.allocator()),
         .return_type = return_ty,
@@ -537,6 +552,14 @@ fn lowerStruct(
 ) LowerError!void {
     const data = item.data.Struct;
     const owned_name = try internName(crate, name_table, data.name, diagnostics);
+
+    // Lower generic type parameters
+    var type_params = std.ArrayListUnmanaged([]const u8){};
+    defer type_params.deinit(crate.allocator());
+    for (data.generics) |generic| {
+        try type_params.append(crate.allocator(), try crate.allocator().dupe(u8, generic.name));
+    }
+
     var fields = std.ArrayListUnmanaged(Field){};
     defer fields.deinit(crate.allocator());
 
@@ -549,6 +572,7 @@ fn lowerStruct(
     const struct_item = Struct{
         .def_id = def_id,
         .name = owned_name,
+        .type_params = try type_params.toOwnedSlice(crate.allocator()),
         .fields = try fields.toOwnedSlice(crate.allocator()),
         .span = data.span,
     };
@@ -612,6 +636,13 @@ fn lowerImpl(
     var diagnostics_dummy = @import("../diag/diagnostics.zig").Diagnostics.init(crate.allocator());
     defer diagnostics_dummy.deinit();
     const target = try lowerType(crate, data.target, &diagnostics_dummy, next_type_id);
+
+    // Lower generic type parameters for the impl block
+    var impl_type_params = std.ArrayListUnmanaged([]const u8){};
+    defer impl_type_params.deinit(crate.allocator());
+    for (data.generics) |generic| {
+        try impl_type_params.append(crate.allocator(), try crate.allocator().dupe(u8, generic.name));
+    }
 
     // Get the struct name for method name mangling
     var struct_name: []const u8 = "";
@@ -694,9 +725,11 @@ fn lowerImpl(
         else
             try crate.allocator().dupe(u8, method.name.name);
 
+        // Methods inherit type params from the impl block
         const fn_item = Function{
             .def_id = method_def_id,
             .name = method_name,
+            .type_params = impl_type_params.items,
             .params = try params_buffer.toOwnedSlice(crate.allocator()),
             .param_types = try param_types.toOwnedSlice(crate.allocator()),
             .return_type = return_ty,
@@ -709,6 +742,7 @@ fn lowerImpl(
 
     const impl_item = Impl{
         .def_id = def_id,
+        .type_params = try impl_type_params.toOwnedSlice(crate.allocator()),
         .target = target,
         .methods = try method_ids.toOwnedSlice(crate.allocator()),
         .span = data.span,

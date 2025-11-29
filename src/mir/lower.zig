@@ -49,6 +49,44 @@ pub fn lowerFromHir(allocator: std.mem.Allocator, hir_crate: *const hir.Crate, d
     return crate;
 }
 
+/// Check if a type name is a declared type parameter in the HIR crate.
+/// Returns true if the name matches a declared type parameter in any struct, function, or impl block.
+fn isDeclaredTypeParam(hir_crate: *const hir.Crate, type_name: []const u8) bool {
+    for (hir_crate.items.items) |item| {
+        switch (item.kind) {
+            .Struct => |s| {
+                for (s.type_params) |param| {
+                    if (std.mem.eql(u8, param, type_name)) return true;
+                }
+            },
+            .Function => |f| {
+                for (f.type_params) |param| {
+                    if (std.mem.eql(u8, param, type_name)) return true;
+                }
+            },
+            .Impl => |impl_item| {
+                for (impl_item.type_params) |param| {
+                    if (std.mem.eql(u8, param, type_name)) return true;
+                }
+            },
+            else => {},
+        }
+    }
+    return false;
+}
+
+/// Check if a type name is a known type (struct or type alias).
+fn isKnownTypeName(hir_crate: *const hir.Crate, type_name: []const u8) bool {
+    for (hir_crate.items.items) |item| {
+        switch (item.kind) {
+            .Struct => |s| if (std.mem.eql(u8, s.name, type_name)) return true,
+            .TypeAlias => |a| if (std.mem.eql(u8, a.name, type_name)) return true,
+            else => {},
+        }
+    }
+    return false;
+}
+
 /// Lower a single HIR function to MIR representation.
 ///
 /// Creates a FunctionBuilder to manage block construction and instruction emission,
@@ -99,9 +137,10 @@ fn lowerFunction(crate: *mir.MirCrate, func: hir.Function, hir_crate: *const hir
                         // Look up struct by name
                         if (path.segments.len == 1) {
                             const struct_name = path.segments[0];
-                            // Check if this is a generic type parameter (single letter like T, U, V)
-                            // Generic params are typically single uppercase letters
-                            if (struct_name.len == 1 and struct_name[0] >= 'A' and struct_name[0] <= 'Z') {
+                            // Check if this is a generic type parameter using proper detection:
+                            // 1. Check declared type_params from struct/function/impl definitions
+                            // 2. Fall back to checking if it's not a known type name
+                            if (isDeclaredTypeParam(hir_crate, struct_name) or !isKnownTypeName(hir_crate, struct_name)) {
                                 is_generic_param = true;
                             } else {
                                 for (hir_crate.items.items) |item| {
@@ -990,6 +1029,7 @@ const FunctionBuilder = struct {
                     const fn_def: hir.Function = .{
                         .def_id = 0,
                         .name = name,
+                        .type_params = &[_][]const u8{},
                         .params = params,
                         .param_types = lambda.param_types,
                         .return_type = self.hir_crate.exprs.items[lambda.body].ty,
@@ -2156,7 +2196,7 @@ test "lower function with simple block" {
 
     try crate.patterns.append(crate.allocator(), .{ .id = 0, .kind = .{ .Identifier = "x" }, .span = span });
 
-    try crate.items.append(crate.allocator(), .{ .id = 0, .kind = .{ .Function = .{ .def_id = 0, .name = "main", .params = &[_]hir.LocalId{}, .param_types = &[_]hir.TypeId{}, .return_type = i64_ty, .body = block_expr_id, .span = span } }, .span = span });
+    try crate.items.append(crate.allocator(), .{ .id = 0, .kind = .{ .Function = .{ .def_id = 0, .name = "main", .type_params = &[_][]const u8{}, .params = &[_]hir.LocalId{}, .param_types = &[_]hir.TypeId{}, .return_type = i64_ty, .body = block_expr_id, .span = span } }, .span = span });
 
     var mir_crate = try lowerFromHir(allocator, &crate, &diagnostics);
     defer mir_crate.deinit();
@@ -2198,7 +2238,7 @@ test "lower char and string literals" {
 
     try crate.patterns.append(crate.allocator(), .{ .id = 0, .kind = .{ .Identifier = "c" }, .span = span });
 
-    try crate.items.append(crate.allocator(), .{ .id = 0, .kind = .{ .Function = .{ .def_id = 0, .name = "main", .params = &[_]hir.LocalId{}, .param_types = &[_]hir.TypeId{}, .return_type = string_ty, .body = block_expr_id, .span = span } }, .span = span });
+    try crate.items.append(crate.allocator(), .{ .id = 0, .kind = .{ .Function = .{ .def_id = 0, .name = "main", .type_params = &[_][]const u8{}, .params = &[_]hir.LocalId{}, .param_types = &[_]hir.TypeId{}, .return_type = string_ty, .body = block_expr_id, .span = span } }, .span = span });
 
     var mir_crate = try lowerFromHir(allocator, &crate, &diagnostics);
     defer mir_crate.deinit();
@@ -2247,7 +2287,7 @@ test "lower if expression creates branch blocks" {
     const if_id: hir.ExprId = @intCast(crate.exprs.items.len);
     try crate.exprs.append(crate.allocator(), .{ .id = if_id, .kind = .{ .If = .{ .cond = cond_id, .then_branch = then_block, .else_branch = else_block } }, .ty = i32_ty, .span = span });
 
-    try crate.items.append(crate.allocator(), .{ .id = 0, .kind = .{ .Function = .{ .def_id = 0, .name = "main", .params = &[_]hir.LocalId{}, .param_types = &[_]hir.TypeId{}, .return_type = i32_ty, .body = if_id, .span = span } }, .span = span });
+    try crate.items.append(crate.allocator(), .{ .id = 0, .kind = .{ .Function = .{ .def_id = 0, .name = "main", .type_params = &[_][]const u8{}, .params = &[_]hir.LocalId{}, .param_types = &[_]hir.TypeId{}, .return_type = i32_ty, .body = if_id, .span = span } }, .span = span });
 
     var mir_crate = try lowerFromHir(allocator, &crate, &diagnostics);
     defer mir_crate.deinit();
@@ -2275,7 +2315,7 @@ test "lower range and aggregate expressions" {
 
     const helper_const_id: hir.ExprId = @intCast(crate.exprs.items.len);
     try crate.exprs.append(crate.allocator(), .{ .id = helper_const_id, .kind = .{ .ConstInt = 7 }, .ty = i32_ty, .span = span });
-    try crate.items.append(crate.allocator(), .{ .id = 0, .kind = .{ .Function = .{ .def_id = 1, .name = "helper", .params = &[_]hir.LocalId{}, .param_types = &[_]hir.TypeId{}, .return_type = i32_ty, .body = helper_const_id, .span = span } }, .span = span });
+    try crate.items.append(crate.allocator(), .{ .id = 0, .kind = .{ .Function = .{ .def_id = 1, .name = "helper", .type_params = &[_][]const u8{}, .params = &[_]hir.LocalId{}, .param_types = &[_]hir.TypeId{}, .return_type = i32_ty, .body = helper_const_id, .span = span } }, .span = span });
 
     const one_id: hir.ExprId = @intCast(crate.exprs.items.len);
     try crate.exprs.append(crate.allocator(), .{ .id = one_id, .kind = .{ .ConstInt = 1 }, .ty = i32_ty, .span = span });
@@ -2345,7 +2385,7 @@ test "lower range and aggregate expressions" {
     const block_expr_id: hir.ExprId = @intCast(crate.exprs.items.len);
 
     try crate.exprs.append(crate.allocator(), .{ .id = block_expr_id, .kind = .{ .Block = .{ .stmts = stmts_slice, .tail = call_expr_id } }, .ty = i32_ty, .span = span });
-    try crate.items.append(crate.allocator(), .{ .id = 1, .kind = .{ .Function = .{ .def_id = 0, .name = "main", .params = &[_]hir.LocalId{}, .param_types = &[_]hir.TypeId{}, .return_type = i32_ty, .body = block_expr_id, .span = span } }, .span = span });
+    try crate.items.append(crate.allocator(), .{ .id = 1, .kind = .{ .Function = .{ .def_id = 0, .name = "main", .type_params = &[_][]const u8{}, .params = &[_]hir.LocalId{}, .param_types = &[_]hir.TypeId{}, .return_type = i32_ty, .body = block_expr_id, .span = span } }, .span = span });
 
     var mir_crate = try lowerFromHir(allocator, &crate, &diagnostics);
     defer mir_crate.deinit();
@@ -2409,10 +2449,10 @@ test "lower println macro into printf call" {
     const call_expr_id: hir.ExprId = @intCast(crate.exprs.items.len);
     try crate.exprs.append(crate.allocator(), .{ .id = call_expr_id, .kind = .{ .Call = .{ .callee = callee_expr_id, .args = args_slice } }, .ty = i32_ty, .span = span });
 
-    const println_fn: hir.Function = .{ .def_id = 0, .name = "println", .params = &[_]hir.LocalId{}, .param_types = &[_]hir.TypeId{}, .return_type = null, .body = null, .span = span };
+    const println_fn: hir.Function = .{ .def_id = 0, .name = "println", .type_params = &[_][]const u8{}, .params = &[_]hir.LocalId{}, .param_types = &[_]hir.TypeId{}, .return_type = null, .body = null, .span = span };
     try crate.items.append(crate.allocator(), .{ .id = 0, .kind = .{ .Function = println_fn }, .span = span });
 
-    const main_fn: hir.Function = .{ .def_id = 1, .name = "main", .params = &[_]hir.LocalId{}, .param_types = &[_]hir.TypeId{}, .return_type = i32_ty, .body = call_expr_id, .span = span };
+    const main_fn: hir.Function = .{ .def_id = 1, .name = "main", .type_params = &[_][]const u8{}, .params = &[_]hir.LocalId{}, .param_types = &[_]hir.TypeId{}, .return_type = i32_ty, .body = call_expr_id, .span = span };
     try crate.items.append(crate.allocator(), .{ .id = 1, .kind = .{ .Function = main_fn }, .span = span });
 
     var mir_crate = try lowerFromHir(allocator, &crate, &diagnostics);

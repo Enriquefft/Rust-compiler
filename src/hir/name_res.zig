@@ -97,7 +97,17 @@ fn ensureBuiltinPrintln(crate: *hir.Crate) Error!Builtin {
     const id: hir.DefId = @intCast(crate.items.items.len);
     const name = try crate.allocator().dupe(u8, "println");
     const span = hir.emptySpan(0);
-    const func: hir.Function = .{ .def_id = id, .name = name, .params = &[_]hir.LocalId{}, .param_types = &[_]hir.TypeId{}, .return_type = null, .body = null, .span = span };
+    // Creates a synthetic function with no body - body = null indicates builtin
+    const func: hir.Function = .{
+        .def_id = id,
+        .name = name,
+        .type_params = &[_][]const u8{},
+        .params = &[_]hir.LocalId{},
+        .param_types = &[_]hir.TypeId{},
+        .return_type = null,
+        .body = null,
+        .span = span,
+    };
     try crate.items.append(crate.allocator(), .{ .id = id, .kind = .{ .Function = func }, .span = span });
     return .{ .name = name, .def_id = id };
 }
@@ -425,6 +435,7 @@ test "name resolution resolves globals and locals" {
     try crate.items.append(crate.allocator(), .{ .id = foo_def, .kind = .{ .Function = .{
         .def_id = foo_def,
         .name = "foo",
+        .type_params = &[_][]const u8{},
         .params = &[_]hir.LocalId{},
         .param_types = &[_]hir.TypeId{},
         .return_type = null,
@@ -435,6 +446,7 @@ test "name resolution resolves globals and locals" {
     try crate.items.append(crate.allocator(), .{ .id = bar_def, .kind = .{ .Function = .{
         .def_id = bar_def,
         .name = "bar",
+        .type_params = &[_][]const u8{},
         .params = &[_]hir.LocalId{},
         .param_types = &[_]hir.TypeId{},
         .return_type = null,
@@ -486,6 +498,7 @@ test "name resolution binds function parameters" {
     try crate.items.append(crate.allocator(), .{ .id = 0, .kind = .{ .Function = .{
         .def_id = 0,
         .name = "with_param",
+        .type_params = &[_][]const u8{},
         .params = params,
         .param_types = param_types,
         .return_type = null,

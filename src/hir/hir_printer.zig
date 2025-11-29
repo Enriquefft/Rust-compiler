@@ -517,6 +517,7 @@ test "printCrateTree prints function with body" {
         .kind = .{ .Function = .{
             .def_id = 0,
             .name = "main",
+            .type_params = &[_][]const u8{},
             .params = &[_]hir.LocalId{},
             .param_types = &[_]hir.TypeId{},
             .return_type = null,

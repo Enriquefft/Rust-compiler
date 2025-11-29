@@ -700,12 +700,16 @@ fn typesCompatible(crate: *hir.Crate, lhs: hir.TypeId, rhs: hir.TypeId) bool {
     const lhs_kind = crate.types.items[resolved_lhs].kind;
     const rhs_kind = crate.types.items[resolved_rhs].kind;
 
-    // Check if rhs is a type parameter (single-segment path that doesn't resolve to a known type)
-    // If so, it's compatible with any type (for generic type inference)
+    // Check if rhs is a type parameter (single-segment path that is a declared type param
+    // or doesn't resolve to a known type). If so, it's compatible with any type (for generic type inference)
     if (rhs_kind == .Path) {
         const rhs_path = rhs_kind.Path;
-        if (rhs_path.segments.len == 1 and !isKnownTypeName(crate, rhs_path.segments[0])) {
-            return true;
+        if (rhs_path.segments.len == 1) {
+            const type_name = rhs_path.segments[0];
+            // Use declared type params for better detection, fall back to !isKnownTypeName
+            if (isDeclaredTypeParam(crate, type_name) or !isKnownTypeName(crate, type_name)) {
+                return true;
+            }
         }
     }
 
@@ -745,11 +749,14 @@ fn typesCompatible(crate: *hir.Crate, lhs: hir.TypeId, rhs: hir.TypeId) bool {
             .Struct => |rhs_struct| structMatchesPath(crate, rhs_struct.def_id, lhs_path.segments),
             .Path => |rhs_path| pathsMatch(lhs_path.segments, rhs_path.segments),
             else => blk: {
-                // If the path is a single-segment path that doesn't resolve to a known type,
-                // treat it as a generic type parameter that's compatible with any type.
-                // This enables basic generic type inference for structs like Pair<T>.
-                if (lhs_path.segments.len == 1 and !isKnownTypeName(crate, lhs_path.segments[0])) {
-                    break :blk true;
+                // If the path is a single-segment path that is a declared type param
+                // or doesn't resolve to a known type, treat it as a generic type parameter
+                // that's compatible with any type. This enables basic generic type inference.
+                if (lhs_path.segments.len == 1) {
+                    const type_name = lhs_path.segments[0];
+                    if (isDeclaredTypeParam(crate, type_name) or !isKnownTypeName(crate, type_name)) {
+                        break :blk true;
+                    }
                 }
                 break :blk false;
             },
@@ -824,6 +831,32 @@ fn isKnownTypeName(crate: *hir.Crate, type_name: []const u8) bool {
     return false;
 }
 
+/// Checks if a name is a declared type parameter in any struct, function, or impl block.
+/// Returns true if the name matches a declared type parameter.
+fn isDeclaredTypeParam(crate: *hir.Crate, type_name: []const u8) bool {
+    for (crate.items.items) |item| {
+        switch (item.kind) {
+            .Struct => |s| {
+                for (s.type_params) |param| {
+                    if (std.mem.eql(u8, param, type_name)) return true;
+                }
+            },
+            .Function => |f| {
+                for (f.type_params) |param| {
+                    if (std.mem.eql(u8, param, type_name)) return true;
+                }
+            },
+            .Impl => |impl_item| {
+                for (impl_item.type_params) |param| {
+                    if (std.mem.eql(u8, param, type_name)) return true;
+                }
+            },
+            else => {},
+        }
+    }
+    return false;
+}
+
 // Extracts the element type from an array type (or ref/pointer to array).
 // Returns an error variant if the type is not an array.
 fn getArrayElementType(crate: *hir.Crate, ty: hir.TypeId) union(enum) { ok: hir.TypeId, err: void } {
@@ -885,9 +918,13 @@ fn resolveFieldType(crate: *hir.Crate, ty: hir.TypeId, name: []const u8, span: h
                             const field_type_kind = crate.types.items[field_ty].kind;
                             if (field_type_kind == .Path) {
                                 const path_info = field_type_kind.Path;
-                                if (path_info.segments.len == 1 and !isKnownTypeName(crate, path_info.segments[0])) {
-                                    // Type parameter - use default i64 type
-                                    return ensureType(crate, .{ .PrimInt = .I64 });
+                                if (path_info.segments.len == 1) {
+                                    const type_name = path_info.segments[0];
+                                    // Use declared type params for proper detection
+                                    if (isDeclaredTypeParam(crate, type_name) or !isKnownTypeName(crate, type_name)) {
+                                        // Type parameter - use default i64 type
+                                        return ensureType(crate, .{ .PrimInt = .I64 });
+                                    }
                                 }
                             }
                         }
@@ -921,9 +958,13 @@ fn resolveFieldType(crate: *hir.Crate, ty: hir.TypeId, name: []const u8, span: h
                                     const field_type_kind = crate.types.items[field_ty].kind;
                                     if (field_type_kind == .Path) {
                                         const path_info = field_type_kind.Path;
-                                        if (path_info.segments.len == 1 and !isKnownTypeName(crate, path_info.segments[0])) {
-                                            // Type parameter - use default i64 type
-                                            return ensureType(crate, .{ .PrimInt = .I64 });
+                                        if (path_info.segments.len == 1) {
+                                            const type_name = path_info.segments[0];
+                                            // Use declared type params for proper detection
+                                            if (isDeclaredTypeParam(crate, type_name) or !isKnownTypeName(crate, type_name)) {
+                                                // Type parameter - use default i64 type
+                                                return ensureType(crate, .{ .PrimInt = .I64 });
+                                            }
                                         }
                                     }
                                 }
@@ -1245,7 +1286,7 @@ test "typechecker assigns literal types and detects mismatches" {
     const block_expr_id: hir.ExprId = @intCast(crate.exprs.items.len);
     try crate.exprs.append(crate.allocator(), .{ .id = block_expr_id, .kind = .{ .Block = .{ .stmts = block_stmts, .tail = null } }, .ty = 0, .span = span });
 
-    try crate.items.append(crate.allocator(), .{ .id = 0, .kind = .{ .Function = .{ .def_id = 0, .name = "main", .params = &[_]hir.LocalId{}, .param_types = &[_]hir.TypeId{}, .return_type = bool_ty, .body = block_expr_id, .span = span } }, .span = span });
+    try crate.items.append(crate.allocator(), .{ .id = 0, .kind = .{ .Function = .{ .def_id = 0, .name = "main", .type_params = &[_][]const u8{}, .params = &[_]hir.LocalId{}, .param_types = &[_]hir.TypeId{}, .return_type = bool_ty, .body = block_expr_id, .span = span } }, .span = span });
 
     try typecheck(&crate, &diagnostics);
 
@@ -1294,7 +1335,7 @@ test "typechecker handles composite expressions" {
     const struct_fields = try crate.allocator().alloc(hir.Field, 1);
     struct_fields[0] = struct_field;
 
-    try crate.items.append(crate.allocator(), .{ .id = 0, .kind = .{ .Struct = .{ .def_id = 0, .name = "Wrapper", .fields = struct_fields, .span = span } }, .span = span });
+    try crate.items.append(crate.allocator(), .{ .id = 0, .kind = .{ .Struct = .{ .def_id = 0, .name = "Wrapper", .type_params = &[_][]const u8{}, .fields = struct_fields, .span = span } }, .span = span });
     const struct_ty = try ensureType(&crate, .{ .Struct = .{ .def_id = 0, .type_args = &[_]hir.TypeId{} } });
 
     const struct_fields_init = try crate.allocator().alloc(hir.StructInitField, 1);
