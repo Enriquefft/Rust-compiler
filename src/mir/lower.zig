@@ -961,11 +961,48 @@ const FunctionBuilder = struct {
             .Let => |let_stmt| {
                 // Allocate locals for this let statement
                 // For structs, allocate space for all potential hash-indexed fields
+                // For arrays of structs, allocate space for all elements * fields
                 var num_slots: hir.LocalId = 1;
+                var is_struct_array = false;
                 if (let_stmt.ty) |ty_id| {
                     if (ty_id < self.hir_crate.types.items.len) {
                         const ty = self.hir_crate.types.items[ty_id];
                         switch (ty.kind) {
+                            .Array => |arr| {
+                                // Check if this is an array of structs
+                                const array_len: hir.LocalId = if (arr.size_const) |sz| @intCast(sz) else 1;
+                                if (arr.elem < self.hir_crate.types.items.len) {
+                                    const elem_ty = self.hir_crate.types.items[arr.elem];
+                                    switch (elem_ty.kind) {
+                                        .Struct => |info| {
+                                            if (info.def_id < self.hir_crate.items.items.len) {
+                                                const s = self.hir_crate.items.items[info.def_id];
+                                                if (s.kind == .Struct) {
+                                                    const elem_size: hir.LocalId = @intCast(s.kind.Struct.fields.len);
+                                                    num_slots = array_len * elem_size;
+                                                    is_struct_array = true;
+                                                }
+                                            }
+                                        },
+                                        .Path => |path| {
+                                            if (path.segments.len == 1) {
+                                                for (self.hir_crate.items.items) |item| {
+                                                    if (item.kind == .Struct and std.mem.eql(u8, item.kind.Struct.name, path.segments[0])) {
+                                                        const elem_size: hir.LocalId = @intCast(item.kind.Struct.fields.len);
+                                                        num_slots = array_len * elem_size;
+                                                        is_struct_array = true;
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                        },
+                                        else => {
+                                            // For scalar arrays, don't allocate extra slots
+                                            // The array is stored as a single local and elements are accessed via Index
+                                        },
+                                    }
+                                }
+                            },
                             .Struct => |info| {
                                 if (info.def_id < self.hir_crate.items.items.len) {
                                     const s = self.hir_crate.items.items[info.def_id];
@@ -1009,6 +1046,67 @@ const FunctionBuilder = struct {
                     if (value_expr.kind == .StructInit) {
                         // For struct init, emit StoreLocal for each field directly
                         try self.lowerStructInitToLocal(value_expr.kind.StructInit, base_local, stmt.span);
+                    } else if (value_expr.kind == .Array and is_struct_array) {
+                        // Special handling for arrays of structs
+                        // Get struct fields for storage layout
+                        var struct_fields: ?[]const hir.Field = null;
+                        if (let_stmt.ty) |ty_id| {
+                            if (ty_id < self.hir_crate.types.items.len) {
+                                const ty = self.hir_crate.types.items[ty_id];
+                                if (ty.kind == .Array) {
+                                    const elem_ty_id = ty.kind.Array.elem;
+                                    if (elem_ty_id < self.hir_crate.types.items.len) {
+                                        const elem_ty = self.hir_crate.types.items[elem_ty_id];
+                                        switch (elem_ty.kind) {
+                                            .Struct => |info| {
+                                                if (info.def_id < self.hir_crate.items.items.len) {
+                                                    const s = self.hir_crate.items.items[info.def_id];
+                                                    if (s.kind == .Struct) {
+                                                        struct_fields = s.kind.Struct.fields;
+                                                    }
+                                                }
+                                            },
+                                            .Path => |path| {
+                                                if (path.segments.len == 1) {
+                                                    for (self.hir_crate.items.items) |item| {
+                                                        if (item.kind == .Struct and std.mem.eql(u8, item.kind.Struct.name, path.segments[0])) {
+                                                            struct_fields = item.kind.Struct.fields;
+                                                            break;
+                                                        }
+                                                    }
+                                                }
+                                            },
+                                            else => {},
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        if (struct_fields != null) {
+                            // Store each struct element's fields sequentially
+                            const fields = struct_fields.?;
+                            const elem_size: hir.LocalId = @intCast(fields.len);
+                            for (value_expr.kind.Array, 0..) |elem_id, elem_idx| {
+                                const elem_expr = self.hir_crate.exprs.items[elem_id];
+                                if (elem_expr.kind == .StructInit) {
+                                    const struct_init = elem_expr.kind.StructInit;
+                                    const elem_base_local = base_local + @as(hir.LocalId, @intCast(elem_idx)) * elem_size;
+                                    // Store each field to sequential locals within this element
+                                    for (struct_init.fields, 0..) |field, field_idx| {
+                                        const value_op = try self.lowerExpr(field.value) orelse continue;
+                                        const target_local = elem_base_local + @as(hir.LocalId, @intCast(field_idx));
+                                        try self.ensureLocal(target_local, null, stmt.span);
+                                        _ = try self.emitInst(.{ .ty = null, .dest = null, .kind = .{ .StoreLocal = .{ .local = target_local, .src = value_op } } });
+                                    }
+                                }
+                            }
+                        } else {
+                            // Regular array handling
+                            if (try self.lowerExpr(value_id)) |value_op| {
+                                _ = try self.emitInst(.{ .ty = mapType(self.hir_crate, let_stmt.ty, stmt.span, self.diagnostics), .dest = null, .kind = .{ .StoreLocal = .{ .local = base_local, .src = value_op } } });
+                            }
+                        }
                     } else {
                         if (try self.lowerExpr(value_id)) |value_op| {
                             // For struct-typed results (from calls), store fields using hash-based layout
