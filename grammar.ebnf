@@ -114,7 +114,7 @@ Primary     = Literal
             | "(" , Expr , ")"
             | Block ;
 
-Init        = Ident , [ ":" , Expr ] ;  (* When ":" is omitted, uses Ident as both name and value *)
+Init        = Ident , [ ":" , Expr ] ;  (* Shorthand: "{ x }" means "{ x: x }" - field name as variable reference *)
 
 Literal     = IntLit | FloatLit | BoolLit | CharLit | StringLit ;
 

@@ -240,7 +240,7 @@ Compile-time constant definitions:
   ```
 
 * Parsed as expressions that can appear anywhere expressions are allowed.
-* Note: The compiler does not enforce safety checks; the `unsafe` keyword is accepted but does not change semantic behavior in this subset.
+* Note: The compiler tracks unsafe context and enforces some safety checks (e.g., dereferencing raw pointers requires being inside an unsafe block).
 
 ## 11. Struct initialization
 

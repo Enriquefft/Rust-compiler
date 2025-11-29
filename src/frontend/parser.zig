@@ -1078,3 +1078,135 @@ test "diagnose macro invocation without parentheses" {
     try std.testing.expect(fixture.diagnostics.hasErrors());
     try std.testing.expectEqualStrings("expected '(' after macro invocation", fixture.diagnostics.entries.items[0].message);
 }
+
+test "parse const item" {
+    var fixture = try expectNoErrors("const MAX_SIZE: usize = 100;");
+    defer {
+        fixture.diagnostics.deinit();
+        fixture.arena.deinit();
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), fixture.crate.items.len);
+    try std.testing.expectEqual(ast.Item.Tag.Const, fixture.crate.items[0].tag);
+    const const_item = fixture.crate.items[0].data.Const;
+    try std.testing.expectEqualStrings("MAX_SIZE", const_item.name.name);
+    try std.testing.expectEqual(ast.Type.Tag.Primitive, const_item.ty.tag);
+    try std.testing.expectEqual(ast.Primitive.usize, const_item.ty.data.Primitive);
+    try std.testing.expectEqual(ast.Expr.Tag.Literal, const_item.value.tag);
+}
+
+test "parse const item with complex type" {
+    var fixture = try expectNoErrors("const PI: f64 = 3.14;");
+    defer {
+        fixture.diagnostics.deinit();
+        fixture.arena.deinit();
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), fixture.crate.items.len);
+    try std.testing.expectEqual(ast.Item.Tag.Const, fixture.crate.items[0].tag);
+    const const_item = fixture.crate.items[0].data.Const;
+    try std.testing.expectEqualStrings("PI", const_item.name.name);
+    try std.testing.expectEqual(ast.Primitive.f64, const_item.ty.data.Primitive);
+}
+
+test "parse unsafe block expression" {
+    var fixture = try expectNoErrors("fn main() { unsafe { let x = 1; } }");
+    defer {
+        fixture.diagnostics.deinit();
+        fixture.arena.deinit();
+    }
+
+    const fn_item = fixture.crate.items[0].data.Fn;
+    try std.testing.expectEqual(@as(usize, 1), fn_item.body.stmts.len);
+    // unsafe block is parsed as an expression statement
+    try std.testing.expectEqual(ast.Stmt.Tag.Expr, fn_item.body.stmts[0].tag);
+}
+
+test "parse unsafe block as tail expression" {
+    var fixture = try expectNoErrors("fn main() -> i32 { unsafe { 42 } }");
+    defer {
+        fixture.diagnostics.deinit();
+        fixture.arena.deinit();
+    }
+
+    const fn_item = fixture.crate.items[0].data.Fn;
+    try std.testing.expect(fn_item.body.result != null);
+    // The result should be a Block (unsafe blocks are parsed as blocks in primary)
+    try std.testing.expectEqual(ast.Expr.Tag.Block, fn_item.body.result.?.tag);
+}
+
+test "parse unsafe block in expression context" {
+    var fixture = try expectNoErrors("fn main() { let x = unsafe { 1 }; }");
+    defer {
+        fixture.diagnostics.deinit();
+        fixture.arena.deinit();
+    }
+
+    const fn_item = fixture.crate.items[0].data.Fn;
+    try std.testing.expectEqual(@as(usize, 1), fn_item.body.stmts.len);
+    const let_stmt = fn_item.body.stmts[0].data.Let;
+    try std.testing.expect(let_stmt.value != null);
+    try std.testing.expectEqual(ast.Expr.Tag.Unsafe, let_stmt.value.?.tag);
+}
+
+test "parse struct init shorthand syntax" {
+    var fixture = try expectNoErrors("fn main() { let x = 1; let p = Point { x }; }");
+    defer {
+        fixture.diagnostics.deinit();
+        fixture.arena.deinit();
+    }
+
+    const fn_item = fixture.crate.items[0].data.Fn;
+    try std.testing.expectEqual(@as(usize, 2), fn_item.body.stmts.len);
+
+    // Second statement is the struct init
+    const let_stmt = fn_item.body.stmts[1].data.Let;
+    try std.testing.expect(let_stmt.value != null);
+    try std.testing.expectEqual(ast.Expr.Tag.StructInit, let_stmt.value.?.tag);
+
+    const struct_init = let_stmt.value.?.data.StructInit;
+    try std.testing.expectEqual(@as(usize, 1), struct_init.fields.len);
+    try std.testing.expectEqualStrings("x", struct_init.fields[0].name.name);
+    // The value should be a Path expression referencing 'x'
+    try std.testing.expectEqual(ast.Expr.Tag.Path, struct_init.fields[0].value.tag);
+}
+
+test "parse struct init mixed shorthand and full syntax" {
+    var fixture = try expectNoErrors("fn main() { let x = 1; let p = Point { x, y: 2 }; }");
+    defer {
+        fixture.diagnostics.deinit();
+        fixture.arena.deinit();
+    }
+
+    const fn_item = fixture.crate.items[0].data.Fn;
+    const let_stmt = fn_item.body.stmts[1].data.Let;
+    const struct_init = let_stmt.value.?.data.StructInit;
+
+    try std.testing.expectEqual(@as(usize, 2), struct_init.fields.len);
+    // First field uses shorthand
+    try std.testing.expectEqualStrings("x", struct_init.fields[0].name.name);
+    try std.testing.expectEqual(ast.Expr.Tag.Path, struct_init.fields[0].value.tag);
+    // Second field uses full syntax
+    try std.testing.expectEqualStrings("y", struct_init.fields[1].name.name);
+    try std.testing.expectEqual(ast.Expr.Tag.Literal, struct_init.fields[1].value.tag);
+}
+
+test "parse struct init full syntax" {
+    var fixture = try expectNoErrors("fn main() { let p = Point { x: 1, y: 2 }; }");
+    defer {
+        fixture.diagnostics.deinit();
+        fixture.arena.deinit();
+    }
+
+    const fn_item = fixture.crate.items[0].data.Fn;
+    const let_stmt = fn_item.body.stmts[0].data.Let;
+    try std.testing.expect(let_stmt.value != null);
+    try std.testing.expectEqual(ast.Expr.Tag.StructInit, let_stmt.value.?.tag);
+
+    const struct_init = let_stmt.value.?.data.StructInit;
+    try std.testing.expectEqual(@as(usize, 2), struct_init.fields.len);
+    try std.testing.expectEqualStrings("x", struct_init.fields[0].name.name);
+    try std.testing.expectEqual(ast.Expr.Tag.Literal, struct_init.fields[0].value.tag);
+    try std.testing.expectEqualStrings("y", struct_init.fields[1].name.name);
+    try std.testing.expectEqual(ast.Expr.Tag.Literal, struct_init.fields[1].value.tag);
+}
