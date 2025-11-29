@@ -1307,51 +1307,85 @@ const FunctionBuilder = struct {
         var call_args = std.ArrayListUnmanaged(mir.Operand){};
         defer call_args.deinit(self.allocator);
 
-        // For struct method calls, we need to pass all fields of the struct
-        // The struct is stored across multiple locals (one per field)
-        if (target_expr.kind == .LocalRef) {
-            const base_local = target_expr.kind.LocalRef;
+        // Get the method function to check if first param is a reference (self) type
+        const method_item = self.hir_crate.items.items[method_def_id];
+        if (method_item.kind != .Function) {
+            self.diagnostics.reportError(expr.span, "method is not a function");
+            return null;
+        }
+        const method_func = method_item.kind.Function;
 
-            // Determine struct field count from type
-            var num_fields: usize = 1; // Default to 1 if type info unavailable
-            if (target_expr.ty < self.hir_crate.types.items.len) {
-                const target_type = self.hir_crate.types.items[target_expr.ty];
-                switch (target_type.kind) {
-                    .Struct => |info| {
-                        if (info.def_id < self.hir_crate.items.items.len) {
-                            const struct_item = self.hir_crate.items.items[info.def_id];
-                            if (struct_item.kind == .Struct) {
-                                num_fields = struct_item.kind.Struct.fields.len;
-                            }
-                        }
-                    },
-                    .Path => |path| {
-                        // Look up struct by name
-                        if (path.segments.len == 1) {
-                            const struct_name = path.segments[0];
-                            for (self.hir_crate.items.items) |item| {
-                                if (item.kind == .Struct and std.mem.eql(u8, item.kind.Struct.name, struct_name)) {
-                                    num_fields = item.kind.Struct.fields.len;
-                                    break;
-                                }
-                            }
-                        }
-                    },
+        // Check if the first parameter is a reference type (&self or &mut self)
+        var first_param_is_ref = false;
+        if (method_func.param_types.len > 0) {
+            const first_param_ty = method_func.param_types[0];
+            if (first_param_ty < self.hir_crate.types.items.len) {
+                const param_type = self.hir_crate.types.items[first_param_ty];
+                switch (param_type.kind) {
+                    .Ref, .Pointer => first_param_is_ref = true,
                     else => {},
                 }
             }
+        }
 
-            // Pass each field as a separate argument
-            // Fields are stored at base_local + field_index (based on hash)
-            // For simplicity, assume fields x and y have indices 0 and 1
-            for (0..num_fields) |field_idx| {
-                const field_local: hir.LocalId = base_local + @as(hir.LocalId, @intCast(field_idx));
-                try call_args.append(self.allocator, .{ .Local = field_local });
+        // For struct method calls with reference parameters (&self, &mut self),
+        // pass a pointer to the struct. For value parameters (self), pass the value.
+        if (target_expr.kind == .LocalRef) {
+            const base_local = target_expr.kind.LocalRef;
+
+            if (first_param_is_ref) {
+                // Pass a reference to the struct (address of local)
+                // Create a Ref operation to get the address
+                const tmp = self.newTemp();
+                _ = try self.emitInst(.{ .ty = .Pointer, .dest = tmp, .kind = .{ .Unary = .{ .op = .Ref, .operand = .{ .Local = base_local } } } });
+                try call_args.append(self.allocator, .{ .Temp = tmp });
+            } else {
+                // Pass the struct value - determine field count and pass each field
+                var num_fields: usize = 1; // Default to 1 if type info unavailable
+                if (target_expr.ty < self.hir_crate.types.items.len) {
+                    const target_type = self.hir_crate.types.items[target_expr.ty];
+                    switch (target_type.kind) {
+                        .Struct => |info| {
+                            if (info.def_id < self.hir_crate.items.items.len) {
+                                const struct_item = self.hir_crate.items.items[info.def_id];
+                                if (struct_item.kind == .Struct) {
+                                    num_fields = struct_item.kind.Struct.fields.len;
+                                }
+                            }
+                        },
+                        .Path => |path| {
+                            // Look up struct by name
+                            if (path.segments.len == 1) {
+                                const struct_name = path.segments[0];
+                                for (self.hir_crate.items.items) |item| {
+                                    if (item.kind == .Struct and std.mem.eql(u8, item.kind.Struct.name, struct_name)) {
+                                        num_fields = item.kind.Struct.fields.len;
+                                        break;
+                                    }
+                                }
+                            }
+                        },
+                        else => {},
+                    }
+                }
+
+                // Pass each field as a separate argument
+                for (0..num_fields) |field_idx| {
+                    const field_local: hir.LocalId = base_local + @as(hir.LocalId, @intCast(field_idx));
+                    try call_args.append(self.allocator, .{ .Local = field_local });
+                }
             }
         } else {
             // Fallback: just use the lowered expression
             const self_op = try self.lowerExpr(target_id) orelse return null;
-            try call_args.append(self.allocator, self_op);
+            if (first_param_is_ref) {
+                // Need to take address of the expression result
+                const tmp = self.newTemp();
+                _ = try self.emitInst(.{ .ty = .Pointer, .dest = tmp, .kind = .{ .Unary = .{ .op = .Ref, .operand = self_op } } });
+                try call_args.append(self.allocator, .{ .Temp = tmp });
+            } else {
+                try call_args.append(self.allocator, self_op);
+            }
         }
 
         // Add the rest of the arguments
@@ -1360,15 +1394,6 @@ const FunctionBuilder = struct {
                 try call_args.append(self.allocator, arg_op);
             }
         }
-
-        // Create a call to the method function using its global name
-        const method_item = self.hir_crate.items.items[method_def_id];
-        if (method_item.kind != .Function) {
-            self.diagnostics.reportError(expr.span, "method is not a function");
-            return null;
-        }
-
-        const method_func = method_item.kind.Function;
 
         // Use Symbol to reference the method by name (avoids HIR/MIR index mismatch)
         const tmp = self.newTemp();
