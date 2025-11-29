@@ -338,22 +338,22 @@ When the parser encounters `const USE_FAST_PATH`, it doesn't recognize `const` a
 
 | Issue | Description | Files | Effort | Blocks |
 |-------|-------------|-------|--------|--------|
-| **const items** | Parser doesn't recognize `const` keyword | `tokens.zig`, `parser.zig`, `grammar.ebnf` | Medium | `optimizations.rs` |
+| **const items** | Parser doesn't recognize `const` keyword | `src/frontend/tokens.zig`, `src/frontend/parser.zig`, `grammar.ebnf` | Medium | `optimizations.rs` |
 
 ### High Priority
 
 | Issue | Description | Files | Effort | Blocks |
 |-------|-------------|-------|--------|--------|
-| Array field offset bug | Second field (`y`) returns loop index instead of value | `isel.zig` | Medium | `arrays3.rs` |
-| Generic method returns | `&T` field access returns struct pointer instead of field pointer | `isel.zig` | Medium | `generics_test2.rs` |
-| Printf for generic refs | `%p` format used instead of inner type format | `lower.zig` | Easy | `generics_test2.rs` |
+| Array field offset bug | Second field (`y`) returns loop index instead of value | `src/backend/x86_64/isel.zig` | Medium | `arrays3.rs` |
+| Generic method returns | `&T` field access returns struct pointer instead of field pointer | `src/backend/x86_64/isel.zig` | Medium | `generics_test2.rs` |
+| Printf for generic refs | `%p` format used instead of inner type format | `src/mir/lower.zig` | Easy | `generics_test2.rs` |
 
 ### Medium Priority (Future)
 
 | Issue | Description | Files | Effort |
 |-------|-------------|-------|--------|
-| `loop` construct | Infinite loop syntax not supported | `tokens.zig`, `parser.zig` | Easy |
-| Reference iteration | `for p in &array` unsupported | `lower.zig` | Medium |
+| `loop` construct | Infinite loop syntax not supported | `src/frontend/tokens.zig`, `src/frontend/parser.zig` | Easy |
+| Reference iteration | `for p in &array` unsupported | `src/mir/lower.zig` | Medium |
 
 ---
 
