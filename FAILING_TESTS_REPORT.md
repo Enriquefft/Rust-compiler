@@ -241,7 +241,7 @@ main:
 
 3. **Printf format specifier wrong**:
    - Format string is `"%p %p"` (pointer format)
-   - Should be `"%s %lld"` for String and i64/u64
+   - Should be `"%s %llu"` for String and u64 (unsigned)
    - The `printfSpecifier` function at line 1636 defaults to `%p` for `Pointer` type
    - For `&T` where `T` is String or integer, it should dereference and use the inner type's format
 
@@ -268,7 +268,7 @@ main:
    .Ref => |ref_info| {
        // Recursively get format for inner type
        const inner_format = getFormatForType(ref_info.inner);
-       // For &String -> "%s", for &u64 -> "%lld"
+       // For &String -> "%s", for &u64 -> "%llu"
        return inner_format;
    }
    ```
