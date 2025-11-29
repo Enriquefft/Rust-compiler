@@ -10,6 +10,10 @@ const zero_span = source_map.Span{ .file_id = 0, .start = 0, .end = 0 };
 /// This limits the field layout to avoid collisions in the hash-based approach.
 const MAX_STRUCT_FIELDS: u32 = 4;
 
+/// Assumed number of fields per struct element in arrays.
+/// Used when concrete struct info is not available (e.g., generic types).
+const ASSUMED_STRUCT_FIELDS: u32 = 2;
+
 /// Multiplier for local variable stack allocation.
 /// Each local gets this many 8-byte slots to accommodate arrays.
 const LOCAL_STACK_MULTIPLIER: u32 = 4;
@@ -18,6 +22,18 @@ const LOCAL_STACK_MULTIPLIER: u32 = 4;
 /// stored via physical registers during array initialization.
 /// Element 1 -> rdx, element 2 -> rcx, element 3 -> r8
 const MAX_EXTRA_ARRAY_ELEMENTS: usize = 3;
+
+/// Get the sequential field index for a field name.
+/// For arrays of structs with known field patterns (x=0, y=1), returns sequential index.
+/// Falls back to hash-based index for unknown field names.
+fn getSequentialFieldIndex(name: []const u8) i32 {
+    if (std.mem.eql(u8, name, "x")) return 0;
+    if (std.mem.eql(u8, name, "y")) return 1;
+    // Fallback to hash-based index
+    var hash: u32 = 0;
+    for (name) |ch| hash = hash *% 31 +% ch;
+    return @intCast(hash % MAX_STRUCT_FIELDS);
+}
 
 pub const LowerError = error{ Unsupported, OutOfMemory };
 
@@ -428,17 +444,8 @@ fn lowerInst(
                         // 2. An immediate-indexed array element (memory location in index_mem_map)
                         if (ctx.dynamic_index_addr_map.get(vreg)) |addr_vreg| {
                             // We have the address of the array element, compute field offset from it
-                            // For arrays of structs with sequential layout, use sequential field indices
-                            const field_index: i64 = if (std.mem.eql(u8, payload.name, "x"))
-                                0
-                            else if (std.mem.eql(u8, payload.name, "y"))
-                                1
-                            else blk: {
-                                // Fallback to hash-based index for other field names
-                                var hash: u32 = 0;
-                                for (payload.name) |ch| hash = hash *% 31 +% ch;
-                                break :blk @as(i64, @intCast(hash % MAX_STRUCT_FIELDS));
-                            };
+                            // Use sequential field layout for arrays of structs
+                            const field_index: i64 = getSequentialFieldIndex(payload.name);
                             const field_offset: i64 = -field_index * @as(i64, @sizeOf(i64) * LOCAL_STACK_MULTIPLIER);
 
                             // Add field offset to the base address
@@ -453,17 +460,8 @@ fn lowerInst(
                             }
                         } else if (ctx.index_mem_map.get(vreg)) |mem_loc| {
                             // VReg came from immediate-indexed array access, we have its memory location
-                            // For arrays of structs with sequential layout, use sequential field indices
-                            const field_index: i32 = if (std.mem.eql(u8, payload.name, "x"))
-                                0
-                            else if (std.mem.eql(u8, payload.name, "y"))
-                                1
-                            else blk: {
-                                // Fallback to hash-based index for other field names
-                                var hash: u32 = 0;
-                                for (payload.name) |ch| hash = hash *% 31 +% ch;
-                                break :blk @as(i32, @intCast(hash % MAX_STRUCT_FIELDS));
-                            };
+                            // Use sequential field layout for arrays of structs
+                            const field_index: i32 = getSequentialFieldIndex(payload.name);
                             const offset = mem_loc.offset - field_index * @as(i32, @intCast(@sizeOf(i64) * LOCAL_STACK_MULTIPLIER));
                             const mem = machine.MOperand{ .Mem = .{ .base = mem_loc.base, .offset = offset } };
                             try insts.append(ctx.allocator, .{ .Mov = .{ .dst = mem, .src = src } });
@@ -654,10 +652,10 @@ fn lowerInst(
                 const idx = try lowerOperand(ctx, payload.index, vreg_count);
                 
                 // Determine element size based on result type
-                // For struct-typed elements, use 2 * 8 bytes (assumes 2-field structs)
+                // For struct-typed elements, use ASSUMED_STRUCT_FIELDS * 8 bytes
                 // For other types, use 8 bytes
                 const elem_size: i64 = if (inst.ty) |ty| switch (ty) {
-                    .Struct => 2 * @sizeOf(i64) * LOCAL_STACK_MULTIPLIER, // 2-field struct
+                    .Struct => ASSUMED_STRUCT_FIELDS * @sizeOf(i64) * LOCAL_STACK_MULTIPLIER,
                     else => @sizeOf(i64),
                 } else @sizeOf(i64);
                 
@@ -865,18 +863,8 @@ fn lowerInst(
                         // 2. An immediate-indexed array element (memory location in index_mem_map)
                         if (ctx.dynamic_index_addr_map.get(vreg)) |addr_vreg| {
                             // We have the address of the array element, compute field offset from it
-                            // For arrays of structs with sequential layout, use sequential field indices
-                            // Common pattern: x=0, y=1 for 2-field structs
-                            const field_index: i64 = if (std.mem.eql(u8, payload.name, "x"))
-                                0
-                            else if (std.mem.eql(u8, payload.name, "y"))
-                                1
-                            else blk: {
-                                // Fallback to hash-based index for other field names
-                                var hash: u32 = 0;
-                                for (payload.name) |ch| hash = hash *% 31 +% ch;
-                                break :blk @as(i64, @intCast(hash % MAX_STRUCT_FIELDS));
-                            };
+                            // Use sequential field layout for arrays of structs
+                            const field_index: i64 = getSequentialFieldIndex(payload.name);
                             const field_offset: i64 = -field_index * @as(i64, @sizeOf(i64) * LOCAL_STACK_MULTIPLIER);
 
                             // Add field offset to the base address and load the value
@@ -893,17 +881,8 @@ fn lowerInst(
                             try ctx.dynamic_index_addr_map.put(dst, if (field_offset != 0) field_addr_vreg else addr_vreg);
                         } else if (ctx.index_mem_map.get(vreg)) |mem_loc| {
                             // VReg came from immediate-indexed array access, we have its memory location
-                            // For arrays of structs with sequential layout, use sequential field indices
-                            const field_index: i32 = if (std.mem.eql(u8, payload.name, "x"))
-                                0
-                            else if (std.mem.eql(u8, payload.name, "y"))
-                                1
-                            else blk: {
-                                // Fallback to hash-based index for other field names
-                                var hash: u32 = 0;
-                                for (payload.name) |ch| hash = hash *% 31 +% ch;
-                                break :blk @as(i32, @intCast(hash % MAX_STRUCT_FIELDS));
-                            };
+                            // Use sequential field layout for arrays of structs
+                            const field_index: i32 = getSequentialFieldIndex(payload.name);
                             const offset = mem_loc.offset - field_index * @as(i32, @intCast(@sizeOf(i64) * LOCAL_STACK_MULTIPLIER));
                             const mem = machine.MOperand{ .Mem = .{ .base = mem_loc.base, .offset = offset } };
                             try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .VReg = dst }, .src = mem } });

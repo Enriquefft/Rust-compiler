@@ -24,6 +24,10 @@ const LowerError = error{OutOfMemory};
 /// This limits the field layout to avoid collisions in the hash-based approach.
 const MAX_STRUCT_FIELDS: u32 = 4;
 
+/// Assumed number of fields for generic type parameters when the concrete type is unknown.
+/// This is a workaround for lack of full monomorphization - assumes 2-field structs (like Pair<T>).
+const ASSUMED_GENERIC_STRUCT_FIELDS: u32 = 2;
+
 /// Lower a complete HIR crate to MIR representation.
 ///
 /// Iterates over all items in the HIR crate and lowers functions to MIR.
@@ -148,9 +152,9 @@ fn lowerFunction(crate: *mir.MirCrate, func: hir.Function, hir_crate: *const hir
             next_local += MAX_STRUCT_FIELDS;
         } else if (is_generic_param) {
             // For generic type parameters (T, U, etc.), assume they might be structs
-            // and allocate space for up to 2 fields (common case for pairs)
-            // Store both param0 and param1 to adjacent locals
-            for (0..2) |i| {
+            // and allocate space for ASSUMED_GENERIC_STRUCT_FIELDS fields
+            // This is a workaround for lack of full monomorphization
+            for (0..ASSUMED_GENERIC_STRUCT_FIELDS) |i| {
                 try builder.ensureLocal(next_local + @as(hir.LocalId, @intCast(i)), ty, func.span);
             }
             // Store first value
@@ -159,7 +163,7 @@ fn lowerFunction(crate: *mir.MirCrate, func: hir.Function, hir_crate: *const hir
             // Store second value (might be passed if T is a 2-field struct)
             _ = try builder.emitInst(.{ .ty = mapType(hir_crate, ty, func.span, diagnostics), .dest = null, .kind = .{ .StoreLocal = .{ .local = next_local + 1, .src = .{ .Param = @intCast(arg_idx) } } } });
             arg_idx += 1;
-            next_local += 2;
+            next_local += ASSUMED_GENERIC_STRUCT_FIELDS;
         } else {
             // Non-struct parameter: store normally
             try builder.ensureLocal(next_local, ty, func.span);
