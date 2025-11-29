@@ -320,6 +320,41 @@ test "lex identifiers and keywords" {
     try std.testing.expectEqual(TokenKind.Identifier, toks[3].kind);
 }
 
+test "lex const keyword" {
+    const allocator = std.testing.allocator;
+    var diags = diag.Diagnostics.init(allocator);
+    defer diags.deinit();
+
+    const toks = try lex(allocator, 0, "const MAX: usize = 100;", &diags);
+    defer allocator.free(toks);
+
+    try std.testing.expectEqual(@as(usize, 7), toks.len);
+    try std.testing.expectEqual(TokenKind.KwConst, toks[0].kind);
+    try std.testing.expectEqualSlices(u8, "const", toks[0].lexeme);
+    try std.testing.expectEqual(TokenKind.Identifier, toks[1].kind);
+    try std.testing.expectEqual(TokenKind.Colon, toks[2].kind);
+    try std.testing.expectEqual(TokenKind.Identifier, toks[3].kind);
+    try std.testing.expectEqual(TokenKind.Eq, toks[4].kind);
+    try std.testing.expectEqual(TokenKind.IntLit, toks[5].kind);
+    try std.testing.expectEqual(TokenKind.Semicolon, toks[6].kind);
+}
+
+test "lex unsafe keyword" {
+    const allocator = std.testing.allocator;
+    var diags = diag.Diagnostics.init(allocator);
+    defer diags.deinit();
+
+    const toks = try lex(allocator, 0, "unsafe { x }", &diags);
+    defer allocator.free(toks);
+
+    try std.testing.expectEqual(@as(usize, 4), toks.len);
+    try std.testing.expectEqual(TokenKind.KwUnsafe, toks[0].kind);
+    try std.testing.expectEqualSlices(u8, "unsafe", toks[0].lexeme);
+    try std.testing.expectEqual(TokenKind.LBrace, toks[1].kind);
+    try std.testing.expectEqual(TokenKind.Identifier, toks[2].kind);
+    try std.testing.expectEqual(TokenKind.RBrace, toks[3].kind);
+}
+
 test "lex numbers and operators" {
     const allocator = std.testing.allocator;
     var diags = diag.Diagnostics.init(allocator);

@@ -1,5 +1,10 @@
 PlainIdent = letter , { letter | digit | "_" } ;
-Ident      = PlainIdent | "r#" , PlainIdent ;   (* PlainIdent must not be Keyword *)
+Ident      = PlainIdent ;   (* PlainIdent must not be Keyword *)
+
+(* NOTE: Raw identifiers ("r#" prefix) are in the Rust spec but NOT implemented
+   in this compiler. The grammar originally included:
+     Ident = PlainIdent | "r#" , PlainIdent ;
+   This was removed to match the actual parser/lexer implementation. *)
 
 IntLit     = digit , { digit } ;
 FloatLit   = digit , { digit } , "." , digit , { digit } ;
@@ -9,13 +14,16 @@ CharLit    = "'" , char , "'" ;
 
 Keyword    = "fn" | "struct" | "impl" | "type" | "let" | "mut"
            | "if" | "else" | "while" | "for" | "in" | "return" | "as" | "self"
+           | "const" | "unsafe"
            | BoolLit ;
 
 Crate  = { Item } ;
 
-Item   = FnItem | StructItem | ImplItem | TypeAliasItem | ";" ;
+Item   = FnItem | StructItem | ImplItem | TypeAliasItem | ConstItem | ";" ;
 
 TypeAliasItem = "type" , Ident , [ GenParams ] , "=" , Type , ";" ;
+
+ConstItem     = "const" , Ident , ":" , Type , "=" , Expr , ";" ;
 
 StructItem    = "struct" , Ident , [ GenParams ] ,
                 "{" , [ Field , { "," , Field } , [ "," ] ] , "}" ;
@@ -106,7 +114,7 @@ Primary     = Literal
             | "(" , Expr , ")"
             | Block ;
 
-Init        = Ident , ":" , Expr ;
+Init        = Ident , [ ":" , Expr ] ;  (* Shorthand: "{ x }" means "{ x: x }" - field name as variable reference *)
 
 Literal     = IntLit | FloatLit | BoolLit | CharLit | StringLit ;
 

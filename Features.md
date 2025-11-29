@@ -10,6 +10,7 @@ This document describes the language subset implemented by the minimal compiler 
   - Function: `fn name(...) -> T { ... }`
   - Struct: `struct Name { ... }`
   - Type alias: `type Name = T;`
+  - Const item: `const NAME: T = expr;`
   - `impl` blocks for inherent methods on types (no traits).
 - Entry point: `fn main() { ... }`.
 - Blocks: `{ stmt* [expr] }`, last expression (without `;`) is the value.
@@ -50,6 +51,15 @@ This document describes the language subset implemented by the minimal compiler 
   ```rust
   type MyInt = i64;
   type Point2D = Point;
+  ```
+
+### 2.4 Const items
+
+Compile-time constant definitions:
+
+  ```rust
+  const MAX_SIZE: usize = 100;
+  const PI: f64 = 3.14159;
   ```
 
 ## 3. Expressions and operators
@@ -219,7 +229,36 @@ This document describes the language subset implemented by the minimal compiler 
   ```
 * No user-defined macro expansion or hygienic macro system.
 
-## 10. Dynamic data and memory model (semantic)
+## 10. Unsafe blocks
+
+* Unsafe blocks are syntactically supported:
+
+  ```rust
+  unsafe {
+      *ptr = 42;
+  }
+  ```
+
+* Parsed as expressions that can appear anywhere expressions are allowed.
+* Note: The compiler tracks unsafe context and enforces some safety checks (e.g., dereferencing raw pointers requires being inside an unsafe block).
+
+## 11. Struct initialization
+
+* Full syntax:
+
+  ```rust
+  let p = Point { x: 1, y: 2 };
+  ```
+
+* Shorthand syntax (field init shorthand):
+
+  ```rust
+  let x = 1;
+  let y = 2;
+  let p = Point { x, y };  // equivalent to Point { x: x, y: y }
+  ```
+
+## 12. Dynamic data and memory model (semantic)
 
 The grammar is purely syntactic, but the compiler/runtime supports:
 
