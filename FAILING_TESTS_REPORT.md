@@ -1,7 +1,7 @@
 # Failing Tests Analysis Report
 
 **Generated:** 2025-11-29  
-**Test Results:** 29 passed, 3 failed, 1 skipped
+**Test Results:** 30 passed, 3 failed, 1 skipped
 
 This report provides a comprehensive analysis of failing tests, their root causes, required fixes, and any grammar changes needed.
 
@@ -16,6 +16,7 @@ Since the initial report (2025-11-28), significant progress has been made:
 |-----------|---------------|--------|
 | `expressions_test1.rs` | `idiv` operand size bug | ✅ FIXED |
 | `functions_and_methods_test2.rs` | Unresolved associated function | ✅ FIXED |
+| `generics_test1.rs` | Generic struct ABI / field access issues | ✅ FIXED |
 
 ### ⏭️ **Handled by Design**
 | Test File | Reason | Status |
@@ -25,15 +26,15 @@ Since the initial report (2025-11-28), significant progress has been made:
 ### ❌ **Still Failing**
 | Test File | Failure Type | Root Cause | Severity |
 |-----------|-------------|------------|----------|
-| `arrays3.rs` | Compilation failed | Unsupported index base for x86_64 lowering | High |
-| `generics_test1.rs` | Output mismatch | Generic struct ABI and field access issues | High |
-| `generics_test2.rs` | Output mismatch | Generic method return type + format specifier issues | High |
+| `arrays3.rs` | Output mismatch | Field access within array iteration produces wrong y-values | High |
+| `generics_test2.rs` | Output mismatch | Generic method returns pointer instead of dereferenced value + printf format specifier issues | High |
+| `optimizations.rs` | Compilation hangs | Missing `const` item support and `loop` construct in grammar/parser | High |
 
 ---
 
 ## Detailed Analysis of Remaining Failures
 
-### 1. arrays3.rs - Complex Array Indexing with Field Access
+### 1. arrays3.rs - Field Access Bug in Array Iteration
 
 **Test File:**
 ```rust
@@ -64,129 +65,49 @@ fn main() {
 (11, -4)
 ```
 
-**Error Message:**
+**Actual Output:**
 ```
-error: unsupported index base for x86_64 lowering
+(2, 0)
+(-2, 1)
+(11, 2)
 ```
 
 **Root Cause Analysis:**
 
-The x86-64 instruction selection code (`isel.zig`) cannot handle compound place expressions like `points[i].x`. When indexing into an array element and then accessing a field, the backend encounters an unsupported operand combination.
+The test now compiles and runs, but produces incorrect y-values. The x-values are correct (`2, -2, 11` = original + 1), but y-values are `0, 1, 2` instead of `3, 5, -4`.
 
-**Bug Location:** `src/backend/x86_64/isel.zig:703-706`
+**Observed Pattern:**
+- The y-values `0, 1, 2` correspond to the loop index `i` rather than the actual field values
+- This suggests the loop counter is being printed or stored instead of `points[i].y`
 
-**What's Missing:**
-1. **Dynamic array indexing with field access**: When the index is a runtime variable (`i`), the backend needs to:
-   - Load the loop index value
-   - Calculate `base_address + (index * element_size) + field_offset`
-   - Use this computed address for the load/store
+**Root Cause Hypothesis:**
+The issue appears to be in how compound place expressions `points[i].y` are lowered. The x-field access works correctly, but y-field access (second field) may be reading from the wrong memory location or using the index value instead.
 
-2. **Reference iteration** (`for p in &points`): Iterating over references to array elements is unimplemented
+**Bug Location:** `src/backend/x86_64/isel.zig` or `src/mir/lower.zig`
 
-**Technical Details:**
-The `Index` instruction handling at line 703 falls into the `else` branch because the base operand after dynamic indexing doesn't produce a simple `Mem` operand that subsequent `Field` operations can work with.
+**Potential Issues:**
+1. **Field offset calculation**: For the second field `y`, the offset should be `sizeof(i32) = 4 bytes` from the element base, but may be incorrectly computed
+2. **Register allocation conflict**: The loop index register may be clobbering the field access result
+3. **Memory addressing mode**: The compound address `base + (index * element_size) + field_offset` may have incorrect field offset for non-first fields
 
-**Fix Required:**
+**Limitations:**
+- Complex place expressions like `array[dynamic_index].field` require multi-step address calculation
+- The current x86-64 backend may not correctly combine dynamic indexing with field offsets
 
-In `src/backend/x86_64/isel.zig`, extend the `Index` instruction handling to:
-1. When the index is dynamic (VReg), compute element address in a temporary register
-2. Return this register as the base for subsequent field access
-3. Handle the case where `Field` follows an `Index` by combining the offsets
+**Potential Solutions:**
 
-Example approach:
-```zig
-// For dynamic indexing:
-// 1. Load base array address into temp register
-// 2. Multiply index by element size
-// 3. Add to get element address
-// 4. For subsequent field access, add field offset
-```
+| Approach | Description | Complexity |
+|----------|-------------|------------|
+| **Separate address computation** | Compute the element address first, then add field offset in a second step | Medium |
+| **Register-based addressing** | Use LEA instruction to compute `base + index*size`, then add field offset | Medium |
+| **MIR-level decomposition** | Split `array[i].field` into `let elem = &array[i]; elem.field` during lowering | Hard |
 
-For `for p in &points`, the lowering needs to:
-1. Create an iterator that yields pointers to array elements
-2. Track the current element pointer in a loop variable
-
-**Difficulty:** Hard  
-**Files to Modify:** `src/backend/x86_64/isel.zig`, potentially `src/mir/lower.zig`
+**Difficulty:** Medium  
+**Files to Modify:** `src/backend/x86_64/isel.zig`
 
 ---
 
-### 2. generics_test1.rs - Generic Struct ABI and Field Access
-
-**Test File:**
-```rust
-fn identity<T>(value: T) -> T { value }
-
-struct Pair<T> { a: T, b: T }
-
-fn main() {
-    let numbers = Pair { a: 1, b: 2};
-    let mirrored = identity(numbers);
-    println!("{} {}", mirrored.a, mirrored.b);
-}
-```
-
-**Expected Output:** `1 2`
-
-**Actual Output:** `1 140726689479992` (second field is garbage)
-
-**Root Cause Analysis:**
-
-The test now compiles and runs, but produces incorrect output. Analysis of the generated assembly shows:
-
-**Generated Assembly (key sections):**
-```asm
-identity:
-    mov [rbp-32], rdi       # Only stores first argument
-    mov rax, [rbp-32]       # Returns only rax
-    ret
-
-main:
-    mov qword ptr [rbp-64], 1   # Store a = 1
-    mov qword ptr [rbp-96], 2   # Store b = 2
-    mov rdi, [rbp-64]           # Pass only 'a' field
-    mov rsi, [rbp-96]           # Pass 'b' in rsi (but identity ignores it!)
-    call identity
-    mov [rbp-192], rax          # Store return value (only 'a')
-    mov [rbp-200], rdx          # Store rdx as 'b' (but rdx was never set!)
-```
-
-**Issues Identified:**
-
-1. **Struct passing ABI violation**: The `Pair` struct (16 bytes, 2 x i64) should be passed as two separate registers OR on the stack. Currently:
-   - Caller passes `a` in `rdi` and `b` in `rsi`
-   - Callee (`identity`) only reads `rdi` and stores it, ignoring `rsi`
-
-2. **Struct return ABI violation**: According to System V AMD64 ABI:
-   - Structs ≤16 bytes with two INTEGER fields should return in `rax` + `rdx`
-   - Currently `identity` only returns `rax`, leaving `rdx` uninitialized
-
-3. **Generic type size handling**: The generic function `identity<T>` doesn't know the actual size of `T` at codegen time and defaults to single-value handling
-
-**Bug Locations:**
-- `src/mir/lower.zig:76-145` - Parameter expansion for generic functions
-- `src/backend/x86_64/isel.zig` - Return value handling for multi-register types
-- `src/hir/typecheck.zig` - Generic type instantiation
-
-**Fix Required:**
-
-1. **Generic monomorphization**: When instantiating `identity<Pair<i64>>`, substitute the concrete type and generate code aware of the struct's size
-   
-2. **Multi-field struct ABI**: Ensure all struct fields are:
-   - Passed in appropriate registers/stack slots
-   - Returned in `rax` + `rdx` (for 2-field structs)
-
-3. **Type-aware codegen for generics**: The lowering phase needs to know the concrete type `T = Pair<i64>` to generate correct ABI
-
-**Difficulty:** Hard  
-**Files to Modify:** 
-- `src/hir/typecheck.zig` - Generic instantiation
-- `src/mir/lower.zig` - Generic function lowering
-- `src/backend/x86_64/isel.zig` - Multi-register return handling
-
----
-
-### 3. generics_test2.rs - Generic Method Return Types and Format Specifiers
+### 2. generics_test2.rs - Generic Method Return Types and Format Specifiers
 
 **Test File:**
 ```rust
@@ -206,145 +127,257 @@ fn main() {
 
 **Expected Output:** `hi 42`
 
-**Actual Output:** `0x7ffd12ec3cd0 0x7ffd12ec3cb0` (pointers instead of values)
+**Actual Output:** `0x7fffed5cef80 0x7fffed5cef60` (pointers instead of values)
 
 **Root Cause Analysis:**
 
-Analysis of the generated assembly reveals multiple issues:
-
-**Generated Assembly (key sections):**
-```asm
-Wrapper_get:
-    mov rax, [rbp-32]       # Load 'self' pointer
-    mov rbx, [rax]          # Dereference to get value (but result ignored!)
-    mov rax, rax            # Returns pointer, not dereferenced value
-    ret
-
-main:
-    mov rdi, 0              # 42u64 becomes 0 (integer suffix not used!)
-    call Wrapper_new
-    ...
-    lea rdi, [rip + .Lstr1] # Format string is "%p %p" (pointer format!)
-```
+The `get()` method returns pointers (memory addresses) instead of the dereferenced values. The `println!` macro is printing the raw pointer values using the `%p` format specifier.
 
 **Issues Identified:**
 
 1. **`get()` returns pointer instead of value**:
    - The method `get(&self) -> &T` should return a reference to `self.value`
    - Currently it returns `&self` (the struct pointer) instead of `&self.value`
-   - The `mov rbx, [rax]` loads the value but then `mov rax, rax` overwrites it with the pointer
+   - The field offset for `value` is not being applied
 
-2. **Integer suffix not propagated**:
-   - `42u64` is parsed correctly (lexer has suffix support)
-   - But the literal value `0` is passed instead of `42`
-   - The suffix type information may be lost during lowering
-
-3. **Printf format specifier wrong**:
-   - Format string is `"%p %p"` (pointer format)
+2. **Printf format specifier wrong**:
+   - Format string uses `"%p %p"` (pointer format)
    - Should be `"%s %llu"` for String and u64 (unsigned)
-   - The `printfSpecifier` function at line 1636 defaults to `%p` for `Pointer` type
-   - For `&T` where `T` is String or integer, it should dereference and use the inner type's format
+   - The `printfSpecifier` function defaults to `%p` for `Pointer`/`Ref` types
+   - For `&T` where `T` is String or integer, it should use the inner type's format
+
+**Limitations:**
+
+1. **Generic reference return types**: The compiler doesn't properly handle returning references to generic type fields
+2. **Printf format resolution**: The format specifier logic doesn't recursively unwrap reference types to determine the correct format
+3. **Generic method codegen**: Field access through generic self parameters may not compute correct offsets
+
+**Potential Solutions:**
+
+| Approach | Description | Complexity | Impact |
+|----------|-------------|------------|--------|
+| **Fix field offset in get()** | Ensure `&self.value` computes `self_ptr + field_offset` | Medium | Fixes pointer value |
+| **Recursive format specifier** | Modify `printfSpecifier` to unwrap `&T` and use inner type's format | Easy | Fixes output format |
+| **Dereference in println!** | Auto-dereference `&T` values when printing | Medium | Better UX |
+| **Monomorphize generics** | Generate specialized code for each `Wrapper<T>` instantiation | Hard | Complete fix |
 
 **Bug Locations:**
 - `src/mir/lower.zig:1591-1641` - `printfSpecifier` function doesn't handle generic refs properly
 - `src/backend/x86_64/isel.zig` - Return value handling for `&T` types
-- `src/frontend/parser.zig` or `src/hir/hir.zig` - Integer suffix value preservation
 
-**Fix Required:**
-
-1. **Fix `get()` return value**: The field access `&self.value` should:
-   - Compute `&self + field_offset` 
-   - Return this address (reference to the field)
-   - Currently returning `&self` instead
-
-2. **Integer suffix propagation**: When parsing `42u64`:
-   - The lexer correctly scans "42u64" as one token
-   - Ensure the parser extracts the value `42` and type `u64`
-   - Propagate type info to HIR literal expression
-
-3. **Printf format for generic references**:
-   ```zig
-   // In printfSpecifier, for Ref types:
-   .Ref => |ref_info| {
-       // Recursively get format for inner type
-       const inner_format = getFormatForType(ref_info.inner);
-       // For &String -> "%s", for &u64 -> "%llu"
-       return inner_format;
-   }
-   ```
+**Recommended Fix Order:**
+1. Fix `printfSpecifier` to recursively unwrap `&T` types (easy win)
+2. Fix field offset calculation for `&self.value` (medium)
+3. Consider monomorphization for complete generic support (long-term)
 
 **Difficulty:** Medium-Hard  
 **Files to Modify:**
 - `src/mir/lower.zig` - Printf specifier logic
 - `src/backend/x86_64/isel.zig` - Reference return handling
-- `src/hir/hir.zig` or `src/frontend/parser.zig` - Integer suffix handling
+
+---
+
+### 3. optimizations.rs - Missing Grammar Constructs
+
+**Test File:**
+```rust
+const USE_FAST_PATH: bool = true;
+const SCALE_A: i64 = 2 * 2 * 2;      // 8  → constant folding
+const SCALE_B: i64 = 10 - 3;         // 7  → constant folding
+
+fn slow_path(x: i64) -> i64 {
+    let mut acc = 0;
+    let mut i = 0;
+    while i < 100 {
+        acc += (x * i) % 7;
+        i += 1;
+    }
+    acc
+}
+
+fn fast_path(x: i64) -> i64 {
+    let unused_product = x * 12345; // DCE: result not used
+    if x == 0 { return 0; }
+    let doubled = x + x;
+    let triple = doubled * 3;
+    let useless = triple - triple;  // always 0
+    let final_val = triple + useless;
+    final_val
+}
+
+fn choose_path(x: i64) -> i64 {
+    if USE_FAST_PATH {
+        let scaled = x * SCALE_A + SCALE_B;
+        fast_path(scaled)
+    } else {
+        slow_path(x)
+    }
+}
+
+fn main() {
+    let data = [1, 2, 3, 4, 5, 6, 7, 8];
+    let mut total: i64 = 0;
+    for i in 0..data.len() {
+        let v = data[i] as i64;
+        let score = choose_path(v);
+        total += score;
+    }
+    if false {
+        println!("Debug total: {}", total);
+    }
+    let debug_only = total * 9999;   // DCE
+    println!("Result: {}", total % 1000);
+}
+```
+
+**Expected Output:** `Result: 64`
+
+**Actual Behavior:** Compilation hangs (timeout after 30 seconds)
+
+**Root Cause Analysis:**
+
+The compiler hangs during parsing/compilation due to missing language constructs in the grammar and parser. According to `grammar_update.md`, the following features are needed:
+
+**Missing Language Features:**
+
+1. **`const` items** (Critical):
+   ```rust
+   const USE_FAST_PATH: bool = true;
+   const SCALE_A: i64 = 2 * 2 * 2;
+   ```
+   - The grammar (`grammar.ebnf`) does not include `ConstItem`
+   - The parser doesn't recognize `const` as an item-level keyword
+   - This likely causes the parser to enter an infinite loop or hang
+
+2. **`loop { ... }` construct** (Not used in this test but mentioned in grammar_update.md):
+   - The `loop` keyword for infinite loops is not in the grammar
+   - Would need: `LoopExpr = "loop" , Block ;`
+
+**Grammar Changes Required:**
+
+```ebnf
+(* Add to Keyword list *)
+Keyword = ... | "const" | "loop" ;
+
+(* Add ConstItem to Item *)
+Item = FnItem | StructItem | ImplItem | TypeAliasItem | ConstItem | ";" ;
+
+(* Define ConstItem *)
+ConstItem = "const" , Ident , ":" , Type , "=" , Expr , ";" ;
+
+(* Optional: Add loop expression *)
+LoopExpr = "loop" , Block ;
+```
+
+**Parser Changes Required:**
+
+In `src/frontend/parser.zig`:
+1. Add `const` to the keyword/token enum
+2. Implement `parseConstItem()` function similar to `parseTypeAliasItem()`
+3. Add `const` case to the item parsing switch
+
+**Limitations:**
+
+| Feature | Status | Impact |
+|---------|--------|--------|
+| `const` items | **Missing** | Blocks all code using module-level constants |
+| `loop` construct | Missing | Blocks infinite loop patterns |
+| Constant folding | N/A | Would benefit optimization passes once const items work |
+
+**Potential Solutions:**
+
+| Approach | Description | Complexity | Recommendation |
+|----------|-------------|------------|----------------|
+| **Add const item support** | Extend grammar and parser for `const` declarations | Medium | **Required** |
+| **Treat const as let** | Parse `const` like `let` (ignoring immutability) | Easy | Workaround only |
+| **Inline constants manually** | Rewrite test to use literals instead of constants | Easy | Not a real fix |
+| **Add loop support** | Extend grammar for `loop { }` construct | Easy | Future improvement |
+
+**Why the Compiler Hangs:**
+
+When the parser encounters `const USE_FAST_PATH`, it doesn't recognize `const` as a valid item start token. Depending on error recovery logic, this may cause:
+1. Infinite retry loop trying to parse an expression or statement
+2. Token consumption getting stuck on the unrecognized keyword
+3. Stack overflow from recursive descent without progress
+
+**Difficulty:** Medium  
+**Files to Modify:**
+- `grammar.ebnf` - Add ConstItem production
+- `src/frontend/tokens.zig` - Add `const` and `loop` keywords
+- `src/frontend/parser.zig` - Implement const item parsing
+- `src/frontend/lexer.zig` - Recognize new keywords
 
 ---
 
 ## Grammar Status
 
-The grammar has already been updated with the required changes:
+### ✅ Already Implemented
 
-### ✅ Struct Field Initialization Shorthand (Already Implemented)
-```ebnf
-(* Current grammar allows shorthand *)
-Init = Ident , [ ":" , Expr ] ;
-```
-Verified: Parser at `parser.zig:703-723` handles shorthand syntax.
+| Feature | Grammar | Implementation |
+|---------|---------|----------------|
+| Struct field shorthand | `Init = Ident , [ ":" , Expr ] ;` | `parser.zig:703-723` |
+| Integer literal suffixes | `IntLit = digit , { digit } , [ IntSuffix ] ;` | `lexer.zig:182-184` |
+| Modulo operator (`%`) | `Mul = Cast, { ("*" \| "/" \| "%") , Cast } ;` | Implemented |
+| Macro calls | `MacroCall = Path , "!" , Call ;` | Implemented |
+| Primitive types | `bool`, `i64`, etc. | Implemented |
 
-### ✅ Integer Literal Suffixes (Already Implemented)
-```ebnf
-IntLit = digit , { digit } , [ IntSuffix ] ;
-IntSuffix = "u8" | "u16" | "u32" | "u64" | "usize"
-          | "i8" | "i16" | "i32" | "i64" | "isize" ;
-```
-Verified: Lexer at `lexer.zig:182-184` calls `scanIntegerSuffix`.
+**Note:** Integer suffix type information may not be properly propagated to later compiler phases.
 
-**Note:** The grammar changes are implemented in the lexer/parser, but the type information from suffixes may not be properly propagated to later phases.
+### ❌ Missing (Required for `optimizations.rs`)
+
+| Feature | Proposed Grammar | Status |
+|---------|------------------|--------|
+| `const` items | `ConstItem = "const" , Ident , ":" , Type , "=" , Expr , ";" ;` | **Missing** |
+| `loop` construct | `LoopExpr = "loop" , Block ;` | Missing |
 
 ---
 
 ## Summary of Required Fixes
 
+### Critical Priority (Blocking)
+
+| Issue | Description | Files | Effort | Blocks |
+|-------|-------------|-------|--------|--------|
+| **const items** | Parser doesn't recognize `const` keyword | `tokens.zig`, `parser.zig`, `grammar.ebnf` | Medium | `optimizations.rs` |
+
 ### High Priority
 
+| Issue | Description | Files | Effort | Blocks |
+|-------|-------------|-------|--------|--------|
+| Array field offset bug | Second field (`y`) returns loop index instead of value | `isel.zig` | Medium | `arrays3.rs` |
+| Generic method returns | `&T` field access returns struct pointer instead of field pointer | `isel.zig` | Medium | `generics_test2.rs` |
+| Printf for generic refs | `%p` format used instead of inner type format | `lower.zig` | Easy | `generics_test2.rs` |
+
+### Medium Priority (Future)
+
 | Issue | Description | Files | Effort |
 |-------|-------------|-------|--------|
-| Generic struct ABI | Multi-field structs not correctly passed/returned | `isel.zig`, `lower.zig` | Hard |
-| Generic method returns | `&T` field access returns wrong pointer | `isel.zig` | Medium |
-| Printf for generic refs | `%p` used instead of inner type format | `lower.zig` | Easy |
-| Integer suffix value | Value from suffixed literals may be lost | `parser.zig`, `hir.zig` | Medium |
-
-### Medium Priority
-
-| Issue | Description | Files | Effort |
-|-------|-------------|-------|--------|
-| Dynamic array indexing | `array[i].field` pattern unsupported | `isel.zig` | Hard |
+| `loop` construct | Infinite loop syntax not supported | `tokens.zig`, `parser.zig` | Easy |
 | Reference iteration | `for p in &array` unsupported | `lower.zig` | Medium |
 
 ---
 
 ## Recommended Fix Order
 
-1. **Printf format specifier** (Easy win)
-   - Fix `printfSpecifier` to handle `&T` types by looking at inner type
+1. **Add `const` item support** (Medium - unblocks `optimizations.rs`)
+   - Add `const` keyword to tokens
+   - Implement `parseConstItem()` in parser
+   - Update grammar.ebnf
+
+2. **Printf format specifier** (Easy win)
+   - Fix `printfSpecifier` to recursively unwrap `&T` types
    - Partial fix for `generics_test2.rs`
 
-2. **Integer suffix propagation** (Medium)
-   - Ensure `42u64` stores value `42` with type `u64`
-   - Helps `generics_test2.rs`
+3. **Array field offset calculation** (Medium)
+   - Fix second field access in `array[i].field` pattern
+   - Fixes `arrays3.rs`
 
-3. **Generic method return (`&T`)** (Medium)
-   - Fix field reference access to return correct address
+4. **Generic method return (`&T`)** (Medium)
+   - Fix field reference access to return `&self.value` not `&self`
    - Fixes `generics_test2.rs`
 
-4. **Generic struct ABI** (Hard)
-   - Implement proper multi-register passing/return for structs in generic contexts
-   - Fixes `generics_test1.rs`
-
-5. **Dynamic array indexing** (Hard)
-   - Implement runtime index computation for array-of-structs
-   - Fixes `arrays3.rs`
+5. **Add `loop` support** (Easy - future improvement)
+   - Extend grammar for `loop { }` construct
 
 ---
 
@@ -352,18 +385,25 @@ Verified: Lexer at `lexer.zig:182-184` calls `scanIntegerSuffix`.
 
 | File | Changes Needed |
 |------|---------------|
-| `src/mir/lower.zig` | Fix printf specifier for generic refs; improve generic lowering |
-| `src/backend/x86_64/isel.zig` | Handle multi-register returns; fix &T field access; support dynamic array indexing |
-| `src/hir/typecheck.zig` | Generic type instantiation improvements |
-| `src/frontend/parser.zig` | Ensure integer suffix type info is preserved |
+| `grammar.ebnf` | Add `ConstItem` and optionally `LoopExpr` |
+| `src/frontend/tokens.zig` | Add `const` and `loop` keywords |
+| `src/frontend/parser.zig` | Implement const item parsing |
+| `src/mir/lower.zig` | Fix printf specifier for generic refs |
+| `src/backend/x86_64/isel.zig` | Fix array field offset; fix &T field access |
 
 ---
 
 ## Test Status History
 
-| Date | Passed | Failed | Skipped |
-|------|--------|--------|---------|
-| 2025-11-28 | 27 | 6 | 0 |
-| 2025-11-29 | 29 | 3 | 1 |
+| Date | Passed | Failed | Skipped | Notes |
+|------|--------|--------|---------|-------|
+| 2025-11-28 | 27 | 6 | 0 | Initial report |
+| 2025-11-29 (AM) | 29 | 3 | 1 | Fixed `expressions_test1.rs`, `functions_and_methods_test2.rs` |
+| 2025-11-29 (Current) | 30 | 3 | 1 | Fixed `generics_test1.rs` |
 
-Progress: +2 tests fixed, +1 properly skipped
+**Current Status:** 30 passed, 3 failed, 1 skipped
+
+**Remaining Failures:**
+- `arrays3.rs` - Output mismatch (field offset bug)
+- `generics_test2.rs` - Output mismatch (pointer instead of value)
+- `optimizations.rs` - Compilation hangs (missing `const` support)
