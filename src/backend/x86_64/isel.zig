@@ -3,35 +3,16 @@ const diag = @import("../../diag/diagnostics.zig");
 const source_map = @import("../../diag/source_map.zig");
 const mir = @import("../../mir/mir.zig");
 const machine = @import("machine.zig");
+const shared = @import("../../shared_consts.zig");
 
 const zero_span = source_map.Span{ .file_id = 0, .start = 0, .end = 0 };
 
-/// Maximum number of struct fields supported for hash-based field indexing.
-/// This limits the field layout to avoid collisions in the hash-based approach.
-const MAX_STRUCT_FIELDS: u32 = 4;
-
-/// Assumed number of fields per struct element in arrays.
-/// Used when concrete struct info is not available (e.g., generic types).
-const ASSUMED_STRUCT_FIELDS: u32 = 2;
-
-/// Multiplier for local variable stack allocation.
-/// Each local gets this many 8-byte slots to accommodate arrays.
-const LOCAL_STACK_MULTIPLIER: u32 = 4;
-
-/// Maximum number of additional array elements (beyond the first) that can be
-/// stored via physical registers during array initialization.
-/// Element 1 -> rdx, element 2 -> rcx, element 3 -> r8, element 4 -> r9,
-/// element 5 -> r10, element 6 -> r12, element 7 -> r13
-const MAX_EXTRA_ARRAY_ELEMENTS: usize = 7;
-
-/// Offset from the first field to the second field in a struct.
-/// This is calculated as: -field_index * LOCAL_STACK_MULTIPLIER * sizeof(i64)
-/// For the second field (index 1): -1 * 4 * 8 = -32
-///
-/// Note: Currently only 2-field structs are fully supported for passing/returning
-/// through registers. The first field goes in rax/vreg, the second in rdx.
-/// This matches the System V ABI for small struct returns.
-const STRUCT_SECOND_FIELD_OFFSET: i64 = -@as(i64, @intCast(@sizeOf(i64) * LOCAL_STACK_MULTIPLIER));
+// Import shared constants to ensure consistency with MIR lowering
+const MAX_STRUCT_FIELDS = shared.MAX_STRUCT_FIELDS;
+const ASSUMED_STRUCT_FIELDS = shared.ASSUMED_GENERIC_STRUCT_FIELDS;
+const LOCAL_STACK_MULTIPLIER = shared.LOCAL_STACK_MULTIPLIER;
+const MAX_EXTRA_ARRAY_ELEMENTS = shared.MAX_EXTRA_ARRAY_ELEMENTS;
+const STRUCT_SECOND_FIELD_OFFSET = shared.STRUCT_SECOND_FIELD_OFFSET;
 
 /// Get the sequential field index for a field name.
 /// For arrays of structs with known field patterns (x=0, y=1), returns sequential index.

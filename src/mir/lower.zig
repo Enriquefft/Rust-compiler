@@ -16,22 +16,15 @@ const std = @import("std");
 const diag = @import("../diag/diagnostics.zig");
 const hir = @import("../hir/hir.zig");
 const mir = @import("mir.zig");
+const shared = @import("../shared_consts.zig");
 
 /// Error type for lowering operations, currently only memory allocation failures.
 const LowerError = error{OutOfMemory};
 
-/// Maximum number of struct fields supported for hash-based field indexing.
-/// This limits the field layout to avoid collisions in the hash-based approach.
-const MAX_STRUCT_FIELDS: u32 = 4;
-
-/// Assumed number of fields for generic type parameters when the concrete type is unknown.
-/// This is a workaround for lack of full monomorphization - assumes 2-field structs (like Pair<T>).
-const ASSUMED_GENERIC_STRUCT_FIELDS: u32 = 2;
-
-/// Multiplier for local variable stack allocation.
-/// Each local gets this many 8-byte slots to accommodate arrays.
-/// Must match the same constant in backend/x86_64/isel.zig.
-const LOCAL_STACK_MULTIPLIER: u32 = 4;
+// Import shared constants to ensure consistency with backend
+const MAX_STRUCT_FIELDS = shared.MAX_STRUCT_FIELDS;
+const ASSUMED_GENERIC_STRUCT_FIELDS = shared.ASSUMED_GENERIC_STRUCT_FIELDS;
+const LOCAL_STACK_MULTIPLIER = shared.LOCAL_STACK_MULTIPLIER;
 
 /// Lower a complete HIR crate to MIR representation.
 ///
@@ -408,7 +401,7 @@ const FunctionBuilder = struct {
                 defer args.deinit(self.allocator);
                 for (call.args) |arg_id| {
                     const arg_expr = self.hir_crate.exprs.items[arg_id];
-                    
+
                     // Check if argument is a struct type - if so, pass all fields
                     var is_struct_arg = false;
                     var struct_fields: ?[]const hir.Field = null;
@@ -438,7 +431,7 @@ const FunctionBuilder = struct {
                             else => {},
                         }
                     }
-                    
+
                     if (is_struct_arg and struct_fields != null and arg_expr.kind == .LocalRef) {
                         const base_local = self.param_local_map.get(arg_expr.kind.LocalRef) orelse arg_expr.kind.LocalRef;
                         // Pass each field using same hash-based ordering as struct init

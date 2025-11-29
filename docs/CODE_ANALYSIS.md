@@ -15,48 +15,44 @@ This document provides a comprehensive analysis of the Rust-subset compiler code
 
 ## Hardcoded Constants and Magic Numbers
 
-### 1. Backend: Fixed Struct Field Limits (`src/backend/x86_64/isel.zig`)
+### 1. Backend: Struct Field Limits (`src/shared_consts.zig`)
 
-**Location**: Lines 10-34
+**Status**: ✅ FIXED - Constants centralized and limits increased
+
+**Location**: `src/shared_consts.zig`
 
 ```zig
-const MAX_STRUCT_FIELDS: u32 = 4;
-const ASSUMED_STRUCT_FIELDS: u32 = 2;
-const LOCAL_STACK_MULTIPLIER: u32 = 4;
-const MAX_EXTRA_ARRAY_ELEMENTS: usize = 7;
-const STRUCT_SECOND_FIELD_OFFSET: i64 = -@as(i64, @intCast(@sizeOf(i64) * LOCAL_STACK_MULTIPLIER));
+pub const MAX_STRUCT_FIELDS: u32 = 16;
+pub const ASSUMED_GENERIC_STRUCT_FIELDS: u32 = 4;
+pub const LOCAL_STACK_MULTIPLIER: u32 = 4;
+pub const MAX_EXTRA_ARRAY_ELEMENTS: usize = 7;
+pub const STRUCT_SECOND_FIELD_OFFSET: i64 = -@as(i64, @intCast(@sizeOf(i64) * LOCAL_STACK_MULTIPLIER));
 ```
 
-**Issues**:
-- `MAX_STRUCT_FIELDS: u32 = 4` - Limits all structs to 4 fields maximum. Any struct with more fields will have field hash collisions.
-- `ASSUMED_STRUCT_FIELDS: u32 = 2` - Assumes all generic type parameters are 2-field structs.
-- `MAX_EXTRA_ARRAY_ELEMENTS: usize = 7` - Limits array initialization to 8 elements when passing through registers.
+**Previous Issues**:
+- `MAX_STRUCT_FIELDS: u32 = 4` - Limited all structs to 4 fields maximum.
+- `ASSUMED_STRUCT_FIELDS: u32 = 2` - Assumed all generic type parameters are 2-field structs.
+- Constants were duplicated between `isel.zig` and `lower.zig`.
 
-**Impact**: Fails silently for larger structs; no error reporting for field count violations.
+**Resolution**:
+- Centralized all shared constants into `src/shared_consts.zig`
+- Increased `MAX_STRUCT_FIELDS` from 4 to 16 (4x improvement)
+- Increased `ASSUMED_GENERIC_STRUCT_FIELDS` from 2 to 4 (2x improvement)
+- Both `src/mir/lower.zig` and `src/backend/x86_64/isel.zig` now import from the shared module
 
-**Recommendation**: Either increase limits significantly or implement dynamic field layout computation.
+**Remaining Impact**: Still fails silently for structs larger than 16 fields; no error reporting.
 
 ---
 
-### 2. MIR Lower: Duplicated Hardcoded Constants (`src/mir/lower.zig`)
+### ~~2. MIR Lower: Duplicated Hardcoded Constants (`src/mir/lower.zig`)~~
 
-**Location**: Lines 23-34
+**Status**: ✅ FIXED - Merged into shared module
 
-```zig
-const MAX_STRUCT_FIELDS: u32 = 4;
-const ASSUMED_GENERIC_STRUCT_FIELDS: u32 = 2;
-const LOCAL_STACK_MULTIPLIER: u32 = 4;
-```
-
-**Issues**:
-- Constants are duplicated between `isel.zig` and `lower.zig` with a comment "Must match the same constant in backend/x86_64/isel.zig"
-- Manual synchronization required - easy to miss when one changes.
-
-**Recommendation**: Create a shared constants module or use comptime assertions to verify consistency.
+This issue has been resolved by centralizing constants in `src/shared_consts.zig`.
 
 ---
 
-### 3. Register Allocator: Fixed Register Set (`src/backend/x86_64/regalloc.zig`)
+### 2. Register Allocator: Fixed Register Set (`src/backend/x86_64/regalloc.zig`)
 
 **Location**: Lines 23-24
 
@@ -79,21 +75,11 @@ const spill_scratch: machine.PhysReg = .r11;
 
 ---
 
-### 4. Parser: Debug Print Statements (`src/frontend/parser.zig`)
+### ~~3. Parser: Debug Print Statements (`src/frontend/parser.zig`)~~
 
-**Location**: Lines 74, 82
+**Status**: ✅ FIXED - Debug prints removed
 
-```zig
-std.debug.print("Parsing function: {s}\n", .{name.name});
-// ... 
-std.debug.print("Parsed function: {s}\n", .{name.name});
-```
-
-**Issues**:
-- Debug print statements left in production code
-- Always prints to stderr during parsing
-
-**Recommendation**: Remove or gate behind a debug flag.
+The debug print statements have been removed from the parser.
 
 ---
 
@@ -121,6 +107,8 @@ const mangled_name = std.fmt.bufPrint(&mangled_buf, "{s}_{s}", .{ type_name, met
 
 ### 1. Generic Type Parameter Handling (`src/mir/lower.zig`)
 
+**Status**: ⚠️ PARTIALLY IMPROVED - Limits increased but heuristic remains
+
 **Location**: Lines 105-171
 
 ```zig
@@ -137,12 +125,12 @@ if (struct_name.len == 1 and struct_name[0] >= 'A' and struct_name[0] <= 'Z') {
 
 **Issues**:
 - Detects generic params by checking for single uppercase letters (naive heuristic)
-- Assumes all generic type parameters are 2-field structs
+- Now assumes 4 fields per generic type parameter (increased from 2 via `src/shared_consts.zig`)
 - No actual monomorphization - just guesses at runtime
 
-**Impact**: Generic types with >2 fields will corrupt memory; non-struct generic types waste space.
+**Impact**: Generic types with >4 fields may still corrupt memory; non-struct generic types waste space. However, the increased limit (from 2 to 4) reduces the likelihood of corruption.
 
-**Example of corruption**: If a generic function receives a 3-field struct `Point3D { x, y, z }`, only `x` and `y` are stored. When the function returns or accesses the struct, `z` contains garbage from stack memory, potentially causing incorrect calculations or crashes.
+**Example of corruption**: If a generic function receives a 5-field struct, only the first 4 fields are stored. When the function returns or accesses the struct, the 5th field contains garbage from stack memory, potentially causing incorrect calculations or crashes.
 
 **Recommendation**: Implement proper monomorphization or at minimum, track generic constraints.
 
@@ -487,10 +475,10 @@ Currently single-file compilation only:
 ## Recommendations Summary
 
 ### High Priority
-1. **Remove hardcoded struct limits** - Either compute actual sizes or increase limits significantly
-2. **Centralize shared constants** - Create a shared module for duplicated constants
-3. **Remove debug prints** - Remove or gate parser debug output
-4. **Fix generic type handling** - Track actual type parameters instead of guessing
+1. ~~**Remove hardcoded struct limits**~~ ✅ FIXED - Limits increased significantly (MAX_STRUCT_FIELDS: 4→16, ASSUMED_GENERIC_STRUCT_FIELDS: 2→4)
+2. ~~**Centralize shared constants**~~ ✅ FIXED - Created `src/shared_consts.zig` shared module
+3. ~~**Remove debug prints**~~ ✅ FIXED - Parser debug output removed
+4. **Fix generic type handling** - ⚠️ PARTIALLY IMPROVED - Limits increased but proper type parameter tracking not yet implemented
 
 ### Medium Priority
 5. **Implement proper field layout** - Use definition order instead of hash-based indexing
@@ -524,3 +512,4 @@ Currently single-file compilation only:
 - `src/backend/x86_64/emitter.zig`
 - `src/diag/diagnostics.zig`
 - `src/driver.zig`
+- `src/shared_consts.zig` (NEW - centralized constants module)
