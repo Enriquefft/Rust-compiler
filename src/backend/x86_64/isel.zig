@@ -16,7 +16,8 @@ const ASSUMED_STRUCT_FIELDS: u32 = 2;
 
 /// Multiplier for local variable stack allocation.
 /// Each local gets this many 8-byte slots to accommodate arrays.
-const LOCAL_STACK_MULTIPLIER: u32 = 4;
+/// Must be at least (MAX_EXTRA_ARRAY_ELEMENTS + 1) to fit all array elements.
+const LOCAL_STACK_MULTIPLIER: u32 = 8;
 
 /// Maximum number of additional array elements (beyond the first) that can be
 /// stored via physical registers during array initialization.
@@ -26,7 +27,7 @@ const MAX_EXTRA_ARRAY_ELEMENTS: usize = 7;
 
 /// Offset from the first field to the second field in a struct.
 /// This is calculated as: -field_index * LOCAL_STACK_MULTIPLIER * sizeof(i64)
-/// For the second field (index 1): -1 * 4 * 8 = -32
+/// For the second field (index 1): -1 * 8 * 8 = -64
 /// 
 /// Note: Currently only 2-field structs are fully supported for passing/returning
 /// through registers. The first field goes in rax/vreg, the second in rdx.
@@ -885,27 +886,12 @@ fn lowerInst(
                     const ptr_vreg = vreg_count.* - 1;
                     try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .VReg = ptr_vreg }, .src = ptr_mem } });
 
-                    // For pointer-based struct access, compute hash-based field offset
-                    // This matches the layout used in StructInit and StoreLocal
-                    var hash: u32 = 0;
-                    for (payload.name) |ch| hash = hash *% 31 +% ch;
-                    const field_index: i32 = @intCast(hash % MAX_STRUCT_FIELDS);
-                    // Each field is at offset = field_index * LOCAL_STACK_MULTIPLIER * sizeof(i64)
-                    // Since locals grow downward (negative offsets), we subtract
-                    const field_offset: i64 = -@as(i64, field_index) * @as(i64, LOCAL_STACK_MULTIPLIER) * @as(i64, @sizeOf(i64));
-
-                    // Access field through the pointer
-                    if (field_offset != 0) {
-                        vreg_count.* += 1;
-                        const field_addr_vreg = vreg_count.* - 1;
-                        try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .VReg = field_addr_vreg }, .src = .{ .VReg = ptr_vreg } } });
-                        try insts.append(ctx.allocator, .{ .Bin = .{ .op = .add, .dst = .{ .VReg = field_addr_vreg }, .lhs = .{ .VReg = field_addr_vreg }, .rhs = .{ .Imm = field_offset } } });
-                        try insts.append(ctx.allocator, .{ .Deref = .{ .dst = .{ .VReg = dst }, .addr = .{ .VReg = field_addr_vreg } } });
-                        try ctx.dynamic_index_addr_map.put(dst, field_addr_vreg);
-                    } else {
-                        try insts.append(ctx.allocator, .{ .Deref = .{ .dst = .{ .VReg = dst }, .addr = .{ .VReg = ptr_vreg } } });
-                        try ctx.dynamic_index_addr_map.put(dst, ptr_vreg);
-                    }
+                    // For pointer-based struct access, use offset 0 for the first field.
+                    // This matches the StoreField handling for pointer-typed locals.
+                    // Note: Multi-field structs accessed through pointers would need proper
+                    // field offset computation, but single-field structs always use offset 0.
+                    try insts.append(ctx.allocator, .{ .Deref = .{ .dst = .{ .VReg = dst }, .addr = .{ .VReg = ptr_vreg } } });
+                    try ctx.dynamic_index_addr_map.put(dst, ptr_vreg);
                 } else {
                     const target = try lowerOperand(ctx, payload.target, vreg_count);
                     switch (target) {
