@@ -313,12 +313,20 @@ const FunctionBuilder = struct {
                     self.diagnostics.reportError(expr.span, "reference to unknown item during MIR lowering");
                     return null;
                 }
-                // Look up the function name and use Symbol to avoid HIR/MIR index mismatch
+                // Look up the item and handle const inlining
                 const item = self.hir_crate.items.items[def_id];
-                if (item.kind == .Function) {
-                    return .{ .Symbol = item.kind.Function.name };
+                switch (item.kind) {
+                    .Function => {
+                        return .{ .Symbol = item.kind.Function.name };
+                    },
+                    .Const => |const_item| {
+                        // Inline the const value - recursively lower its value expression
+                        return try self.lowerExpr(const_item.value);
+                    },
+                    else => {
+                        return .{ .Global = def_id };
+                    },
                 }
-                return .{ .Global = def_id };
             },
             .Block => |blk| {
                 var last: ?mir.Operand = null;
@@ -451,7 +459,9 @@ const FunctionBuilder = struct {
                 const target_expr = self.hir_crate.exprs.items[assign.target];
 
                 if (target_expr.kind == .LocalRef) {
-                    const local = target_expr.kind.LocalRef;
+                    const hir_local = target_expr.kind.LocalRef;
+                    // Map HIR local to MIR local (handles struct expansion and reordering)
+                    const local = self.param_local_map.get(hir_local) orelse hir_local;
                     try self.ensureLocal(local, target_expr.ty, expr.span);
                     if (value_op) |val| {
                         var final_val = val;
@@ -573,25 +583,39 @@ const FunctionBuilder = struct {
                 const join_block = try self.newBlock();
                 self.setTerm(.{ .If = .{ .cond = cond, .then_block = then_block, .else_block = else_block } });
 
+                // For if expressions with values, use a local variable to store the result
+                // This ensures the value is preserved across basic blocks
+                var result_local: ?hir.LocalId = null;
+                const has_else = iff.else_branch != null;
+
                 self.switchTo(then_block);
                 const then_val = try self.lowerExpr(iff.then_branch);
-                var result_tmp: ?mir.TempId = null;
                 if (then_val) |tv| {
-                    result_tmp = self.newTemp();
-                    _ = try self.emitInst(.{ .ty = mapType(self.hir_crate, expr.ty, expr.span, self.diagnostics), .dest = result_tmp, .kind = .{ .Copy = .{ .src = tv } } });
+                    if (has_else) {
+                        // Allocate a local for the result
+                        result_local = self.next_local;
+                        self.next_local += 1;
+                        try self.ensureLocal(result_local.?, expr.ty, expr.span);
+                        _ = try self.emitInst(.{ .ty = mapType(self.hir_crate, expr.ty, expr.span, self.diagnostics), .dest = null, .kind = .{ .StoreLocal = .{ .local = result_local.?, .src = tv } } });
+                    }
                 }
                 self.setTerm(.{ .Goto = join_block });
 
                 self.switchTo(else_block);
                 const else_val = if (iff.else_branch) |else_id| try self.lowerExpr(else_id) else null;
                 if (else_val) |ev| {
-                    if (result_tmp == null) result_tmp = self.newTemp();
-                    _ = try self.emitInst(.{ .ty = mapType(self.hir_crate, expr.ty, expr.span, self.diagnostics), .dest = result_tmp, .kind = .{ .Copy = .{ .src = ev } } });
+                    if (result_local == null) {
+                        result_local = self.next_local;
+                        self.next_local += 1;
+                        try self.ensureLocal(result_local.?, expr.ty, expr.span);
+                    }
+                    _ = try self.emitInst(.{ .ty = mapType(self.hir_crate, expr.ty, expr.span, self.diagnostics), .dest = null, .kind = .{ .StoreLocal = .{ .local = result_local.?, .src = ev } } });
                 }
                 self.setTerm(.{ .Goto = join_block });
 
                 self.switchTo(join_block);
-                if (result_tmp) |tmp| return .{ .Temp = tmp };
+                if (result_local) |local| return .{ .Local = local };
+                if (then_val) |tv| return tv; // No else branch, return then value directly
                 return null;
             },
             .While => |while_expr| {
@@ -1066,7 +1090,7 @@ const FunctionBuilder = struct {
                 const base_local = self.next_local;
                 self.next_local += num_slots;
 
-                // Map the pattern ID to the actual local
+                // Map the pattern ID to the actual local (base of allocated slots)
                 try self.param_local_map.put(let_stmt.pat.id, base_local);
 
                 for (0..num_slots) |i| {
@@ -1591,7 +1615,9 @@ const FunctionBuilder = struct {
         // For struct method calls with reference parameters (&self, &mut self),
         // pass a pointer to the struct. For value parameters (self), pass the value.
         if (target_expr.kind == .LocalRef) {
-            const base_local = target_expr.kind.LocalRef;
+            const hir_local = target_expr.kind.LocalRef;
+            // Map HIR local to MIR local (handles struct expansion)
+            const base_local = self.param_local_map.get(hir_local) orelse hir_local;
 
             if (first_param_is_ref) {
                 // Pass a reference to the struct (address of local)
@@ -1704,7 +1730,38 @@ const FunctionBuilder = struct {
                 const spec = self.printfSpecifier(args_ids[arg_idx], span) orelse return null;
                 try fmt_buf.appendSlice(self.allocator, spec);
                 if (try self.lowerExpr(args_ids[arg_idx])) |arg_op| {
-                    try args.append(self.allocator, arg_op);
+                    // Check if this is a reference from a method call that needs dereferencing
+                    // We only dereference if the expression is a method call returning &T
+                    // where T is a concrete type (not a direct &str literal)
+                    const arg_expr = self.hir_crate.exprs.items[args_ids[arg_idx]];
+                    var needs_deref = false;
+
+                    // Only dereference for method calls (like wrapper.get()) returning &T
+                    // where T is a Path (generic type parameter)
+                    const is_method_call = (arg_expr.kind == .Call);
+                    if (is_method_call and arg_expr.ty < self.hir_crate.types.items.len) {
+                        const arg_type = self.hir_crate.types.items[arg_expr.ty];
+                        if (arg_type.kind == .Ref) {
+                            const ref_info = arg_type.kind.Ref;
+                            if (ref_info.inner < self.hir_crate.types.items.len) {
+                                const inner_kind = self.hir_crate.types.items[ref_info.inner].kind;
+                                switch (inner_kind) {
+                                    // For generic Path types from method calls, dereference
+                                    .Path => needs_deref = true,
+                                    else => {},
+                                }
+                            }
+                        }
+                    }
+
+                    if (needs_deref) {
+                        // Dereference the pointer to get the value
+                        const deref_tmp = self.newTemp();
+                        _ = try self.emitInst(.{ .ty = .I64, .dest = deref_tmp, .kind = .{ .Unary = .{ .op = .Deref, .operand = arg_op } } });
+                        try args.append(self.allocator, .{ .Temp = deref_tmp });
+                    } else {
+                        try args.append(self.allocator, arg_op);
+                    }
                 }
 
                 arg_idx += 1;
@@ -1763,6 +1820,15 @@ const FunctionBuilder = struct {
                                 .I32, .U32 => "%d",
                                 .I64, .U64, .Usize => "%ld",
                             },
+                            // For generic type parameters (Path), try to infer from context
+                            // If we're referencing something from a call expression that returns a value,
+                            // default to %ld for numeric or %s for string-like values
+                            .Path => {
+                                // Try to look at the expression being passed
+                                // For method calls like .get(), infer from the target type
+                                if (self.inferFormatFromExpr(expr_id)) |fmt| return fmt;
+                                return "%s"; // Default to string for unknown generic refs
+                            },
                             else => {},
                         }
                     }
@@ -1804,6 +1870,93 @@ const FunctionBuilder = struct {
                 return null;
             },
         };
+    }
+
+    /// Try to infer the format specifier by looking at the expression context.
+    /// For method calls on generic containers, try to infer from the original value.
+    fn inferFormatFromExpr(self: *FunctionBuilder, expr_id: hir.ExprId) ?[]const u8 {
+        if (expr_id >= self.hir_crate.exprs.items.len) return null;
+        const expr = self.hir_crate.exprs.items[expr_id];
+
+        switch (expr.kind) {
+            // For method calls like wrapper.get(), look at the target's stored value
+            .MethodCall => |call| {
+                // Get the target expression (e.g., the Wrapper instance)
+                if (call.target < self.hir_crate.exprs.items.len) {
+                    const target_expr = self.hir_crate.exprs.items[call.target];
+                    // If target is a LocalRef, check if we can find what was stored in it
+                    if (target_expr.kind == .LocalRef) {
+                        // Try to find the let binding that initialized this local
+                        return self.inferFormatFromLocal(target_expr.kind.LocalRef);
+                    }
+                }
+            },
+            // For regular calls, look at the arguments
+            .Call => |call| {
+                // If this is a call with a field access callee (like text.get())
+                if (call.callee < self.hir_crate.exprs.items.len) {
+                    const callee_expr = self.hir_crate.exprs.items[call.callee];
+                    if (callee_expr.kind == .Field) {
+                        const target = callee_expr.kind.Field.target;
+                        if (target < self.hir_crate.exprs.items.len) {
+                            const target_expr = self.hir_crate.exprs.items[target];
+                            if (target_expr.kind == .LocalRef) {
+                                return self.inferFormatFromLocal(target_expr.kind.LocalRef);
+                            }
+                        }
+                    }
+                }
+            },
+            else => {},
+        }
+        return null;
+    }
+
+    /// Try to infer the format specifier from a local variable's initialization.
+    fn inferFormatFromLocal(self: *FunctionBuilder, local_id: hir.LocalId) ?[]const u8 {
+        // Search through statements to find the let binding
+        for (self.hir_crate.stmts.items) |stmt| {
+            if (stmt.kind == .Let) {
+                const let_stmt = stmt.kind.Let;
+                if (let_stmt.pat.id == local_id) {
+                    if (let_stmt.value) |value_id| {
+                        // Look at the initialization expression
+                        if (value_id < self.hir_crate.exprs.items.len) {
+                            const value_expr = self.hir_crate.exprs.items[value_id];
+                            // If initialized with a constructor call, look at the first argument
+                            if (value_expr.kind == .Call) {
+                                const call = value_expr.kind.Call;
+                                if (call.args.len > 0) {
+                                    const first_arg = call.args[0];
+                                    if (first_arg < self.hir_crate.exprs.items.len) {
+                                        const arg_expr = self.hir_crate.exprs.items[first_arg];
+                                        // Check the type of the argument
+                                        if (arg_expr.ty < self.hir_crate.types.items.len) {
+                                            const arg_type = self.hir_crate.types.items[arg_expr.ty].kind;
+                                            switch (arg_type) {
+                                                .String, .Str => return "%s",
+                                                .Ref => |ref_info| {
+                                                    if (ref_info.inner < self.hir_crate.types.items.len) {
+                                                        const inner = self.hir_crate.types.items[ref_info.inner].kind;
+                                                        if (inner == .Str or inner == .String) return "%s";
+                                                    }
+                                                },
+                                                .PrimInt => |int_ty| return switch (int_ty) {
+                                                    .I32, .U32 => "%d",
+                                                    .I64, .U64, .Usize => "%ld",
+                                                },
+                                                else => {},
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return null;
     }
 
     /// Lower a short-circuit logical operation (&&, ||).

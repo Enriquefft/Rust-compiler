@@ -115,6 +115,14 @@ fn printItem(printer: *TreePrinter, item: ast.Item, is_last: bool) AllocError!vo
             try printType(printer, &alias.aliased_type, true, "Aliased");
             printer.pop();
         },
+        .Const => {
+            const const_item = item.data.Const;
+            try printer.printNodeFmt(is_last, "Const {s}", .{const_item.name.name});
+            try printer.push(is_last);
+            try printType(printer, &const_item.ty, false, "Type");
+            try printExpr(printer, const_item.value.*, true);
+            printer.pop();
+        },
         .Empty => {
             try printer.printNode(is_last, "Empty");
         },

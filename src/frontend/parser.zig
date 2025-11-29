@@ -54,6 +54,7 @@ const Parser = struct {
             .KwStruct => return self.parseStructItem(),
             .KwImpl => return self.parseImplItem(),
             .KwType => return self.parseTypeAliasItem(),
+            .KwConst => return self.parseConstItem(),
             .Semicolon => {
                 _ = self.advance();
                 return ast.Item{ .tag = .Empty, .span = tok.span, .data = .Empty };
@@ -152,6 +153,19 @@ const Parser = struct {
         const semi = self.expectConsume(.Semicolon, "expected ';' after type alias") orelse return null;
         const span = Span{ .file_id = kw.span.file_id, .start = kw.span.start, .end = semi.span.end };
         return ast.Item{ .tag = .TypeAlias, .span = span, .data = .{ .TypeAlias = .{ .name = name, .generics = generics, .aliased_type = ty, .span = span } } };
+    }
+
+    fn parseConstItem(self: *Parser) ?ast.Item {
+        const kw = self.expectConsume(.KwConst, "expected 'const'") orelse return null;
+        const name_tok = self.expectConsume(.Identifier, "expected const name") orelse return null;
+        const name = self.makeIdent(name_tok);
+        _ = self.expectConsume(.Colon, "expected ':' after const name") orelse return null;
+        const ty = self.parseType() orelse return null;
+        _ = self.expectConsume(.Eq, "expected '=' in const item") orelse return null;
+        const value = self.parseExpr() orelse return null;
+        const semi = self.expectConsume(.Semicolon, "expected ';' after const item") orelse return null;
+        const span = Span{ .file_id = kw.span.file_id, .start = kw.span.start, .end = semi.span.end };
+        return ast.Item{ .tag = .Const, .span = span, .data = .{ .Const = .{ .name = name, .ty = ty, .value = value, .span = span } } };
     }
 
     fn parseGenericParams(self: *Parser) []ast.Identifier {
@@ -351,7 +365,26 @@ const Parser = struct {
                 continue;
             }
             if (self.check(.KwIf)) {
-                if (self.parseIfStmt()) |stmt| stmts.append(self.arena, stmt) catch {} else self.synchronize();
+                // Parse if as an expression to allow it to be a tail expression
+                if (self.parseIfExpr()) |if_expr| {
+                    if (self.check(.RBrace)) {
+                        // No semicolon and next is '}' - this is the tail expression
+                        result_expr = if_expr;
+                        break;
+                    } else if (self.match(.Semicolon)) {
+                        // Has semicolon - it's a statement
+                        stmts.append(self.arena, .{
+                            .tag = .Expr,
+                            .span = if_expr.span,
+                            .data = .{ .Expr = .{ .expr = if_expr.* } },
+                        }) catch {};
+                    } else {
+                        // Neither semicolon nor closing brace - treat as statement
+                        stmts.append(self.arena, .{ .tag = .If, .span = if_expr.span, .data = .{ .If = if_expr.data.If } }) catch {};
+                    }
+                } else {
+                    self.synchronize();
+                }
                 continue;
             }
             if (self.check(.KwFor)) {
@@ -864,7 +897,7 @@ const Parser = struct {
             //this line
             if (self.previous().kind == .Semicolon) return;
             switch (self.peekKind()) {
-                .KwFn, .KwStruct, .KwImpl, .KwType, .KwLet, .KwWhile, .KwFor, .KwIf, .KwReturn => return,
+                .KwFn, .KwStruct, .KwImpl, .KwType, .KwConst, .KwLet, .KwWhile, .KwFor, .KwIf, .KwReturn => return,
                 .RBrace => return,
                 else => {},
             }

@@ -19,6 +19,7 @@ pub const Item = struct {
         Struct: StructItem,
         Impl: ImplItem,
         TypeAlias: TypeAliasItem,
+        Const: ConstItem,
         Empty: void,
     },
 
@@ -27,6 +28,7 @@ pub const Item = struct {
         Struct,
         Impl,
         TypeAlias,
+        Const,
         Empty,
     };
 };
@@ -58,6 +60,13 @@ pub const TypeAliasItem = struct {
     name: Identifier,
     generics: []Identifier,
     aliased_type: Type,
+    span: Span,
+};
+
+pub const ConstItem = struct {
+    name: Identifier,
+    ty: Type,
+    value: *Expr,
     span: Span,
 };
 
