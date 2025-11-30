@@ -102,15 +102,18 @@ pub fn compileFile(options: CompileOptions) !CompileResult {
     // Create an arena for AST allocation. All AST nodes live here.
     var ast_arena = std.heap.ArenaAllocator.init(options.allocator);
 
+    std.debug.print("DEBUG: parsing...\n", .{});
     // Parse the token stream into an AST representing the entire crate.
     // The AST is allocated in the arena so it is freed all at once.
     const crate = parser.parseCrate(ast_arena.allocator(), token_slice, &diagnostics);
+    std.debug.print("DEBUG: parsed. Items: {d}\n", .{crate.items.len});
 
     // Optional debugging: pretty-print the AST structure.
     if (options.visualize_ast) {
         try ast_printer.printCrateTree(options.allocator, crate);
     }
 
+    std.debug.print("DEBUG: lowering to HIR...\n", .{});
     // Lower the AST into HIR (High-level Intermediate Representation).
     // HIR is a simplified, more uniform IR than the raw AST, usually
     // desugared and annotated with structural information.
@@ -119,6 +122,7 @@ pub fn compileFile(options: CompileOptions) !CompileResult {
         crate,
         &diagnostics,
     );
+    std.debug.print("DEBUG: HIR done\n", .{});
 
     // Declare the MIR crate now. May be filled later or left empty on error.
     var mir_crate: mir.MirCrate = undefined;
@@ -126,11 +130,13 @@ pub fn compileFile(options: CompileOptions) !CompileResult {
     // === NAME RESOLUTION ===
     // Only proceed if previous stages were diagnostic-free.
     if (!diagnostics.hasErrors()) {
+        std.debug.print("DEBUG: name resolution...\n", .{});
         try hir.performNameResolution(&hir_crate, &diagnostics);
     }
 
     // === TYPE CHECKING ===
     if (!diagnostics.hasErrors()) {
+        std.debug.print("DEBUG: type checking...\n", .{});
         try hir.performTypeCheck(&hir_crate, &diagnostics);
     }
 
@@ -139,6 +145,7 @@ pub fn compileFile(options: CompileOptions) !CompileResult {
         try hir_printer.printCrateTree(options.allocator, &hir_crate);
     }
 
+    std.debug.print("DEBUG: MIR lowering...\n", .{});
     // === HIR → MIR LOWERING ===
     if (!diagnostics.hasErrors()) {
 
@@ -388,4 +395,40 @@ test "compileFile writes backend artifact to file" {
     const contents = try std.fs.cwd().readFileAlloc(allocator, out_path, std.math.maxInt(usize));
     defer allocator.free(contents);
     try std.testing.expectEqualSlices(u8, artifact.assembly, contents);
+}
+
+test "compileFile handles unsafe block with statements" {
+    const allocator = std.testing.allocator;
+    const out_path = "unsafe_stmts.s";
+    std.fs.cwd().deleteFile(out_path) catch {};
+
+    var result = try compileFile(.{
+        .allocator = allocator,
+        .input_path = "test.rs",
+        .output_path = out_path,
+        .opt_level = .basic,
+        .emit = .assembly,
+        .emit_diagnostics = false,
+        .exit_on_error = false,
+        .source_override =
+        \\fn main() {
+        \\    let mut value: i32 = 10;
+        \\    unsafe {
+        \\        value = 20;
+        \\    }
+        \\    println!("{}", value);
+        \\}
+        ,
+    });
+    defer {
+        result.deinit();
+        std.fs.cwd().deleteFile(out_path) catch {};
+    }
+
+    // Check AST structure: 3 statements, no tail expression
+    const fn_item = result.ast.items[0].data.Fn;
+    try std.testing.expectEqual(@as(usize, 3), fn_item.body.stmts.len);
+    try std.testing.expect(fn_item.body.result == null);
+    
+    try std.testing.expectEqual(CompileStatus.success, result.status);
 }
