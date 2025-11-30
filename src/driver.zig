@@ -422,6 +422,5 @@ test "compileFile handles unsafe block with statements" {
     const fn_item = result.ast.items[0].data.Fn;
     try std.testing.expectEqual(@as(usize, 3), fn_item.body.stmts.len);
     try std.testing.expect(fn_item.body.result == null);
-    
     try std.testing.expectEqual(CompileStatus.success, result.status);
 }
