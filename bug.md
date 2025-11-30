@@ -108,12 +108,12 @@ fn main() {
 
 ### Analysis
 
-The garbage values (-117849544) suggest uninitialized memory access. Possible causes:
+The garbage values (-117849544) suggest uninitialized memory access. Possible causes, in order of investigation priority:
 
-1. Incorrect struct size calculation when used in arrays
-2. Wrong element offset calculation when indexing into array of structs
-3. For-in loop iteration over struct references not computing correct addresses
-4. Struct field access via reference not using correct offsets
+1. **[Most Likely]** For-in loop iteration over struct references not computing correct addresses - the iteration produces the same garbage values for all elements, suggesting the loop is reading from the same incorrect memory location
+2. Struct field access via reference not using correct offsets - could explain why both x and y are wrong
+3. Wrong element offset calculation when indexing into array of structs - the mutation phase (`points[i].x += 1`) might work correctly but reading fails
+4. Incorrect struct size calculation when used in arrays - less likely as the array mutation appears to work
 
 ---
 
@@ -152,4 +152,11 @@ The compiler successfully handles `unsafe_blocks_test1.rs` which uses an unsafe 
 let x: i32 = unsafe { 42 };
 ```
 
-However, it hangs when the unsafe block contains statements (like an assignment) rather than returning a value. This suggests an issue in how statement-only unsafe blocks are lowered or processed.
+However, it hangs when the unsafe block contains statements (like an assignment) rather than returning a value. 
+
+**Suspected Phase:** The hang likely occurs in one of the following phases:
+1. **HIR lowering** - When processing unsafe block statements that don't produce a value
+2. **MIR generation** - When building the MIR for statement-only blocks
+3. **Code generation** - Less likely, as the hang occurs early (no output is produced)
+
+The difference between the working and failing cases is that the working case uses unsafe as an expression (returns a value), while the failing case uses it as a statement block (void/unit type). This suggests the lowering logic for statement-only unsafe blocks may enter an infinite loop or recursion.
