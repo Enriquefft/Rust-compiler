@@ -389,3 +389,38 @@ test "compileFile writes backend artifact to file" {
     defer allocator.free(contents);
     try std.testing.expectEqualSlices(u8, artifact.assembly, contents);
 }
+
+test "compileFile handles unsafe block with statements" {
+    const allocator = std.testing.allocator;
+    const out_path = "unsafe_stmts.s";
+    std.fs.cwd().deleteFile(out_path) catch {};
+
+    var result = try compileFile(.{
+        .allocator = allocator,
+        .input_path = "test.rs",
+        .output_path = out_path,
+        .opt_level = .basic,
+        .emit = .assembly,
+        .emit_diagnostics = false,
+        .exit_on_error = false,
+        .source_override =
+        \\fn main() {
+        \\    let mut value: i32 = 10;
+        \\    unsafe {
+        \\        value = 20;
+        \\    }
+        \\    println!("{}", value);
+        \\}
+        ,
+    });
+    defer {
+        result.deinit();
+        std.fs.cwd().deleteFile(out_path) catch {};
+    }
+
+    // Check AST structure: 3 statements, no tail expression
+    const fn_item = result.ast.items[0].data.Fn;
+    try std.testing.expectEqual(@as(usize, 3), fn_item.body.stmts.len);
+    try std.testing.expect(fn_item.body.result == null);
+    try std.testing.expectEqual(CompileStatus.success, result.status);
+}

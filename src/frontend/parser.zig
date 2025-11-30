@@ -414,6 +414,30 @@ const Parser = struct {
                 continue;
             }
 
+            // If we see 'unsafe' here, treat the whole unsafe block as a statement,
+            // not as a tail expression of the enclosing block.
+            if (self.check(.KwUnsafe)) {
+                const unsafe_tok = self.advance();
+                if (self.parseBlock()) |blk| {
+                    const span = Span{ .file_id = unsafe_tok.span.file_id, .start = unsafe_tok.span.start, .end = blk.span.end };
+                    const expr_val = ast.Expr{
+                        .tag = .Unsafe,
+                        .span = span,
+                        .data = .{ .Unsafe = .{ .block = blk } },
+                    };
+                    stmts.append(self.arena, .{
+                        .tag = .Expr,
+                        .span = span,
+                        .data = .{ .Expr = .{ .expr = expr_val } },
+                    }) catch {};
+                    // Optional trailing semicolon after the unsafe block, e.g. "unsafe { ... };"
+                    _ = self.match(.Semicolon);
+                } else {
+                    self.synchronize();
+                }
+                continue;
+            }
+
             // Generic expression in statement or tail position
             if (self.isStartOfExpr()) {
                 if (self.parseExpr()) |expr| {
@@ -1120,6 +1144,32 @@ test "parse unsafe block expression" {
     try std.testing.expectEqual(@as(usize, 1), fn_item.body.stmts.len);
     // unsafe block is parsed as an expression statement
     try std.testing.expectEqual(ast.Stmt.Tag.Expr, fn_item.body.stmts[0].tag);
+}
+
+test "parse unsafe block with statements followed by other statements" {
+    var fixture = try expectNoErrors(
+        \\fn main() {
+        \\    let mut value: i32 = 10;
+        \\    unsafe {
+        \\        value = 20;
+        \\    }
+        \\    println!("{}", value);
+        \\}
+    );
+    defer {
+        fixture.diagnostics.deinit();
+        fixture.arena.deinit();
+    }
+
+    const fn_item = fixture.crate.items[0].data.Fn;
+    // Should have 3 statements: let, unsafe block, println
+    try std.testing.expectEqual(@as(usize, 3), fn_item.body.stmts.len);
+    // First statement is let
+    try std.testing.expectEqual(ast.Stmt.Tag.Let, fn_item.body.stmts[0].tag);
+    // Second statement is the unsafe block
+    try std.testing.expectEqual(ast.Stmt.Tag.Expr, fn_item.body.stmts[1].tag);
+    // Third statement is the println call
+    try std.testing.expectEqual(ast.Stmt.Tag.Expr, fn_item.body.stmts[2].tag);
 }
 
 test "parse unsafe block as tail expression" {
