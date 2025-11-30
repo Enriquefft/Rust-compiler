@@ -55,7 +55,12 @@ ConstExpr = IntLit | Ident ;
 
 Block = "{" , { Stmt } , [ Expr ] , "}" ;
 
-Stmt  = LetStmt | WhileStmt | IfStmt | ReturnStmt | ForStmt | Expr , ";" | ";" ;
+(* Stmt includes block expressions (bare blocks and unsafe blocks) which
+   can appear without a trailing semicolon when used at statement level. *)
+Stmt  = LetStmt | WhileStmt | IfStmt | ReturnStmt | ForStmt 
+      | Block | UnsafeBlock 
+      | Expr , ";" 
+      | ";" ;
 
 ForStmt = "for" , Pattern , "in" , Expr , Block ;
 

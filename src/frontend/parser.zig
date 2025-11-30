@@ -414,6 +414,30 @@ const Parser = struct {
                 continue;
             }
 
+            // If we see 'unsafe' here, treat the whole unsafe block as a statement,
+            // not as a tail expression of the enclosing block.
+            if (self.check(.KwUnsafe)) {
+                const unsafe_tok = self.advance();
+                if (self.parseBlock()) |blk| {
+                    const span = Span{ .file_id = unsafe_tok.span.file_id, .start = unsafe_tok.span.start, .end = blk.span.end };
+                    const expr_val = ast.Expr{
+                        .tag = .Unsafe,
+                        .span = span,
+                        .data = .{ .Unsafe = .{ .block = blk } },
+                    };
+                    stmts.append(self.arena, .{
+                        .tag = .Expr,
+                        .span = span,
+                        .data = .{ .Expr = .{ .expr = expr_val } },
+                    }) catch {};
+                    // Optional trailing semicolon after the unsafe block, e.g. "unsafe { ... };"
+                    _ = self.match(.Semicolon);
+                } else {
+                    self.synchronize();
+                }
+                continue;
+            }
+
             // Generic expression in statement or tail position
             if (self.isStartOfExpr()) {
                 if (self.parseExpr()) |expr| {
