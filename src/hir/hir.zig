@@ -47,6 +47,9 @@ pub const StmtId = u32;
 /// Unique identifier for items stored in the crate's item arena.
 pub const ItemId = u32;
 
+/// Supported builtin macro handlers.
+pub const BuiltinMacroHandler = enum { println, print, format, eprintln };
+
 /// Represents a type in the HIR.
 ///
 /// Types are interned in the crate's type arena and referenced by `TypeId`.
@@ -415,6 +418,8 @@ pub const Crate = struct {
     types: std.ArrayListUnmanaged(Type),
     /// All patterns in the crate.
     patterns: std.ArrayListUnmanaged(Pattern),
+    /// Mapping of builtin macro def_ids to their lowering handlers.
+    builtin_macros: std.AutoHashMapUnmanaged(DefId, BuiltinMacroHandler),
 
     /// Initializes a new empty crate with the given backing allocator.
     pub fn init(backing_allocator: std.mem.Allocator) Crate {
@@ -425,6 +430,7 @@ pub const Crate = struct {
             .stmts = .{},
             .types = .{},
             .patterns = .{},
+            .builtin_macros = .{},
         };
     }
 
@@ -435,6 +441,7 @@ pub const Crate = struct {
         self.stmts.deinit(self.arena.allocator());
         self.types.deinit(self.arena.allocator());
         self.patterns.deinit(self.arena.allocator());
+        self.builtin_macros.deinit(self.arena.allocator());
         self.arena.deinit();
     }
 

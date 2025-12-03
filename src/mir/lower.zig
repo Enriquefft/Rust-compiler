@@ -23,7 +23,6 @@ const LowerError = error{OutOfMemory};
 
 // Import shared constants to ensure consistency with backend
 const MAX_STRUCT_FIELDS = shared.MAX_STRUCT_FIELDS;
-const ASSUMED_GENERIC_STRUCT_FIELDS = shared.ASSUMED_GENERIC_STRUCT_FIELDS;
 const LOCAL_STACK_MULTIPLIER = shared.LOCAL_STACK_MULTIPLIER;
 
 /// Lower a complete HIR crate to MIR representation.
@@ -49,42 +48,29 @@ pub fn lowerFromHir(allocator: std.mem.Allocator, hir_crate: *const hir.Crate, d
     return crate;
 }
 
-/// Check if a type name is a declared type parameter in the HIR crate.
-/// Returns true if the name matches a declared type parameter in any struct, function, or impl block.
-fn isDeclaredTypeParam(hir_crate: *const hir.Crate, type_name: []const u8) bool {
-    for (hir_crate.items.items) |item| {
-        switch (item.kind) {
-            .Struct => |s| {
-                for (s.type_params) |param| {
-                    if (std.mem.eql(u8, param, type_name)) return true;
+/// Retrieve the fields for a struct type, following resolved struct definitions.
+/// Returns null when the type does not refer to a struct.
+fn getStructFields(hir_crate: *const hir.Crate, ty_id: hir.TypeId) ?[]const hir.Field {
+    if (ty_id >= hir_crate.types.items.len) return null;
+    const kind = hir_crate.types.items[ty_id].kind;
+    switch (kind) {
+        .Struct => |info| {
+            if (info.def_id >= hir_crate.items.items.len) return null;
+            const item = hir_crate.items.items[info.def_id];
+            if (item.kind == .Struct) return item.kind.Struct.fields;
+        },
+        .Path => |path| {
+            if (path.segments.len != 1) return null;
+            const name = path.segments[0];
+            for (hir_crate.items.items) |item| {
+                if (item.kind == .Struct and std.mem.eql(u8, item.kind.Struct.name, name)) {
+                    return item.kind.Struct.fields;
                 }
-            },
-            .Function => |f| {
-                for (f.type_params) |param| {
-                    if (std.mem.eql(u8, param, type_name)) return true;
-                }
-            },
-            .Impl => |impl_item| {
-                for (impl_item.type_params) |param| {
-                    if (std.mem.eql(u8, param, type_name)) return true;
-                }
-            },
-            else => {},
-        }
+            }
+        },
+        else => {},
     }
-    return false;
-}
-
-/// Check if a type name is a known type (struct or type alias).
-fn isKnownTypeName(hir_crate: *const hir.Crate, type_name: []const u8) bool {
-    for (hir_crate.items.items) |item| {
-        switch (item.kind) {
-            .Struct => |s| if (std.mem.eql(u8, s.name, type_name)) return true,
-            .TypeAlias => |a| if (std.mem.eql(u8, a.name, type_name)) return true,
-            else => {},
-        }
-    }
-    return false;
+    return null;
 }
 
 /// Lower a single HIR function to MIR representation.
@@ -117,46 +103,7 @@ fn lowerFunction(crate: *mir.MirCrate, func: hir.Function, hir_crate: *const hir
         const ty = if (param_idx < func.param_types.len) func.param_types[param_idx] else null;
 
         // Check if this parameter is a struct type (needs field expansion)
-        var num_fields: usize = 1;
-        var struct_fields: ?[]const hir.Field = null;
-        var is_generic_param = false;
-        if (ty) |ty_id| {
-            if (ty_id < hir_crate.types.items.len) {
-                const param_type = hir_crate.types.items[ty_id];
-                switch (param_type.kind) {
-                    .Struct => |info| {
-                        if (info.def_id < hir_crate.items.items.len) {
-                            const struct_item = hir_crate.items.items[info.def_id];
-                            if (struct_item.kind == .Struct) {
-                                num_fields = struct_item.kind.Struct.fields.len;
-                                struct_fields = struct_item.kind.Struct.fields;
-                            }
-                        }
-                    },
-                    .Path => |path| {
-                        // Look up struct by name
-                        if (path.segments.len == 1) {
-                            const struct_name = path.segments[0];
-                            // Check if this is a generic type parameter using proper detection:
-                            // 1. Check declared type_params from struct/function/impl definitions
-                            // 2. Fall back to checking if it's not a known type name
-                            if (isDeclaredTypeParam(hir_crate, struct_name) or !isKnownTypeName(hir_crate, struct_name)) {
-                                is_generic_param = true;
-                            } else {
-                                for (hir_crate.items.items) |item| {
-                                    if (item.kind == .Struct and std.mem.eql(u8, item.kind.Struct.name, struct_name)) {
-                                        num_fields = item.kind.Struct.fields.len;
-                                        struct_fields = item.kind.Struct.fields;
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                    },
-                    else => {},
-                }
-            }
-        }
+        const struct_fields = if (ty) |ty_id| getStructFields(hir_crate, ty_id) else null;
 
         // Store the base local for this param in the mapping
         try builder.param_local_map.put(param, next_local);
@@ -164,13 +111,9 @@ fn lowerFunction(crate: *mir.MirCrate, func: hir.Function, hir_crate: *const hir
         // For struct parameters, store each field using StoreField to the same local
         // This ensures all fields are in the same memory region for Field access
         if (struct_fields) |fields| {
-            // Allocate space for the struct - use MAX_STRUCT_FIELDS slots to match hash-based layout
-            for (0..MAX_STRUCT_FIELDS) |i| {
-                try builder.ensureLocal(next_local + @as(hir.LocalId, @intCast(i)), ty, func.span);
-            }
-
-            // Store each field to the struct local using StoreField
-            for (fields) |field| {
+            // Allocate space for the struct - use the concrete field count
+            for (fields, 0..) |field, idx| {
+                try builder.ensureLocal(next_local + @as(hir.LocalId, @intCast(idx)), field.ty, func.span);
                 _ = try builder.emitInst(.{
                     .ty = null,
                     .dest = null,
@@ -184,23 +127,7 @@ fn lowerFunction(crate: *mir.MirCrate, func: hir.Function, hir_crate: *const hir
                 });
                 arg_idx += 1;
             }
-
-            // Increment by MAX_STRUCT_FIELDS to reserve space for hash-indexed fields
-            next_local += MAX_STRUCT_FIELDS;
-        } else if (is_generic_param) {
-            // For generic type parameters (T, U, etc.), assume they might be structs
-            // and allocate space for ASSUMED_GENERIC_STRUCT_FIELDS fields
-            // This is a workaround for lack of full monomorphization
-            for (0..ASSUMED_GENERIC_STRUCT_FIELDS) |i| {
-                try builder.ensureLocal(next_local + @as(hir.LocalId, @intCast(i)), ty, func.span);
-            }
-            // Store first value
-            _ = try builder.emitInst(.{ .ty = mapType(hir_crate, ty, func.span, diagnostics), .dest = null, .kind = .{ .StoreLocal = .{ .local = next_local, .src = .{ .Param = @intCast(arg_idx) } } } });
-            arg_idx += 1;
-            // Store second value (might be passed if T is a 2-field struct)
-            _ = try builder.emitInst(.{ .ty = mapType(hir_crate, ty, func.span, diagnostics), .dest = null, .kind = .{ .StoreLocal = .{ .local = next_local + 1, .src = .{ .Param = @intCast(arg_idx) } } } });
-            arg_idx += 1;
-            next_local += ASSUMED_GENERIC_STRUCT_FIELDS;
+            next_local += @intCast(fields.len);
         } else {
             // Non-struct parameter: store normally
             try builder.ensureLocal(next_local, ty, func.span);
@@ -413,8 +340,8 @@ const FunctionBuilder = struct {
                 return null;
             },
             .Call => |call| {
-                if (self.isBuiltinPrintln(call.callee)) {
-                    return try self.lowerPrintlnMacro(call.args, expr.span);
+                if (self.builtinMacroHandler(call.callee)) |handler| {
+                    return try self.lowerBuiltinMacro(handler, call.args, expr.span);
                 }
 
                 // Check if this is an array method call like data.len()
@@ -1329,15 +1256,14 @@ const FunctionBuilder = struct {
         return self.mir_fn;
     }
 
-    /// Check if a callee expression refers to the built-in println function.
-    fn isBuiltinPrintln(self: *FunctionBuilder, callee_id: hir.ExprId) bool {
-        if (callee_id >= self.hir_crate.exprs.items.len) return false;
+    /// Resolve the builtin macro handler associated with a callee expression, if any.
+    fn builtinMacroHandler(self: *FunctionBuilder, callee_id: hir.ExprId) ?hir.BuiltinMacroHandler {
+        if (callee_id >= self.hir_crate.exprs.items.len) return null;
         const callee = self.hir_crate.exprs.items[callee_id];
-        if (callee.kind != .GlobalRef) return false;
+        if (callee.kind != .GlobalRef) return null;
+
         const def_id = callee.kind.GlobalRef;
-        if (def_id >= self.hir_crate.items.items.len) return false;
-        const item = self.hir_crate.items.items[def_id];
-        return item.kind == .Function and std.mem.eql(u8, item.kind.Function.name, "println");
+        return self.hir_crate.builtin_macros.get(def_id);
     }
 
     /// Information about a pointer method call (e.g., ptr.is_null()).
@@ -1729,17 +1655,27 @@ const FunctionBuilder = struct {
         return .{ .Temp = tmp };
     }
 
-    /// Lower a println! macro call to a printf call.
+    /// Lower a builtin print-style macro call to a printf call.
     /// Converts Rust-style format strings to C-style format specifiers.
-    fn lowerPrintlnMacro(self: *FunctionBuilder, args_ids: []const hir.ExprId, span: hir.Span) LowerError!?mir.Operand {
+    fn lowerPrintMacro(
+        self: *FunctionBuilder,
+        macro_label: []const u8,
+        args_ids: []const hir.ExprId,
+        span: hir.Span,
+        append_newline: bool,
+    ) LowerError!?mir.Operand {
         if (args_ids.len == 0) {
-            self.diagnostics.reportError(span, "println! requires a format string");
+            var message_buf: [64]u8 = undefined;
+            const message = std.fmt.bufPrint(&message_buf, "{s} requires a format string", .{macro_label}) catch "macro requires a format string";
+            self.diagnostics.reportError(span, message);
             return null;
         }
 
         const fmt_expr = self.hir_crate.exprs.items[args_ids[0]];
         if (fmt_expr.kind != .ConstString) {
-            self.diagnostics.reportError(span, "println! expects a string literal format");
+            var message_buf: [80]u8 = undefined;
+            const message = std.fmt.bufPrint(&message_buf, "{s} expects a string literal format", .{macro_label}) catch "macro expects a string literal format";
+            self.diagnostics.reportError(span, message);
             return null;
         }
 
@@ -1819,11 +1755,13 @@ const FunctionBuilder = struct {
         }
 
         if (arg_idx != args_ids.len) {
-            self.diagnostics.reportError(span, "too many arguments supplied to println!");
+            var message_buf: [80]u8 = undefined;
+            const message = std.fmt.bufPrint(&message_buf, "too many arguments supplied to {s}", .{macro_label}) catch "too many arguments supplied to macro";
+            self.diagnostics.reportError(span, message);
             return null;
         }
 
-        if (fmt_buf.items.len == 0 or fmt_buf.items[fmt_buf.items.len - 1] != '\n') {
+        if (append_newline and (fmt_buf.items.len == 0 or fmt_buf.items[fmt_buf.items.len - 1] != '\n')) {
             try fmt_buf.append(self.allocator, '\n');
         }
 
@@ -1839,10 +1777,28 @@ const FunctionBuilder = struct {
         return .{ .ImmInt = 0 };
     }
 
+    /// Dispatch lowering for a builtin macro based on its registered handler.
+    fn lowerBuiltinMacro(
+        self: *FunctionBuilder,
+        handler: hir.BuiltinMacroHandler,
+        args_ids: []const hir.ExprId,
+        span: hir.Span,
+    ) LowerError!?mir.Operand {
+        switch (handler) {
+            .println => return try self.lowerPrintMacro("println!", args_ids, span, true),
+            .print => return try self.lowerPrintMacro("print!", args_ids, span, false),
+            .eprintln => return try self.lowerPrintMacro("eprintln!", args_ids, span, true),
+            .format => {
+                self.diagnostics.reportError(span, "format! macro is not supported yet");
+                return null;
+            },
+        }
+    }
+
     /// Determine the printf format specifier for an expression's type.
     fn printfSpecifier(self: *FunctionBuilder, expr_id: hir.ExprId, span: hir.Span) ?[]const u8 {
         if (expr_id >= self.hir_crate.exprs.items.len) {
-            self.diagnostics.reportError(span, "unknown argument in println!");
+            self.diagnostics.reportError(span, "unknown argument in builtin macro call");
             return null;
         }
         const expr = self.hir_crate.exprs.items[expr_id];
@@ -1895,7 +1851,7 @@ const FunctionBuilder = struct {
         }
 
         const ty = mapType(self.hir_crate, expr.ty, span, self.diagnostics) orelse {
-            self.diagnostics.reportError(span, "println! argument has unsupported type");
+            self.diagnostics.reportError(span, "builtin macro argument has unsupported type");
             return null;
         };
 
@@ -1908,7 +1864,7 @@ const FunctionBuilder = struct {
             .String, .Str => "%s",
             .Pointer => "%p", // Default pointer format
             else => {
-                self.diagnostics.reportError(span, "println! argument type cannot be formatted");
+                self.diagnostics.reportError(span, "builtin macro argument type cannot be formatted");
                 return null;
             },
         };
@@ -2452,6 +2408,8 @@ test "lower println macro into printf call" {
     const println_fn: hir.Function = .{ .def_id = 0, .name = "println", .type_params = &[_][]const u8{}, .params = &[_]hir.LocalId{}, .param_types = &[_]hir.TypeId{}, .return_type = null, .body = null, .span = span };
     try crate.items.append(crate.allocator(), .{ .id = 0, .kind = .{ .Function = println_fn }, .span = span });
 
+    try crate.builtin_macros.put(crate.allocator(), 0, .println);
+
     const main_fn: hir.Function = .{ .def_id = 1, .name = "main", .type_params = &[_][]const u8{}, .params = &[_]hir.LocalId{}, .param_types = &[_]hir.TypeId{}, .return_type = i32_ty, .body = call_expr_id, .span = span };
     try crate.items.append(crate.allocator(), .{ .id = 1, .kind = .{ .Function = main_fn }, .span = span });
 
@@ -2468,6 +2426,113 @@ test "lower println macro into printf call" {
     try std.testing.expectEqualStrings("printf", mir_fn.blocks[0].insts[0].kind.Call.target.Symbol);
     try std.testing.expect(mir_fn.blocks[0].insts[0].kind.Call.args.len >= 1);
     try std.testing.expect(mir_fn.blocks[0].insts[0].kind.Call.args[0] == .ImmString);
+}
+
+test "monomorphize struct path parameters" {
+    const allocator = std.testing.allocator;
+    var diagnostics = diag.Diagnostics.init(allocator);
+    defer diagnostics.deinit();
+
+    var crate = hir.Crate.init(allocator);
+    defer crate.deinit();
+
+    const span = hir.emptySpan(0);
+    const i64_ty = ensureType(&crate, .{ .PrimInt = .I64 });
+
+    // Define a generic struct Pair<T> { a: T, b: T }
+    const generic_param_buf = try crate.allocator().dupe(u8, "T");
+    const generic_param: []const u8 = generic_param_buf;
+    const param_segment = try crate.allocator().alloc([]const u8, 1);
+    param_segment[0] = generic_param;
+    const type_param_ty: hir.TypeId = @intCast(crate.types.items.len);
+    try crate.types.append(crate.allocator(), .{ .id = type_param_ty, .kind = .{ .Path = .{ .segments = param_segment, .args = &[_]hir.TypeId{} } } });
+
+    const fields = try crate.allocator().alloc(hir.Field, 2);
+    fields[0] = .{ .name = "a", .ty = type_param_ty, .span = span };
+    fields[1] = .{ .name = "b", .ty = type_param_ty, .span = span };
+
+    try crate.items.append(crate.allocator(), .{ .id = 0, .kind = .{ .Struct = .{ .def_id = 0, .name = "Pair", .type_params = param_segment, .fields = fields, .span = span } }, .span = span });
+
+    // Function takes Pair<i64> as its single parameter
+    const pair_segments = try crate.allocator().alloc([]const u8, 1);
+    pair_segments[0] = "Pair";
+    const pair_args = try crate.allocator().alloc(hir.TypeId, 1);
+    pair_args[0] = i64_ty;
+    const pair_path_ty: hir.TypeId = @intCast(crate.types.items.len);
+    try crate.types.append(crate.allocator(), .{ .id = pair_path_ty, .kind = .{ .Path = .{ .segments = pair_segments, .args = pair_args } } });
+
+    const fn_params = try crate.allocator().alloc(hir.LocalId, 1);
+    fn_params[0] = 0;
+    const fn_param_types = try crate.allocator().alloc(hir.TypeId, 1);
+    fn_param_types[0] = pair_path_ty;
+    const take_fn: hir.Function = .{ .def_id = 1, .name = "take", .type_params = &[_][]const u8{}, .params = fn_params, .param_types = fn_param_types, .return_type = null, .body = null, .span = span };
+    try crate.items.append(crate.allocator(), .{ .id = 1, .kind = .{ .Function = take_fn }, .span = span });
+
+    var mir_crate = try lowerFromHir(allocator, &crate, &diagnostics);
+    defer mir_crate.deinit();
+
+    try std.testing.expect(!diagnostics.hasErrors());
+    try std.testing.expectEqual(@as(usize, 1), mir_crate.fns.items.len);
+    const mir_fn = mir_crate.fns.items[0];
+    // Two locals for the struct fields
+    try std.testing.expectEqual(@as(usize, 2), mir_fn.locals.len);
+
+    // Two store-field instructions initialized from the flattened parameters
+    var store_count: usize = 0;
+    for (mir_fn.blocks[0].insts) |inst| {
+        if (inst.kind == .StoreField) store_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), store_count);
+}
+
+
+test "lower print macro preserves format string without newline" {
+    const allocator = std.testing.allocator;
+    var diagnostics = diag.Diagnostics.init(allocator);
+    defer diagnostics.deinit();
+
+    var crate = hir.Crate.init(allocator);
+    defer crate.deinit();
+
+    const span = hir.emptySpan(0);
+    const string_ty = ensureType(&crate, .String);
+    const i32_ty = ensureType(&crate, .{ .PrimInt = .I32 });
+
+    const fmt_expr_id: hir.ExprId = @intCast(crate.exprs.items.len);
+    try crate.exprs.append(crate.allocator(), .{ .id = fmt_expr_id, .kind = .{ .ConstString = "value: {}" }, .ty = string_ty, .span = span });
+
+    const arg_expr_id: hir.ExprId = @intCast(crate.exprs.items.len);
+    try crate.exprs.append(crate.allocator(), .{ .id = arg_expr_id, .kind = .{ .ConstInt = 7 }, .ty = i32_ty, .span = span });
+
+    const callee_expr_id: hir.ExprId = @intCast(crate.exprs.items.len);
+    try crate.exprs.append(crate.allocator(), .{ .id = callee_expr_id, .kind = .{ .GlobalRef = 0 }, .ty = string_ty, .span = span });
+
+    const args_slice = try crate.allocator().alloc(hir.ExprId, 2);
+    args_slice[0] = fmt_expr_id;
+    args_slice[1] = arg_expr_id;
+
+    const call_expr_id: hir.ExprId = @intCast(crate.exprs.items.len);
+    try crate.exprs.append(crate.allocator(), .{ .id = call_expr_id, .kind = .{ .Call = .{ .callee = callee_expr_id, .args = args_slice } }, .ty = i32_ty, .span = span });
+
+    const print_fn: hir.Function = .{ .def_id = 0, .name = "print", .type_params = &[_][]const u8{}, .params = &[_]hir.LocalId{}, .param_types = &[_]hir.TypeId{}, .return_type = null, .body = null, .span = span };
+    try crate.items.append(crate.allocator(), .{ .id = 0, .kind = .{ .Function = print_fn }, .span = span });
+
+    try crate.builtin_macros.put(crate.allocator(), 0, .print);
+
+    const main_fn: hir.Function = .{ .def_id = 1, .name = "main", .type_params = &[_][]const u8{}, .params = &[_]hir.LocalId{}, .param_types = &[_]hir.TypeId{}, .return_type = i32_ty, .body = call_expr_id, .span = span };
+    try crate.items.append(crate.allocator(), .{ .id = 1, .kind = .{ .Function = main_fn }, .span = span });
+
+    var mir_crate = try lowerFromHir(allocator, &crate, &diagnostics);
+    defer mir_crate.deinit();
+
+    try std.testing.expect(!diagnostics.hasErrors());
+    const mir_fn = mir_crate.fns.items[0];
+    try std.testing.expect(mir_fn.blocks[0].insts.len >= 1);
+    const call_inst = mir_fn.blocks[0].insts[0];
+    try std.testing.expect(call_inst.kind == .Call);
+    const first_arg = call_inst.kind.Call.args[0];
+    try std.testing.expect(first_arg == .ImmString);
+    try std.testing.expectEqualStrings("value: %d", first_arg.ImmString);
 }
 
 fn ensureType(crate: *hir.Crate, kind: hir.Type.Kind) hir.TypeId {

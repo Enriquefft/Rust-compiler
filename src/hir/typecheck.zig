@@ -500,10 +500,36 @@ fn checkExpr(
             const maybe_def_id = findStructDef(crate, init.path);
             if (maybe_def_id) |def_id| {
                 const struct_item = crate.items.items[def_id].kind.Struct;
+                const unknown_ty = try ensureType(crate, .Unknown);
+                const inferred_args = try crate.allocator().alloc(hir.TypeId, struct_item.type_params.len);
+                @memset(inferred_args, unknown_ty);
                 for (init.fields) |field_init| {
                     const value_ty = try checkExpr(crate, field_init.value, diagnostics, locals, in_unsafe);
                     const expected_ty = findFieldType(struct_item, field_init.name);
                     if (expected_ty) |ty| {
+                        const expected_kind = if (ty < crate.types.items.len) crate.types.items[ty].kind else null;
+                        if (expected_kind) |kind| {
+                            if (kind == .Path) {
+                                const path_info = kind.Path;
+                                if (path_info.segments.len == 1) {
+                                    if (findStructTypeParamIndex(struct_item, path_info.segments[0])) |param_idx| {
+                                        const inferred = inferred_args[param_idx];
+                                        if (isUnknown(crate, inferred)) {
+                                            inferred_args[param_idx] = value_ty;
+                                        } else if (!typesCompatible(crate, inferred, value_ty)) {
+                                            diagnostics.reportError(span, "struct field type mismatch");
+                                        }
+
+                                        const compare_ty = inferred_args[param_idx];
+                                        if (!isUnknown(crate, compare_ty) and !typesCompatible(crate, compare_ty, value_ty)) {
+                                            diagnostics.reportError(span, "struct field type mismatch");
+                                        }
+                                        continue;
+                                    }
+                                }
+                            }
+                        }
+
                         if (!typesCompatible(crate, ty, value_ty)) {
                             diagnostics.reportError(span, "struct field type mismatch");
                         }
@@ -512,7 +538,7 @@ fn checkExpr(
                     }
                 }
 
-                expr.ty = try ensureType(crate, .{ .Struct = .{ .def_id = def_id, .type_args = &[_]hir.TypeId{} } });
+                expr.ty = try ensureType(crate, .{ .Struct = .{ .def_id = def_id, .type_args = inferred_args } });
             } else {
                 diagnostics.reportError(span, "unknown struct initializer");
                 expr.ty = try ensureType(crate, .Unknown);
@@ -663,15 +689,25 @@ fn resolveType(crate: *hir.Crate, ty: hir.TypeId) hir.TypeId {
                         },
                         .Struct => |struct_item| {
                             if (std.mem.eql(u8, struct_item.name, name)) {
-                                // Find or create a Struct type for this def_id
+                                const def_id: hir.DefId = @intCast(idx);
+                                // Find or create a Struct type for this def_id and argument list
                                 for (crate.types.items) |existing| {
-                                    if (existing.kind == .Struct and existing.kind.Struct.def_id == @as(hir.DefId, @intCast(idx))) {
+                                    if (existing.kind == .Struct and existing.kind.Struct.def_id == def_id and std.mem.eql(hir.TypeId, existing.kind.Struct.type_args, path.args)) {
                                         return existing.id;
                                     }
                                 }
-                                // No existing struct type found, return the path type as-is
-                                // (the struct type should have been created during HIR lowering)
-                                return ty;
+
+                                // Create a monomorphized struct type with the concrete arguments seen on the path
+                                var copied_args = std.ArrayListUnmanaged(hir.TypeId){};
+                                defer copied_args.deinit(crate.allocator());
+                                for (path.args) |arg| {
+                                    copied_args.append(crate.allocator(), arg) catch return ty;
+                                }
+                                const owned_args = copied_args.toOwnedSlice(crate.allocator()) catch return ty;
+
+                                const struct_ty_id = crate.types.items.len;
+                                crate.types.appendAssumeCapacity(.{ .id = @intCast(struct_ty_id), .kind = .{ .Struct = .{ .def_id = def_id, .type_args = owned_args } } });
+                                return @intCast(struct_ty_id);
                             }
                         },
                         else => {},
@@ -890,6 +926,37 @@ fn findFieldType(structure: hir.Struct, name: []const u8) ?hir.TypeId {
     return null;
 }
 
+// Returns the index of a type parameter on a struct definition.
+fn findStructTypeParamIndex(structure: hir.Struct, type_name: []const u8) ?usize {
+    for (structure.type_params, 0..) |param, idx| {
+        if (std.mem.eql(u8, param, type_name)) return idx;
+    }
+    return null;
+}
+
+fn resolveStructFieldType(
+    crate: *hir.Crate,
+    structure: hir.Struct,
+    type_args: []const hir.TypeId,
+    field_ty: hir.TypeId,
+) Error!hir.TypeId {
+    if (field_ty >= crate.types.items.len) return ensureType(crate, .Unknown);
+    const field_kind = crate.types.items[field_ty].kind;
+    if (field_kind == .Path) {
+        const path_info = field_kind.Path;
+        if (path_info.segments.len == 1) {
+            if (findStructTypeParamIndex(structure, path_info.segments[0])) |param_idx| {
+                if (param_idx < type_args.len) {
+                    const arg_ty = type_args[param_idx];
+                    if (!isUnknown(crate, arg_ty)) return arg_ty;
+                }
+                return ensureType(crate, .Unknown);
+            }
+        }
+    }
+    return field_ty;
+}
+
 // Resolves the type of a field access expression.
 // First checks for struct fields, then for methods in impl blocks.
 fn resolveFieldType(crate: *hir.Crate, ty: hir.TypeId, name: []const u8, span: hir.Span, diagnostics: *diag.Diagnostics) Error!hir.TypeId {
@@ -911,23 +978,8 @@ fn resolveFieldType(crate: *hir.Crate, ty: hir.TypeId, name: []const u8, span: h
                 if (item.kind == .Struct) {
                     // First check for fields
                     if (findFieldType(item.kind.Struct, name)) |field_ty| {
-                        // Check if the field type is a type parameter (Path that's not a known type)
-                        // If so, default to i64 for basic generic support
-                        if (field_ty < crate.types.items.len) {
-                            const field_type_kind = crate.types.items[field_ty].kind;
-                            if (field_type_kind == .Path) {
-                                const path_info = field_type_kind.Path;
-                                if (path_info.segments.len == 1) {
-                                    const type_name = path_info.segments[0];
-                                    // Use declared type params for proper detection
-                                    if (isDeclaredTypeParam(crate, type_name) or !isKnownTypeName(crate, type_name)) {
-                                        // Type parameter - use default i64 type
-                                        return ensureType(crate, .{ .PrimInt = .I64 });
-                                    }
-                                }
-                            }
-                        }
-                        return field_ty;
+                        const resolved = try resolveStructFieldType(crate, item.kind.Struct, info.type_args, field_ty);
+                        return resolved;
                     }
 
                     // If no field found, check for methods in impl blocks
@@ -952,22 +1004,12 @@ fn resolveFieldType(crate: *hir.Crate, ty: hir.TypeId, name: []const u8, span: h
                         if (std.mem.eql(u8, struct_item.name, struct_name)) {
                             // Found the struct - check for field
                             if (findFieldType(struct_item, name)) |field_ty| {
-                                // Check if the field type is a type parameter
-                                if (field_ty < crate.types.items.len) {
-                                    const field_type_kind = crate.types.items[field_ty].kind;
-                                    if (field_type_kind == .Path) {
-                                        const path_info = field_type_kind.Path;
-                                        if (path_info.segments.len == 1) {
-                                            const type_name = path_info.segments[0];
-                                            // Use declared type params for proper detection
-                                            if (isDeclaredTypeParam(crate, type_name) or !isKnownTypeName(crate, type_name)) {
-                                                // Type parameter - use default i64 type
-                                                return ensureType(crate, .{ .PrimInt = .I64 });
-                                            }
-                                        }
-                                    }
-                                }
-                                return field_ty;
+                                const resolved_type_args = if (path.args.len == struct_item.type_params.len)
+                                    path.args
+                                else
+                                    &[_]hir.TypeId{};
+                                const resolved = try resolveStructFieldType(crate, struct_item, resolved_type_args, field_ty);
+                                return resolved;
                             }
 
                             // Check for methods
@@ -1357,6 +1399,111 @@ test "typechecker handles composite expressions" {
     try std.testing.expectEqual(struct_ty, try checkExpr(&crate, struct_init_expr_id, &diagnostics, &locals, false));
     try std.testing.expectEqual(i64_ty, try checkExpr(&crate, field_expr_id, &diagnostics, &locals, false));
     try std.testing.expect(!diagnostics.hasErrors());
+}
+
+test "typechecker infers generic struct field types from init values" {
+    const allocator = std.testing.allocator;
+    var diagnostics = diag.Diagnostics.init(allocator);
+    defer diagnostics.deinit();
+
+    var crate = hir.Crate.init(allocator);
+    defer crate.deinit();
+
+    const span = hir.emptySpan(0);
+
+    const bool_ty = try ensureType(&crate, .Bool);
+    const type_params = try crate.allocator().alloc([]const u8, 1);
+    type_params[0] = "T";
+
+    const t_segments = try crate.allocator().alloc([]const u8, 1);
+    t_segments[0] = "T";
+    const generic_ty = try ensureType(&crate, .{ .Path = .{ .segments = t_segments, .args = &[_]hir.TypeId{} } });
+
+    const struct_fields = try crate.allocator().alloc(hir.Field, 1);
+    struct_fields[0] = .{ .name = "value", .ty = generic_ty, .span = span };
+
+    try crate.items.append(crate.allocator(), .{ .id = 0, .kind = .{ .Struct = .{ .def_id = 0, .name = "Boxed", .type_params = type_params, .fields = struct_fields, .span = span } }, .span = span });
+
+    const bool_expr_id: hir.ExprId = @intCast(crate.exprs.items.len);
+    try crate.exprs.append(crate.allocator(), .{ .id = bool_expr_id, .kind = .{ .ConstBool = true }, .ty = 0, .span = span });
+
+    const struct_fields_init = try crate.allocator().alloc(hir.StructInitField, 1);
+    struct_fields_init[0] = .{ .name = "value", .value = bool_expr_id };
+    const path_segments = try crate.allocator().alloc([]const u8, 1);
+    path_segments[0] = "Boxed";
+    const struct_init_expr_id: hir.ExprId = @intCast(crate.exprs.items.len);
+    try crate.exprs.append(crate.allocator(), .{ .id = struct_init_expr_id, .kind = .{ .StructInit = .{ .path = path_segments, .fields = struct_fields_init } }, .ty = 0, .span = span });
+
+    const field_expr_id: hir.ExprId = @intCast(crate.exprs.items.len);
+    try crate.exprs.append(crate.allocator(), .{ .id = field_expr_id, .kind = .{ .Field = .{ .target = struct_init_expr_id, .name = "value" } }, .ty = 0, .span = span });
+
+    var locals = std.AutoHashMap(hir.LocalId, hir.TypeId).init(crate.allocator());
+    defer locals.deinit();
+
+    const struct_ty = try checkExpr(&crate, struct_init_expr_id, &diagnostics, &locals, false);
+    try std.testing.expectEqual(bool_ty, try checkExpr(&crate, field_expr_id, &diagnostics, &locals, false));
+
+    try std.testing.expect(!diagnostics.hasErrors());
+
+    const struct_kind = crate.types.items[struct_ty].kind;
+    try std.testing.expect(struct_kind == .Struct);
+    try std.testing.expectEqual(@as(usize, 1), struct_kind.Struct.type_args.len);
+    try std.testing.expectEqual(bool_ty, struct_kind.Struct.type_args[0]);
+}
+
+test "typechecker reports conflicts when generic fields infer different types" {
+    const allocator = std.testing.allocator;
+    var diagnostics = diag.Diagnostics.init(allocator);
+    defer diagnostics.deinit();
+
+    var crate = hir.Crate.init(allocator);
+    defer crate.deinit();
+
+    const span = hir.emptySpan(0);
+
+    const bool_ty = try ensureType(&crate, .Bool);
+    const i64_ty = try ensureType(&crate, .{ .PrimInt = .I64 });
+
+    const type_params = try crate.allocator().alloc([]const u8, 1);
+    type_params[0] = "T";
+
+    const t_segments = try crate.allocator().alloc([]const u8, 1);
+    t_segments[0] = "T";
+    const generic_ty = try ensureType(&crate, .{ .Path = .{ .segments = t_segments, .args = &[_]hir.TypeId{} } });
+
+    const struct_fields = try crate.allocator().alloc(hir.Field, 2);
+    struct_fields[0] = .{ .name = "first", .ty = generic_ty, .span = span };
+    struct_fields[1] = .{ .name = "second", .ty = generic_ty, .span = span };
+
+    try crate.items.append(crate.allocator(), .{ .id = 0, .kind = .{ .Struct = .{ .def_id = 0, .name = "Pair", .type_params = type_params, .fields = struct_fields, .span = span } }, .span = span });
+
+    const int_expr_id: hir.ExprId = @intCast(crate.exprs.items.len);
+    try crate.exprs.append(crate.allocator(), .{ .id = int_expr_id, .kind = .{ .ConstInt = 1 }, .ty = 0, .span = span });
+
+    const bool_expr_id: hir.ExprId = @intCast(crate.exprs.items.len);
+    try crate.exprs.append(crate.allocator(), .{ .id = bool_expr_id, .kind = .{ .ConstBool = true }, .ty = 0, .span = span });
+
+    const struct_fields_init = try crate.allocator().alloc(hir.StructInitField, 2);
+    struct_fields_init[0] = .{ .name = "first", .value = int_expr_id };
+    struct_fields_init[1] = .{ .name = "second", .value = bool_expr_id };
+    const path_segments = try crate.allocator().alloc([]const u8, 1);
+    path_segments[0] = "Pair";
+
+    const struct_init_expr_id: hir.ExprId = @intCast(crate.exprs.items.len);
+    try crate.exprs.append(crate.allocator(), .{ .id = struct_init_expr_id, .kind = .{ .StructInit = .{ .path = path_segments, .fields = struct_fields_init } }, .ty = 0, .span = span });
+
+    var locals = std.AutoHashMap(hir.LocalId, hir.TypeId).init(crate.allocator());
+    defer locals.deinit();
+
+    _ = try checkExpr(&crate, struct_init_expr_id, &diagnostics, &locals, false);
+
+    try std.testing.expect(diagnostics.hasErrors());
+
+    const struct_kind = crate.types.items[crate.exprs.items[struct_init_expr_id].ty].kind;
+    try std.testing.expect(struct_kind == .Struct);
+    try std.testing.expectEqual(@as(usize, 1), struct_kind.Struct.type_args.len);
+    try std.testing.expectEqual(i64_ty, struct_kind.Struct.type_args[0]);
+    try std.testing.expect(!typesCompatible(&crate, struct_kind.Struct.type_args[0], bool_ty));
 }
 
 test "typechecker reports invalid expressions" {

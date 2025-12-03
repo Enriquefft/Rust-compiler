@@ -13,6 +13,7 @@ const mir_lower = @import("mir/lower.zig");
 const mir_passes = @import("mir/passes/passes.zig");
 const mir_printer = @import("mir/mir_printer.zig");
 const backend = @import("backend/backend.zig");
+const ChildProcess = std.process.Child;
 
 pub const CompileStatus = enum {
     success,
@@ -193,11 +194,12 @@ pub fn compileFile(options: CompileOptions) !CompileResult {
                 // Write assembly text into the output file.
                 try writeArtifact(options.output_path, artifact.assembly),
 
-                .object =>
-                // Not implemented – emit diagnostic error in the source file.
-                diagnostics.reportError(
+                .object => emitObject(
+                    options.output_path,
+                    artifact.assembly,
+                    options.allocator,
+                    &diagnostics,
                     .{ .file_id = file_id, .start = 0, .end = 0 },
-                    "object emission is not implemented yet",
                 ),
             }
         }
@@ -249,6 +251,106 @@ fn writeArtifact(path: []const u8, contents: []const u8) !void {
     var file = try std.fs.cwd().createFile(path, .{ .truncate = true });
     defer file.close();
     try file.writeAll(contents);
+}
+
+fn emitObject(
+    path: []const u8,
+    assembly: []const u8,
+    allocator: std.mem.Allocator,
+    diagnostics: *diag.Diagnostics,
+    span: source_map.Span,
+) void {
+    var stderr_buf = std.ArrayList(u8).empty;
+    defer stderr_buf.deinit(allocator);
+
+    const result = writeObjectFromAssembly(path, assembly, allocator, &stderr_buf) catch |err| {
+        const detail = if (stderr_buf.items.len > 0)
+            std.mem.trimRight(u8, stderr_buf.items, &[_]u8{'\n'})
+        else
+            null;
+
+        const message = if (detail) |info|
+            std.fmt.allocPrint(allocator, "failed to emit object ({s}): {s}", .{ @errorName(err), info }) catch "failed to emit object"
+        else
+            std.fmt.allocPrint(allocator, "failed to emit object ({s})", .{@errorName(err)}) catch "failed to emit object";
+        defer if (message.ptr != "failed to emit object"[0..].ptr) allocator.free(message);
+
+        diagnostics.reportError(span, message);
+        return;
+    };
+    defer result.cleanup(allocator);
+
+    if (result.term != .Exited or result.term.Exited != 0) {
+        const message = if (result.stderr.len > 0)
+            std.fmt.allocPrint(allocator, "object writer exited with {d}: {s}", .{ result.term_code(), result.stderr }) catch "object writer exited with an error"
+        else
+            std.fmt.allocPrint(allocator, "object writer exited with {d}", .{result.term_code()}) catch "object writer exited with an error";
+        defer if (message.ptr != "object writer exited with an error"[0..].ptr) allocator.free(message);
+
+        diagnostics.reportError(span, message);
+        return;
+    }
+}
+
+const ObjectWriteResult = struct {
+    term: std.process.Child.Term,
+    stdout: []u8,
+    stderr: []u8,
+
+    fn cleanup(self: ObjectWriteResult, allocator: std.mem.Allocator) void {
+        allocator.free(self.stdout);
+        allocator.free(self.stderr);
+    }
+
+    fn term_code(self: ObjectWriteResult) u32 {
+        return switch (self.term) {
+            .Exited => |code| code,
+            .Signal => |sig| sig,
+            .Stopped => |code| code,
+            .Unknown => |code| code,
+        };
+    }
+};
+
+fn writeObjectFromAssembly(
+    path: []const u8,
+    assembly: []const u8,
+    allocator: std.mem.Allocator,
+    stderr_buf: *std.ArrayList(u8),
+) !ObjectWriteResult {
+    var child = ChildProcess.init(
+        &.{ "zig", "cc", "-x", "assembler", "-c", "-", "-o", path },
+        allocator,
+    );
+    child.stdin_behavior = .Pipe;
+    child.stdout_behavior = .Pipe;
+    child.stderr_behavior = .Pipe;
+
+    try child.spawn();
+    errdefer {
+        _ = child.kill() catch {};
+        _ = child.wait() catch {};
+    }
+
+    if (child.stdin) |stdin_file| {
+        try stdin_file.writeAll(assembly);
+        stdin_file.close();
+        child.stdin = null;
+    }
+
+    var stdout_buf = std.ArrayList(u8).empty;
+    defer stdout_buf.deinit(allocator);
+
+    try child.collectOutput(allocator, &stdout_buf, stderr_buf, std.math.maxInt(usize));
+
+    const term = try child.wait();
+
+    const stdout_owned = try stdout_buf.toOwnedSlice(allocator);
+    errdefer allocator.free(stdout_owned);
+    const stderr_owned = try stderr_buf.toOwnedSlice(allocator);
+    errdefer allocator.free(stderr_owned);
+
+    return .{ .term = term, .stdout = stdout_owned, .stderr = stderr_owned };
 }
 
 fn printTokens(tokens_slice: []const tokens.Token) void {
@@ -392,6 +494,55 @@ test "compileFile writes backend artifact to file" {
     const contents = try std.fs.cwd().readFileAlloc(allocator, out_path, std.math.maxInt(usize));
     defer allocator.free(contents);
     try std.testing.expectEqualSlices(u8, artifact.assembly, contents);
+}
+
+test "compileFile emits object file" {
+    const allocator = std.testing.allocator;
+    const out_path = "emitted_output.o";
+    std.fs.cwd().deleteFile(out_path) catch {};
+
+    var result = try compileFile(.{
+        .allocator = allocator,
+        .input_path = "test.rs",
+        .output_path = out_path,
+        .opt_level = .basic,
+        .emit = .object,
+        .emit_diagnostics = false,
+        .exit_on_error = false,
+        .source_override = "fn main() {}",
+    });
+    defer {
+        std.fs.cwd().deleteFile(out_path) catch {};
+        result.deinit();
+    }
+
+    try std.testing.expectEqual(CompileStatus.success, result.status);
+    const contents = try std.fs.cwd().readFileAlloc(allocator, out_path, std.math.maxInt(usize));
+    defer allocator.free(contents);
+    try std.testing.expect(contents.len >= 4);
+    try std.testing.expect(std.mem.eql(u8, contents[0..4], "\x7fELF"));
+}
+
+test "compileFile surfaces diagnostics when object emission fails" {
+    const allocator = std.testing.allocator;
+    const out_path = "missing_dir/out.o";
+    std.fs.cwd().deleteFile(out_path) catch {};
+
+    var result = try compileFile(.{
+        .allocator = allocator,
+        .input_path = "test.rs",
+        .output_path = out_path,
+        .opt_level = .basic,
+        .emit = .object,
+        .emit_diagnostics = false,
+        .exit_on_error = false,
+        .source_override = "fn main() {}",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqual(CompileStatus.errors, result.status);
+    try std.testing.expect(result.diagnostics.hasErrors());
+    try std.testing.expectError(error.FileNotFound, std.fs.cwd().openFile(out_path, .{}));
 }
 
 test "compileFile handles unsafe block with statements" {

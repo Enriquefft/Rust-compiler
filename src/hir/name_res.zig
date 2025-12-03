@@ -25,6 +25,20 @@ const hir = @import("hir.zig");
 /// Error type for name resolution operations (currently only allocation errors).
 const Error = error{OutOfMemory};
 
+/// Description of a builtin macro that should be available during name resolution.
+const BuiltinMacroSpec = struct {
+    name: []const u8,
+    handler: hir.BuiltinMacroHandler,
+};
+
+/// Registry of builtin macros and their lowering handlers.
+const builtin_macro_specs = [_]BuiltinMacroSpec{
+    .{ .name = "println", .handler = .println },
+    .{ .name = "print", .handler = .print },
+    .{ .name = "format", .handler = .format },
+    .{ .name = "eprintln", .handler = .eprintln },
+};
+
 /// Resolves all names in the given HIR crate.
 ///
 /// This function populates the module-level symbol table with all top-level items,
@@ -34,20 +48,22 @@ const Error = error{OutOfMemory};
 /// - `crate`: The HIR crate to perform name resolution on (modified in place).
 /// - `diagnostics`: Diagnostics collector for error reporting.
 pub fn resolve(crate: *hir.Crate, diagnostics: *diag.Diagnostics) Error!void {
-    const println_def = try ensureBuiltinPrintln(crate);
+    const builtin_macros = try ensureBuiltinMacros(crate);
+    defer crate.allocator().free(builtin_macros);
+
+    try crate.builtin_macros.ensureTotalCapacity(crate.allocator(), @intCast(builtin_macros.len));
+
+    for (builtin_macros) |builtin| {
+        try crate.builtin_macros.put(crate.allocator(), builtin.def_id, builtin.handler);
+    }
 
     var module_symbols = std.StringHashMap(hir.DefId).init(crate.allocator());
     defer module_symbols.deinit();
 
-    try module_symbols.put(println_def.name, println_def.def_id);
-
     // Populate the module-level symbol table and catch duplicate items.
     for (crate.items.items) |item| {
         switch (item.kind) {
-            .Function => |func| {
-                if (func.def_id == println_def.def_id and func.body == null) continue;
-                try insertGlobal(&module_symbols, func.name, func.def_id, item.span, diagnostics);
-            },
+            .Function => |func| try insertGlobal(&module_symbols, func.name, func.def_id, item.span, diagnostics),
             .Struct => |structure| try insertGlobal(&module_symbols, structure.name, structure.def_id, item.span, diagnostics),
             .TypeAlias => |alias| try insertGlobal(&module_symbols, alias.name, alias.def_id, item.span, diagnostics),
             .Const => |const_item| try insertGlobal(&module_symbols, const_item.name, const_item.def_id, item.span, diagnostics),
@@ -82,20 +98,29 @@ pub fn resolve(crate: *hir.Crate, diagnostics: *diag.Diagnostics) Error!void {
     }
 }
 
-/// Helper struct to hold builtin function info.
-const Builtin = struct { name: []const u8, def_id: hir.DefId };
+/// Resolved builtin macro entry with the corresponding handler.
+const BuiltinMacroEntry = struct { name: []const u8, def_id: hir.DefId, handler: hir.BuiltinMacroHandler };
 
-// Ensures the builtin println function exists in the crate.
-// If not present, adds a synthetic println function declaration.
-fn ensureBuiltinPrintln(crate: *hir.Crate) Error!Builtin {
+// Ensures all builtin macros exist in the crate and returns their definitions.
+fn ensureBuiltinMacros(crate: *hir.Crate) Error![]BuiltinMacroEntry {
+    var entries = try crate.allocator().alloc(BuiltinMacroEntry, builtin_macro_specs.len);
+
+    for (builtin_macro_specs, 0..) |spec, idx| {
+        entries[idx] = try ensureBuiltinMacro(crate, spec);
+    }
+
+    return entries;
+}
+
+fn ensureBuiltinMacro(crate: *hir.Crate, spec: BuiltinMacroSpec) Error!BuiltinMacroEntry {
     for (crate.items.items) |item| {
-        if (item.kind == .Function and std.mem.eql(u8, item.kind.Function.name, "println")) {
-            return .{ .name = item.kind.Function.name, .def_id = item.id };
+        if (item.kind == .Function and std.mem.eql(u8, item.kind.Function.name, spec.name)) {
+            return .{ .name = item.kind.Function.name, .def_id = item.id, .handler = spec.handler };
         }
     }
 
     const id: hir.DefId = @intCast(crate.items.items.len);
-    const name = try crate.allocator().dupe(u8, "println");
+    const name = try crate.allocator().dupe(u8, spec.name);
     const span = hir.emptySpan(0);
     // Creates a synthetic function with no body - body = null indicates builtin
     const func: hir.Function = .{
@@ -109,7 +134,7 @@ fn ensureBuiltinPrintln(crate: *hir.Crate) Error!Builtin {
         .span = span,
     };
     try crate.items.append(crate.allocator(), .{ .id = id, .kind = .{ .Function = func }, .span = span });
-    return .{ .name = name, .def_id = id };
+    return .{ .name = name, .def_id = id, .handler = spec.handler };
 }
 
 // Inserts a global symbol into the module symbol table.
@@ -518,5 +543,34 @@ test "name resolution binds function parameters" {
     switch (crate.exprs.items[param_ref_id].kind) {
         .LocalRef => |local_id| try std.testing.expectEqual(@as(hir.LocalId, 0), local_id),
         else => try std.testing.expect(false),
+    }
+}
+
+test "builtin macro registry populates handlers" {
+    const allocator = std.testing.allocator;
+    var diagnostics = diag.Diagnostics.init(allocator);
+    defer diagnostics.deinit();
+
+    var crate = hir.Crate.init(allocator);
+    defer crate.deinit();
+
+    try resolve(&crate, &diagnostics);
+    try std.testing.expect(!diagnostics.hasErrors());
+    try std.testing.expectEqual(builtin_macro_specs.len, crate.builtin_macros.count());
+
+    for (builtin_macro_specs) |spec| {
+        var found = false;
+        for (crate.items.items) |item| {
+            if (item.kind == .Function and std.mem.eql(u8, item.kind.Function.name, spec.name)) {
+                const handler = crate.builtin_macros.get(item.id) orelse {
+                    try std.testing.expect(false);
+                    break;
+                };
+                try std.testing.expectEqual(spec.handler, handler);
+                found = true;
+                break;
+            }
+        }
+        try std.testing.expect(found);
     }
 }

@@ -91,34 +91,11 @@ const mangled_name = std.fmt.bufPrint(&mangled_buf, "{s}_{s}", .{ type_name, met
 
 ## Bandaid and Temporary Solutions
 
-### 1. Generic Type Parameter Handling (`src/mir/lower.zig`)
+### ~~1. Generic Type Parameter Handling (`src/mir/lower.zig`)~~
 
-**Status**: ⚠️ PARTIALLY IMPROVED - Limits increased but heuristic remains
+**Status**: ✅ FIXED - Limits removed and monomorphization threaded into lowering
 
-**Location**: Lines 105-171
-
-```zig
-// Check if this is a generic type parameter (single letter like T, U, V)
-// Generic params are typically single uppercase letters
-if (struct_name.len == 1 and struct_name[0] >= 'A' and struct_name[0] <= 'Z') {
-    is_generic_param = true;
-}
-// ...
-// For generic type parameters (T, U, etc.), assume they might be structs
-// and allocate space for ASSUMED_GENERIC_STRUCT_FIELDS fields
-// This is a workaround for lack of full monomorphization
-```
-
-**Issues**:
-- Detects generic params by checking for single uppercase letters (naive heuristic)
-- Now assumes 4 fields per generic type parameter (increased from 2 via `src/shared_consts.zig`)
-- No actual monomorphization - just guesses at runtime
-
-**Impact**: Generic types with >4 fields may still corrupt memory; non-struct generic types waste space. However, the increased limit (from 2 to 4) reduces the likelihood of corruption.
-
-**Example of corruption**: If a generic function receives a 5-field struct, only the first 4 fields are stored. When the function returns or accesses the struct, the 5th field contains garbage from stack memory, potentially causing incorrect calculations or crashes.
-
-**Recommendation**: Implement proper monomorphization or at minimum, track generic constraints.
+Generic parameters are now tracked through type resolution, creating monomorphized struct types from concrete arguments. MIR lowering uses real struct field layouts instead of single-letter heuristics or fixed field assumptions.
 
 ---
 
@@ -150,27 +127,11 @@ if (rhs_kind == .Path) {
 
 ---
 
-### 3. Type Parameter Field Access Default (`src/hir/typecheck.zig`)
+### ~~3. Type Parameter Field Access Default (`src/hir/typecheck.zig`)~~
 
-**Location**: Lines 884-894, 920-930
+**Status**: ✅ FIXED - Generic struct field types are inferred from instantiation context instead of defaulting to `i64`.
 
-```zig
-// Check if the field type is a type parameter (Path that's not a known type)
-// If so, default to i64 for basic generic support
-if (field_type_kind == .Path) {
-    const path_info = field_type_kind.Path;
-    if (path_info.segments.len == 1 and !isKnownTypeName(crate, path_info.segments[0])) {
-        // Type parameter - use default i64 type
-        return ensureType(crate, .{ .PrimInt = .I64 });
-    }
-}
-```
-
-**Issues**:
-- Generic field types default to `i64` regardless of actual usage
-- Will produce wrong types for float, string, bool, or struct generic parameters
-
-**Recommendation**: Infer generic parameter types from actual usage sites.
+Field accesses now reuse inferred or explicit type arguments from the struct type, and generic parameters inside struct initializers are resolved using the initializer value types. Remaining work is broader generic constraint tracking beyond simple type parameter substitution.
 
 ---
 
@@ -198,60 +159,21 @@ fn getSequentialFieldIndex(name: []const u8) i32 {
 
 ---
 
-### 5. Builtin println Detection (`src/hir/name_res.zig`)
+### ~~5. Builtin println Detection (`src/hir/name_res.zig`)~~
 
-**Location**: Lines 87-103
+**Status**: ✅ FIXED - Builtin macros now use a registry with lowering handlers
 
-```zig
-fn ensureBuiltinPrintln(crate: *hir.Crate) Error!Builtin {
-    for (crate.items.items) |item| {
-        if (item.kind == .Function and std.mem.eql(u8, item.kind.Function.name, "println")) {
-            return .{ .name = item.kind.Function.name, .def_id = item.id };
-        }
-    }
-
-    const id: hir.DefId = @intCast(crate.items.items.len);
-    const name = try crate.allocator().dupe(u8, "println");
-    const span = hir.emptySpan(0);
-    // Creates a synthetic function with no body - body = null indicates builtin
-    const func: hir.Function = .{
-        .def_id = id,
-        .name = name,
-        .params = &[_]hir.LocalId{},
-        .param_types = &[_]hir.TypeId{},
-        .return_type = null,
-        .body = null,
-        .span = span,
-    };
-    try crate.items.append(crate.allocator(), .{ .id = id, .kind = .{ .Function = func }, .span = span });
-    return .{ .name = name, .def_id = id };
-}
-```
-
-**Issues**:
-- Only supports `println` macro, not general macro system
-- Hardcoded function name string matching
-- No support for `print!`, `format!`, `eprintln!`, etc.
-
-**Recommendation**: Implement proper macro system or at least a registry of builtin macros.
+The ad-hoc `println` detection was replaced by a registry that installs builtin macros (`println!`, `print!`, `format!`, `eprintln!`) and records their MIR lowering handlers during name resolution. The registry feeds a def-id-to-handler map consumed by MIR lowering, removing hardcoded string comparisons and making it easy to add future macros without duplicating code.
 
 ---
 
 ## Placeholders and Incomplete Implementations
 
-### 1. Object Emission (`src/driver.zig`)
+### ~~1. Object Emission (`src/driver.zig`)~~
 
-**Location**: Lines 193-197
+**Status**: ✅ FIXED - Backend-generated assembly is now assembled into object files via Zig's toolchain with diagnostics for failures.
 
-```zig
-.object =>
-    diagnostics.reportError(
-        .{ .file_id = file_id, .start = 0, .end = 0 },
-        "object emission is not implemented yet",
-    ),
-```
-
-**Status**: Completely unimplemented - always errors.
+Object emission now feeds backend assembly into Zig's assembler to produce `.o` outputs. Errors surface as compiler diagnostics when the assembler or filesystem writes fail.
 
 ---
 
