@@ -20,31 +20,11 @@ These are quick fixes that address symptoms rather than root causes.
 
 ### 1.1 Sequential Field Index Fallback with Hardcoded Names
 
-**Location:** `src/backend/x86_64/isel.zig:62-69`
+**Status:** ✅ **FIXED**
 
-```zig
-/// Get the sequential field index for a field name.
-/// For arrays of structs with known field patterns (x=0, y=1), returns sequential index.
-/// Falls back to hash-based index for unknown field names.
-fn getSequentialFieldIndex(name: []const u8) i32 {
-    if (std.mem.eql(u8, name, "x")) return 0;
-    if (std.mem.eql(u8, name, "y")) return 1;
-    // Fallback to hash-based index
-    var hash: u32 = 0;
-    for (name) |ch| hash = hash *% 31 +% ch;
-    return @intCast(hash % MAX_STRUCT_FIELDS);
-}
-```
+**Previous Location:** `src/backend/x86_64/isel.zig:62-69`
 
-**Issue:** When struct layout is not available, the code falls back to:
-1. Hardcoded field names (`x`, `y`) - assumes all structs use these common names
-2. A hash-based index calculation that can cause collisions for unknown field names
-
-**Note:** The struct layout system now uses declaration order, so this fallback is only used when layout information is unavailable.
-
-**Impact:** Fields with hash collisions will overwrite each other's data, causing silent data corruption.
-
-**Recommendation:** Either ensure struct layouts are always available, or fail explicitly rather than using potentially incorrect offsets.
+**Resolution:** The `getSequentialFieldIndex` function with hash-based fallback has been completely removed from the codebase. The struct layout system now exclusively uses declaration order for field layout computation, ensuring stable, collision-free access. See `src/shared_consts.zig` lines 7-12 for the current field layout strategy documentation.
 
 ---
 
@@ -105,19 +85,27 @@ These are implementations marked or designed as temporary that need proper repla
 
 ### 2.1 MAX_STRUCT_FIELDS Fixed Limit
 
-**Location:** `src/shared_consts.zig:17`
+**Status:** ✅ **FIXED**
+
+**Location:** `src/shared_consts.zig:17` and `src/mir/lower.zig:37-38`
 
 ```zig
-/// Maximum number of struct fields supported.
-/// This limits local allocation for struct variables.
 pub const MAX_STRUCT_FIELDS: u32 = 16;
 ```
 
-**Issue:** Hard limit of 16 struct fields that's used throughout MIR lowering and codegen.
+**Previous Issue:** Hard limit of 16 struct fields that was used throughout MIR lowering and codegen with no error reporting.
 
-**Impact:** Structs with more than 16 fields will have incorrect behavior or silent data corruption.
+**Resolution:** The code now explicitly reports an error when a struct exceeds the limit:
+```zig
+if (struct_item.fields.len > MAX_STRUCT_FIELDS) {
+    diagnostics.reportError(struct_item.span, "struct has too many fields: maximum supported is 16");
+}
+```
+The driver checks `hasErrors()` before proceeding to code generation, so compilation stops gracefully with a clear error message instead of producing incorrect code.
 
-**Recommendation:** Compute actual struct sizes dynamically instead of using a fixed maximum.
+**Note:** The limit still exists, but the behavior is now fail-fast rather than silent corruption.
+
+**Remaining Work:** Consider computing actual struct sizes dynamically instead of using a fixed maximum.
 
 ---
 
@@ -235,27 +223,34 @@ The codebase has many patterns like:
 
 ### 3.3 getFieldIndexFromDeclaration Fallback to Zero
 
-**Location:** `src/mir/lower.zig:62-71`
+**Status:** ✅ **FIXED**
+
+**Location:** `src/mir/lower.zig:72-80`
 
 ```zig
-fn getFieldIndexFromDeclaration(fields: []const hir.Field, field_name: []const u8) hir.LocalId {
+fn getFieldIndexFromDeclaration(fields: []const hir.Field, field_name: []const u8) ?hir.LocalId {
     for (fields, 0..) |field, idx| {
         if (std.mem.eql(u8, field.name, field_name)) {
             return @intCast(idx);
         }
     }
-    // Fallback to 0 if field not found
-    return 0;
+    // Field not found - return null instead of incorrect fallback
+    return null;
 }
 ```
 
-**Issue:** Returns 0 when field is not found instead of reporting an error. While this is tested behavior (unit tests verify the fallback), it masks errors.
+**Previous Issue:** Previously returned 0 when field was not found instead of reporting an error.
 
-**Note:** This appears to be an intentional design decision based on test coverage, but still represents a semantic issue where accessing a non-existent field silently uses index 0.
+**Resolution:** The function now returns an optional type (`?hir.LocalId`). Callers handle the `null` case by reporting a proper error:
+```zig
+getFieldIndexFromDeclaration(fields, field.name) orelse blk: {
+    self.diagnostics.reportError(span, "field not found in struct definition");
+    break :blk 0;
+}
+```
+The driver checks `hasErrors()` before code generation, ensuring the program fails gracefully.
 
-**Impact:** Accessing non-existent fields silently returns the first field's data rather than flagging an error.
-
-**Recommendation:** Consider returning an optional type and handling the error case upstream.
+**Test Coverage:** Unit test at line 2717 verifies: `try std.testing.expectEqual(@as(?hir.LocalId, null), getFieldIndexFromDeclaration(&fields, "unknown"));`
 
 ---
 
@@ -432,9 +427,10 @@ fn appendUnknownType(crate: *Crate, next_type_id: *TypeId) LowerError!TypeId {
 ## 5. Summary of Priority Issues
 
 ### Critical (Data Correctness at Risk)
-1. Hash-based field index fallback can cause data corruption
-2. MAX_STRUCT_FIELDS limit silently fails for large structs
-3. getFieldIndexFromDeclaration returns 0 for missing fields
+*All critical issues have been resolved:*
+1. ✅ **FIXED** - Hash-based field index fallback can cause data corruption → Removed; uses declaration order
+2. ✅ **FIXED** - MAX_STRUCT_FIELDS limit silently fails for large structs → Now reports error and stops compilation
+3. ✅ **FIXED** - getFieldIndexFromDeclaration returns 0 for missing fields → Returns optional; callers report error
 
 ### High (Significant Functionality Gaps)
 1. Two-field struct limitation for register passing
