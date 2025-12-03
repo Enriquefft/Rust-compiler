@@ -852,14 +852,11 @@ fn resolveType(crate: *hir.Crate, ty: hir.TypeId) hir.TypeId {
                 const name = path.segments[0];
 
                 // Check for type alias first using O(1) lookup
+                // getTypeAliasDef is reliable - it only returns DefIds for TypeAlias items
                 if (crate.getTypeAliasDef(name)) |def_id| {
-                    if (def_id < crate.items.items.len) {
-                        const item = crate.items.items[def_id];
-                        if (item.kind == .TypeAlias) {
-                            // Recursively resolve in case of chained aliases
-                            return resolveType(crate, item.kind.TypeAlias.target);
-                        }
-                    }
+                    const alias = crate.items.items[def_id].kind.TypeAlias;
+                    // Recursively resolve in case of chained aliases
+                    return resolveType(crate, alias.target);
                 }
 
                 // Check for struct using O(1) lookup

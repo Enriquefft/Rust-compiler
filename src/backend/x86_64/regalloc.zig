@@ -40,6 +40,11 @@ const LiveRange = struct {
 
 /// Compute liveness information for all VRegs in a block.
 /// Returns a map from VReg to its last use instruction index within the block.
+/// Maximum number of VReg operands that can be collected from a single instruction.
+/// Most instructions use at most 2-3 operands (dst, src, and occasionally a third).
+/// 4 is chosen to accommodate binary ops (lhs, rhs) and stores (addr, src).
+const MAX_OPERANDS_PER_INST: usize = 4;
+
 fn computeLiveness(
     allocator: std.mem.Allocator,
     insts: []const machine.InstKind,
@@ -49,7 +54,7 @@ fn computeLiveness(
 
     // Forward pass: track last use of each VReg
     for (insts, 0..) |inst, idx| {
-        var operands: [4]?machine.VReg = .{ null, null, null, null };
+        var operands: [MAX_OPERANDS_PER_INST]?machine.VReg = .{ null, null, null, null };
         collectVRegsUsed(&inst, &operands);
 
         for (operands) |maybe_vreg| {
@@ -152,14 +157,15 @@ pub fn allocateRegisters(
         defer rewritten.deinit(allocator);
 
         for (block.insts, 0..) |*inst, inst_idx| {
-            // Before processing, check if any VRegs become dead after this instruction
-            // and free their registers
+            // Before processing this instruction, check if any VRegs became dead
+            // (their last use was in a prior instruction, meaning they're no longer needed)
             var it = map.iterator();
             while (it.next()) |entry| {
                 const vreg = entry.key_ptr.*;
                 const loc = entry.value_ptr.*;
                 if (liveness.get(vreg)) |live_info| {
-                    // If this VReg's last use was at a previous instruction, it's now dead
+                    // A VReg is dead after its last use, so if last_use < inst_idx,
+                    // the VReg is no longer needed and its register can be reclaimed
                     if (live_info.last_use < inst_idx and live_info.is_live) {
                         // Free the register
                         switch (loc) {
@@ -203,6 +209,14 @@ pub fn allocateRegisters(
 
 /// Liveness-aware version of rewriteOperands that uses free register tracking.
 /// This version recycles registers from dead VRegs to reduce spills.
+///
+/// NOTE: Currently optimizes Mov and Bin instructions. Other instruction types
+/// are passed through unchanged (using their original operands). Future work
+/// could extend liveness-aware allocation to all instruction types.
+///
+/// Parameters liveness and inst_idx are reserved for future per-instruction
+/// liveness decisions but are currently unused as liveness is handled at the
+/// block level in allocateRegisters.
 fn rewriteOperandsWithLiveness(
     func: *machine.MachineFn,
     allocator: std.mem.Allocator,
@@ -217,6 +231,7 @@ fn rewriteOperandsWithLiveness(
     liveness: *std.AutoHashMap(machine.VReg, LiveRange),
     inst_idx: usize,
 ) AllocError!void {
+    // Reserved for future per-instruction liveness decisions
     _ = liveness;
     _ = inst_idx;
 
@@ -972,8 +987,19 @@ fn assignWithFreeRegs(
     }
 
     // No free registers available, spill to stack
-    if (class == .gpr and free_gprs.count() == 0) {
-        diagnostics.reportError(zero_span, "ran out of registers during allocation");
+    // Note: This is a diagnostic warning, not an error that stops compilation.
+    // The register allocator will spill to stack when registers are exhausted.
+    switch (class) {
+        .gpr => {
+            if (free_gprs.count() == 0) {
+                diagnostics.reportWarning(zero_span, "GPR registers exhausted, spilling to stack");
+            }
+        },
+        .xmm => {
+            if (free_xmms.count() == 0) {
+                diagnostics.reportWarning(zero_span, "XMM registers exhausted, spilling to stack");
+            }
+        },
     }
 
     const slot_size: usize = if (class == .xmm) 2 else 1;

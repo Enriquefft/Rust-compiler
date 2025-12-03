@@ -503,7 +503,13 @@ pub const Crate = struct {
         return self.type_alias_defs.get(name);
     }
 
-    /// Build the name indexes for O(1) lookup. Call after all items are added.
+    /// Build the name indexes for O(1) lookup of structs, functions, and type aliases.
+    ///
+    /// This is a one-time setup operation that should be called once after all items
+    /// have been added to the crate (typically at the end of AST lowering).
+    /// It performs an O(n) pass over all items to populate the HashMaps.
+    ///
+    /// After calling this, getStructDef, getFnDef, and getTypeAliasDef provide O(1) lookups.
     pub fn buildNameIndexes(self: *Crate) !void {
         const alloc = self.arena.allocator();
         for (self.items.items, 0..) |item, idx| {
