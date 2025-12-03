@@ -179,6 +179,8 @@ fn lowerFn(ctx: *LowerContext, func: mir.MirFn) LowerError!machine.MachineFn {
         .blocks = try blocks.toOwnedSlice(ctx.allocator),
         .stack_size = stack_size,
         .vreg_count = vreg_count,
+        .callee_saved_gprs = std.array_list.Managed(machine.CalleeSavedGpr).init(ctx.allocator),
+        .callee_saved_xmms = std.array_list.Managed(machine.CalleeSavedXmm).init(ctx.allocator),
     };
 }
 

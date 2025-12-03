@@ -36,6 +36,7 @@ pub fn emitAssembly(allocator: std.mem.Allocator, mc: *const machine.MachineCrat
     for (mc.fns) |func| {
         try writer.print(".globl {s}\n{s}:\n", .{ func.name, func.name });
         try emitPrologue(&writer, func.stack_size);
+        try emitCalleeSavedStores(&writer, func);
 
         for (func.blocks) |block| {
             try writer.print(".L{s}_{d}:\n", .{ func.name, block.id });
@@ -44,6 +45,7 @@ pub fn emitAssembly(allocator: std.mem.Allocator, mc: *const machine.MachineCrat
             }
         }
 
+        try emitCalleeSavedRestores(&writer, func);
         try writer.writeAll("    leave\n    ret\n\n");
     }
 
@@ -60,6 +62,42 @@ fn emitPrologue(writer: anytype, stack_size: usize) !void {
     };
     if (aligned_size > 0) {
         try writer.print("    sub rsp, {d}\n", .{aligned_size});
+    }
+}
+
+fn emitCalleeSavedStores(writer: anytype, func: machine.MachineFn) !void {
+    for (func.callee_saved_gprs.items) |entry| {
+        try writer.writeAll("    mov qword ptr ");
+        try writeMem(writer, .{ .base = .rbp, .offset = entry.offset });
+        try writer.writeAll(", ");
+        try writeOperand(writer, .{ .Phys = entry.reg });
+        try writer.writeByte('\n');
+    }
+
+    for (func.callee_saved_xmms.items) |entry| {
+        try writer.writeAll("    movsd ");
+        try writeOperand(writer, .{ .Mem = .{ .base = .rbp, .offset = entry.offset } });
+        try writer.writeAll(", ");
+        try writeOperand(writer, .{ .Xmm = entry.reg });
+        try writer.writeByte('\n');
+    }
+}
+
+fn emitCalleeSavedRestores(writer: anytype, func: machine.MachineFn) !void {
+    for (func.callee_saved_gprs.items) |entry| {
+        try writer.writeAll("    mov ");
+        try writeOperand(writer, .{ .Phys = entry.reg });
+        try writer.writeAll(", ");
+        try writeOperand(writer, .{ .Mem = .{ .base = .rbp, .offset = entry.offset } });
+        try writer.writeByte('\n');
+    }
+
+    for (func.callee_saved_xmms.items) |entry| {
+        try writer.writeAll("    movsd ");
+        try writeOperand(writer, .{ .Xmm = entry.reg });
+        try writer.writeAll(", ");
+        try writeOperand(writer, .{ .Mem = .{ .base = .rbp, .offset = entry.offset } });
+        try writer.writeByte('\n');
     }
 }
 
@@ -444,6 +482,8 @@ test "emitter streams operands directly to writer" {
         .blocks = blocks,
         .stack_size = 16,
         .vreg_count = 2,
+        .callee_saved_gprs = std.array_list.Managed(machine.CalleeSavedGpr).init(std.testing.allocator),
+        .callee_saved_xmms = std.array_list.Managed(machine.CalleeSavedXmm).init(std.testing.allocator),
     };
 
     const empty_data = try std.testing.allocator.alloc(machine.DataItem, 0);
@@ -493,6 +533,8 @@ test "emitter emits rodata and extern call for printf" {
         .blocks = blocks,
         .stack_size = 0,
         .vreg_count = 0,
+        .callee_saved_gprs = std.array_list.Managed(machine.CalleeSavedGpr).init(std.testing.allocator),
+        .callee_saved_xmms = std.array_list.Managed(machine.CalleeSavedXmm).init(std.testing.allocator),
     };
 
     var externs = try std.testing.allocator.alloc([]const u8, 1);
@@ -523,6 +565,53 @@ test "emitter emits rodata and extern call for printf" {
         "    lea rdi, [rip + .Lstr0]\n" ++
         "    mov rax, 0\n" ++
         "    call printf\n" ++
+        "    leave\n    ret\n\n" ++
+        ".section .note.GNU-stack,\"\",@progbits\n";
+
+    try std.testing.expectEqualStrings(expected, assembly);
+}
+
+test "emitter saves callee-preserved registers" {
+    var blocks = try std.testing.allocator.alloc(machine.MachineBlock, 1);
+    blocks[0] = .{ .id = 0, .insts = try std.testing.allocator.alloc(machine.InstKind, 0) };
+
+    var gprs = std.array_list.Managed(machine.CalleeSavedGpr).init(std.testing.allocator);
+    try gprs.append(.{ .reg = .rbx, .offset = -8 });
+
+    var xmms = std.array_list.Managed(machine.CalleeSavedXmm).init(std.testing.allocator);
+    try xmms.append(.{ .reg = .xmm6, .offset = -24 });
+
+    var funcs = try std.testing.allocator.alloc(machine.MachineFn, 1);
+    funcs[0] = .{
+        .name = "save_demo",
+        .blocks = blocks,
+        .stack_size = 32,
+        .vreg_count = 0,
+        .callee_saved_gprs = gprs,
+        .callee_saved_xmms = xmms,
+    };
+
+    const empty_data = try std.testing.allocator.alloc(machine.DataItem, 0);
+    const empty_externs = try std.testing.allocator.alloc([]const u8, 0);
+
+    var mc = machine.MachineCrate{ .allocator = std.testing.allocator, .fns = funcs, .rodata = empty_data, .externs = empty_externs };
+    defer mc.deinit();
+
+    const assembly = try emitAssembly(std.testing.allocator, &mc);
+    defer std.testing.allocator.free(assembly);
+
+    const expected = "# x86_64 assembly\n" ++
+        ".intel_syntax noprefix\n" ++
+        ".text\n" ++
+        ".globl save_demo\n" ++
+        "save_demo:\n" ++
+        "    push rbp\n    mov rbp, rsp\n" ++
+        "    sub rsp, 32\n" ++
+        "    mov qword ptr [rbp-8], rbx\n" ++
+        "    movsd qword ptr [rbp-24], xmm6\n" ++
+        ".Lsave_demo_0:\n" ++
+        "    mov rbx, qword ptr [rbp-8]\n" ++
+        "    movsd xmm6, qword ptr [rbp-24]\n" ++
         "    leave\n    ret\n\n" ++
         ".section .note.GNU-stack,\"\",@progbits\n";
 

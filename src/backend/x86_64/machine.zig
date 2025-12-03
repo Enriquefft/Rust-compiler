@@ -46,6 +46,16 @@ pub const MemRef = struct {
     offset: i32,
 };
 
+pub const CalleeSavedGpr = struct {
+    reg: PhysReg,
+    offset: i32,
+};
+
+pub const CalleeSavedXmm = struct {
+    reg: XmmReg,
+    offset: i32,
+};
+
 pub const MOperand = union(enum) {
     VReg: VReg,
     Phys: PhysReg,
@@ -90,12 +100,17 @@ pub const MachineFn = struct {
     blocks: []MachineBlock,
     stack_size: usize,
     vreg_count: usize,
+    callee_saved_gprs: std.array_list.Managed(CalleeSavedGpr),
+    callee_saved_xmms: std.array_list.Managed(CalleeSavedXmm),
 
     pub fn deinit(self: *MachineFn, allocator: std.mem.Allocator) void {
         for (self.blocks) |*blk| {
             allocator.free(blk.insts);
         }
         allocator.free(self.blocks);
+
+        self.callee_saved_gprs.deinit();
+        self.callee_saved_xmms.deinit();
     }
 };
 

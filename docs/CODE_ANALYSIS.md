@@ -53,26 +53,11 @@ This issue has been resolved by centralizing constants in `src/shared_consts.zig
 
 ---
 
-### 2. Register Allocator: Fixed Register Set (`src/backend/x86_64/regalloc.zig`)
+### ~~2. Register Allocator: Fixed Register Set (`src/backend/x86_64/regalloc.zig`)~~
 
-**Location**: Lines 23-24
+**Status**: ✅ FIXED - Allocator now uses caller- and callee-preserved GPRs/XMMs and saves them in the prologue/epilogue.
 
-```zig
-const available = [_]machine.PhysReg{
-    .rax, .rcx, .rdx, .rsi, .rdi, .r8, .r9, .r10,
-};
-const spill_scratch: machine.PhysReg = .r11;
-```
-
-**Issues**:
-- Only 8 registers available for allocation
-- `r11` permanently reserved for spill operations
-- Callee-saved registers (`rbx`, `r12`-`r15`) not utilized
-- No floating-point register allocation (XMM registers)
-
-**Impact**: Excessive spilling for complex functions; suboptimal code generation.
-
-**Recommendation**: Implement proper callee-saved register handling and XMM allocation.
+The register allocator now distinguishes integer versus floating-point register classes, allocates XMM registers, and records callee-saved usage so the emitter can spill and restore them automatically. Scratch register selection no longer reserves `r11` globally.
 
 ---
 
