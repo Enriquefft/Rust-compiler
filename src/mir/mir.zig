@@ -204,6 +204,7 @@ pub const FieldLayout = struct {
 
 /// Layout information for a struct type.
 /// Contains field layouts computed from declaration order for stable, collision-free access.
+/// Includes a HashMap for O(1) field offset lookups by name.
 pub const StructLayout = struct {
     /// Struct name for lookup
     name: []const u8,
@@ -211,6 +212,8 @@ pub const StructLayout = struct {
     fields: []FieldLayout,
     /// Total size of the struct in bytes
     total_size: u32,
+    /// HashMap for O(1) field offset lookup by name (optional, populated lazily or during construction)
+    field_offsets: std.StringHashMapUnmanaged(i32) = .{},
 };
 
 /// A single MIR instruction with optional type and destination.
@@ -283,9 +286,15 @@ pub const MirCrate = struct {
     }
 
     /// Get the offset for a specific field in a struct.
+    /// Uses O(1) HashMap lookup if available, otherwise falls back to O(n) linear scan.
     /// Returns the field offset if found, or null otherwise.
     pub fn getFieldOffset(self: *const MirCrate, struct_name: []const u8, field_name: []const u8) ?i32 {
         const layout = self.struct_layouts.get(struct_name) orelse return null;
+        // Use HashMap for O(1) lookup if populated
+        if (layout.field_offsets.count() > 0) {
+            return layout.field_offsets.get(field_name);
+        }
+        // Fallback to linear scan (for backwards compatibility with tests)
         for (layout.fields) |field| {
             if (std.mem.eql(u8, field.name, field_name)) {
                 return field.offset;

@@ -788,6 +788,7 @@ fn typesEqual(crate: *hir.Crate, lhs: hir.TypeId, rhs: hir.TypeId) bool {
 
 /// Resolves a type through type aliases. If the type is a Path that refers to a type alias,
 /// returns the underlying type. Otherwise returns the original type.
+/// Uses O(1) HashMap lookups for struct and type alias resolution.
 fn resolveType(crate: *hir.Crate, ty: hir.TypeId) hir.TypeId {
     if (ty >= crate.types.items.len) return ty;
 
@@ -797,39 +798,38 @@ fn resolveType(crate: *hir.Crate, ty: hir.TypeId) hir.TypeId {
             // Look up the type by name (could be a type alias or struct)
             if (path.segments.len == 1) {
                 const name = path.segments[0];
-                for (crate.items.items, 0..) |item, idx| {
-                    switch (item.kind) {
-                        .TypeAlias => |alias| {
-                            if (std.mem.eql(u8, alias.name, name)) {
-                                // Recursively resolve in case of chained aliases
-                                return resolveType(crate, alias.target);
-                            }
-                        },
-                        .Struct => |struct_item| {
-                            if (std.mem.eql(u8, struct_item.name, name)) {
-                                const def_id: hir.DefId = @intCast(idx);
-                                // Find or create a Struct type for this def_id and argument list
-                                for (crate.types.items) |existing| {
-                                    if (existing.kind == .Struct and existing.kind.Struct.def_id == def_id and std.mem.eql(hir.TypeId, existing.kind.Struct.type_args, path.args)) {
-                                        return existing.id;
-                                    }
-                                }
 
-                                // Create a monomorphized struct type with the concrete arguments seen on the path
-                                var copied_args = std.ArrayListUnmanaged(hir.TypeId){};
-                                defer copied_args.deinit(crate.allocator());
-                                for (path.args) |arg| {
-                                    copied_args.append(crate.allocator(), arg) catch return ty;
-                                }
-                                const owned_args = copied_args.toOwnedSlice(crate.allocator()) catch return ty;
-
-                                const struct_ty_id = crate.types.items.len;
-                                crate.types.appendAssumeCapacity(.{ .id = @intCast(struct_ty_id), .kind = .{ .Struct = .{ .def_id = def_id, .type_args = owned_args } } });
-                                return @intCast(struct_ty_id);
-                            }
-                        },
-                        else => {},
+                // Check for type alias first using O(1) lookup
+                if (crate.getTypeAliasDef(name)) |def_id| {
+                    if (def_id < crate.items.items.len) {
+                        const item = crate.items.items[def_id];
+                        if (item.kind == .TypeAlias) {
+                            // Recursively resolve in case of chained aliases
+                            return resolveType(crate, item.kind.TypeAlias.target);
+                        }
                     }
+                }
+
+                // Check for struct using O(1) lookup
+                if (crate.getStructDef(name)) |def_id| {
+                    // Find or create a Struct type for this def_id and argument list
+                    for (crate.types.items) |existing| {
+                        if (existing.kind == .Struct and existing.kind.Struct.def_id == def_id and std.mem.eql(hir.TypeId, existing.kind.Struct.type_args, path.args)) {
+                            return existing.id;
+                        }
+                    }
+
+                    // Create a monomorphized struct type with the concrete arguments seen on the path
+                    var copied_args = std.ArrayListUnmanaged(hir.TypeId){};
+                    defer copied_args.deinit(crate.allocator());
+                    for (path.args) |arg| {
+                        copied_args.append(crate.allocator(), arg) catch return ty;
+                    }
+                    const owned_args = copied_args.toOwnedSlice(crate.allocator()) catch return ty;
+
+                    const struct_ty_id = crate.types.items.len;
+                    crate.types.appendAssumeCapacity(.{ .id = @intCast(struct_ty_id), .kind = .{ .Struct = .{ .def_id = def_id, .type_args = owned_args } } });
+                    return @intCast(struct_ty_id);
                 }
             }
             return ty;
@@ -957,14 +957,11 @@ fn pathsMatch(lhs_segments: [][]const u8, rhs_segments: [][]const u8) bool {
 }
 
 // Checks if a name refers to a known type (struct or type alias).
+// Uses O(1) HashMap lookup if index is available.
 fn isKnownTypeName(crate: *hir.Crate, type_name: []const u8) bool {
-    for (crate.items.items) |item| {
-        switch (item.kind) {
-            .Struct => |s| if (std.mem.eql(u8, s.name, type_name)) return true,
-            .TypeAlias => |a| if (std.mem.eql(u8, a.name, type_name)) return true,
-            else => {},
-        }
-    }
+    // Use O(1) lookup via name indexes
+    if (crate.getStructDef(type_name) != null) return true;
+    if (crate.getTypeAliasDef(type_name) != null) return true;
     return false;
 }
 
@@ -983,15 +980,12 @@ fn getArrayElementType(crate: *hir.Crate, ty: hir.TypeId) union(enum) { ok: hir.
 }
 
 // Finds a struct definition by its path.
+// Uses O(1) HashMap lookup if index is available.
 fn findStructDef(crate: *hir.Crate, path: [][]const u8) ?hir.DefId {
     if (path.len == 0) return null;
     const name = path[path.len - 1];
-    for (crate.items.items, 0..) |item, idx| {
-        if (item.kind == .Struct and std.mem.eql(u8, item.kind.Struct.name, name)) {
-            return @intCast(idx);
-        }
-    }
-    return null;
+    // Use O(1) lookup via name index
+    return crate.getStructDef(name);
 }
 
 // Finds the type of a field in a struct by name.
@@ -1071,13 +1065,14 @@ fn resolveFieldType(crate: *hir.Crate, ty: hir.TypeId, name: []const u8, span: h
             return ensureType(crate, .Unknown);
         },
         .Path => |path| {
-            // Try to find the struct this path refers to
+            // Try to find the struct this path refers to using O(1) lookup
             if (path.segments.len == 1) {
                 const struct_name = path.segments[0];
-                for (crate.items.items, 0..) |item, idx| {
-                    if (item.kind == .Struct) {
-                        const struct_item = item.kind.Struct;
-                        if (std.mem.eql(u8, struct_item.name, struct_name)) {
+                if (crate.getStructDef(struct_name)) |def_id| {
+                    if (def_id < crate.items.items.len) {
+                        const item = crate.items.items[def_id];
+                        if (item.kind == .Struct) {
+                            const struct_item = item.kind.Struct;
                             // Found the struct - check for field
                             if (findFieldType(struct_item, name)) |field_ty| {
                                 const resolved_type_args = if (path.args.len == struct_item.type_params.len)
@@ -1089,7 +1084,7 @@ fn resolveFieldType(crate: *hir.Crate, ty: hir.TypeId, name: []const u8, span: h
                             }
 
                             // Check for methods
-                            if (findMethodType(crate, @intCast(idx), name)) |method_ty| {
+                            if (findMethodType(crate, def_id, name)) |method_ty| {
                                 return method_ty;
                             }
 
