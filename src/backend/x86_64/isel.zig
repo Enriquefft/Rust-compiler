@@ -83,6 +83,8 @@ pub const LowerError = error{ Unsupported, OutOfMemory };
 const DataTable = struct {
     allocator: std.mem.Allocator,
     items: std.ArrayListUnmanaged(machine.DataItem) = .{},
+    /// HashMap for O(1) string deduplication lookup
+    intern_map: std.StringHashMapUnmanaged([]const u8) = .{},
 
     fn init(allocator: std.mem.Allocator) DataTable {
         return .{ .allocator = allocator };
@@ -94,16 +96,21 @@ const DataTable = struct {
             self.allocator.free(item.bytes);
         }
         self.items.deinit(self.allocator);
+        self.intern_map.deinit(self.allocator);
     }
 
+    /// Intern a string for deduplication. Uses O(1) HashMap lookup.
     fn internString(self: *DataTable, value: []const u8) ![]const u8 {
-        for (self.items.items) |item| {
-            if (std.mem.eql(u8, item.bytes, value)) return item.label;
+        // O(1) lookup for existing interned string
+        if (self.intern_map.get(value)) |label| {
+            return label;
         }
 
         const label = try std.fmt.allocPrint(self.allocator, ".Lstr{d}", .{self.items.items.len});
         const copied = try self.allocator.dupe(u8, value);
         try self.items.append(self.allocator, .{ .label = label, .bytes = copied });
+        // Store in HashMap for O(1) future lookups
+        try self.intern_map.put(self.allocator, copied, label);
         return label;
     }
 };

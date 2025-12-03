@@ -401,10 +401,33 @@ pub const Const = struct {
     span: Span,
 };
 
+/// Type interning cache for O(1) lookup of commonly used primitive types.
+/// Caches TypeIds for primitive types, Bool, Char, String, Str, and Unknown.
+/// This avoids repeated linear scans through the type arena for common types.
+pub const TypeCache = struct {
+    // Primitive integer types
+    u32_ty: ?TypeId = null,
+    u64_ty: ?TypeId = null,
+    usize_ty: ?TypeId = null,
+    i32_ty: ?TypeId = null,
+    i64_ty: ?TypeId = null,
+    // Primitive float types
+    f32_ty: ?TypeId = null,
+    f64_ty: ?TypeId = null,
+    // Other common types
+    bool_ty: ?TypeId = null,
+    char_ty: ?TypeId = null,
+    string_ty: ?TypeId = null,
+    str_ty: ?TypeId = null,
+    unknown_ty: ?TypeId = null,
+};
+
 /// The root container for all HIR data structures.
 ///
 /// A crate contains arenas for items, expressions, statements, types, and patterns.
 /// All HIR nodes are stored in these arenas and referenced by their respective IDs.
+/// Includes HashMaps for O(1) lookups of structs and functions by name.
+/// Includes type interning cache for O(1) primitive type lookups.
 pub const Crate = struct {
     /// Arena allocator for all HIR allocations.
     arena: std.heap.ArenaAllocator,
@@ -420,6 +443,14 @@ pub const Crate = struct {
     patterns: std.ArrayListUnmanaged(Pattern),
     /// Mapping of builtin macro def_ids to their lowering handlers.
     builtin_macros: std.AutoHashMapUnmanaged(DefId, BuiltinMacroHandler),
+    /// O(1) lookup for struct definitions by name.
+    struct_defs: std.StringHashMapUnmanaged(DefId) = .{},
+    /// O(1) lookup for function definitions by name.
+    fn_defs: std.StringHashMapUnmanaged(DefId) = .{},
+    /// O(1) lookup for type aliases by name.
+    type_alias_defs: std.StringHashMapUnmanaged(DefId) = .{},
+    /// Type interning cache for common primitive types (O(1) lookup).
+    type_cache: TypeCache = .{},
 
     /// Initializes a new empty crate with the given backing allocator.
     pub fn init(backing_allocator: std.mem.Allocator) Crate {
@@ -431,6 +462,10 @@ pub const Crate = struct {
             .types = .{},
             .patterns = .{},
             .builtin_macros = .{},
+            .struct_defs = .{},
+            .fn_defs = .{},
+            .type_alias_defs = .{},
+            .type_cache = .{},
         };
     }
 
@@ -442,12 +477,50 @@ pub const Crate = struct {
         self.types.deinit(self.arena.allocator());
         self.patterns.deinit(self.arena.allocator());
         self.builtin_macros.deinit(self.arena.allocator());
+        self.struct_defs.deinit(self.arena.allocator());
+        self.fn_defs.deinit(self.arena.allocator());
+        self.type_alias_defs.deinit(self.arena.allocator());
         self.arena.deinit();
     }
 
     /// Returns the arena allocator for making allocations within this crate.
     pub fn allocator(self: *Crate) std.mem.Allocator {
         return self.arena.allocator();
+    }
+
+    /// Look up a struct definition by name. O(1) if index is populated.
+    pub fn getStructDef(self: *const Crate, name: []const u8) ?DefId {
+        return self.struct_defs.get(name);
+    }
+
+    /// Look up a function definition by name. O(1) if index is populated.
+    pub fn getFnDef(self: *const Crate, name: []const u8) ?DefId {
+        return self.fn_defs.get(name);
+    }
+
+    /// Look up a type alias definition by name. O(1) if index is populated.
+    pub fn getTypeAliasDef(self: *const Crate, name: []const u8) ?DefId {
+        return self.type_alias_defs.get(name);
+    }
+
+    /// Build the name indexes for O(1) lookup of structs, functions, and type aliases.
+    ///
+    /// This is a one-time setup operation that should be called once after all items
+    /// have been added to the crate (typically at the end of AST lowering).
+    /// It performs an O(n) pass over all items to populate the HashMaps.
+    ///
+    /// After calling this, getStructDef, getFnDef, and getTypeAliasDef provide O(1) lookups.
+    pub fn buildNameIndexes(self: *Crate) !void {
+        const alloc = self.arena.allocator();
+        for (self.items.items, 0..) |item, idx| {
+            const def_id: DefId = @intCast(idx);
+            switch (item.kind) {
+                .Struct => |s| try self.struct_defs.put(alloc, s.name, def_id),
+                .Function => |f| try self.fn_defs.put(alloc, f.name, def_id),
+                .TypeAlias => |t| try self.type_alias_defs.put(alloc, t.name, def_id),
+                else => {},
+            }
+        }
     }
 };
 
@@ -491,6 +564,9 @@ pub fn lowerFromAst(allocator: std.mem.Allocator, ast_crate: ast.Crate, diagnost
             .Empty => try crate.items.append(crate.allocator(), .{ .id = @intCast(def_id), .kind = .Empty, .span = item.span }),
         }
     }
+
+    // Build name indexes for O(1) lookup of structs, functions, and type aliases
+    try crate.buildNameIndexes();
 
     return crate;
 }

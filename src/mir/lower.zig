@@ -28,6 +28,7 @@ const LOCAL_STACK_MULTIPLIER = shared.LOCAL_STACK_MULTIPLIER;
 /// Compute field layout for a struct based on declaration order.
 /// Each field is placed at sequential offsets using LOCAL_STACK_MULTIPLIER spacing.
 /// Reports an error if the struct has more than MAX_STRUCT_FIELDS fields.
+/// Populates a HashMap for O(1) field offset lookups.
 /// Returns the StructLayout or null if memory allocation fails.
 fn computeStructLayout(alloc: std.mem.Allocator, struct_item: hir.Struct, diagnostics: *diag.Diagnostics) LowerError!mir.StructLayout {
     // Check for MAX_STRUCT_FIELDS limit
@@ -41,6 +42,11 @@ fn computeStructLayout(alloc: std.mem.Allocator, struct_item: hir.Struct, diagno
     var field_layouts = std.ArrayListUnmanaged(mir.FieldLayout){};
     defer field_layouts.deinit(alloc);
 
+    // Build HashMap for O(1) field offset lookups
+    var field_offsets = std.StringHashMapUnmanaged(i32){};
+    errdefer field_offsets.deinit(alloc);
+    try field_offsets.ensureTotalCapacity(alloc, @intCast(struct_item.fields.len));
+
     var current_offset: i32 = 0;
     // Field stride: each field occupies LOCAL_STACK_MULTIPLIER * sizeof(i64) bytes
     const field_stride: i32 = @intCast(@sizeOf(i64) * LOCAL_STACK_MULTIPLIER);
@@ -53,6 +59,8 @@ fn computeStructLayout(alloc: std.mem.Allocator, struct_item: hir.Struct, diagno
             .index = @intCast(idx),
         };
         try field_layouts.append(alloc, layout);
+        // Populate HashMap for O(1) lookups
+        try field_offsets.put(alloc, field.name, current_offset);
         // Move to next field offset (negative direction for stack growth)
         current_offset -= field_stride;
     }
@@ -63,6 +71,7 @@ fn computeStructLayout(alloc: std.mem.Allocator, struct_item: hir.Struct, diagno
         .name = struct_item.name,
         .fields = try field_layouts.toOwnedSlice(alloc),
         .total_size = total_size,
+        .field_offsets = field_offsets,
     };
 }
 
