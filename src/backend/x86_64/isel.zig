@@ -19,9 +19,9 @@ const STRUCT_SECOND_FIELD_OFFSET = shared.STRUCT_SECOND_FIELD_OFFSET;
 const FIELD_STRIDE: i32 = @intCast(@sizeOf(i64) * LOCAL_STACK_MULTIPLIER);
 
 /// Get the field offset from stored struct layouts using declaration order.
-/// Falls back to computing offset from sequential index for known field patterns (x=0, y=1).
-/// Uses hash-based index only as a last resort for unknown field names.
-fn getFieldOffsetFromLayout(mir_crate: *const mir.MirCrate, struct_name: ?[]const u8, field_name: []const u8) i32 {
+/// Returns null if field layout is not found - callers should handle this case
+/// by using a default offset and/or reporting a warning.
+fn getFieldOffsetFromLayout(mir_crate: *const mir.MirCrate, struct_name: ?[]const u8, field_name: []const u8) ?i32 {
     // Try to look up from stored struct layouts first
     if (struct_name) |name| {
         if (mir_crate.getFieldOffset(name, field_name)) |offset| {
@@ -39,10 +39,8 @@ fn getFieldOffsetFromLayout(mir_crate: *const mir.MirCrate, struct_name: ?[]cons
         }
     }
     
-    // Fall back to computing offset from sequential index for common field names
-    // Convert index to offset: offset = -index * FIELD_STRIDE
-    const field_index = getSequentialFieldIndex(field_name);
-    return -field_index * FIELD_STRIDE;
+    // Field layout not found - return null instead of using potentially incorrect fallback
+    return null;
 }
 
 /// Get the struct element size from stored layouts.
@@ -54,18 +52,6 @@ fn getStructElemSize(mir_crate: *const mir.MirCrate) i64 {
         return @intCast(entry.value_ptr.total_size);
     }
     return ASSUMED_STRUCT_FIELDS * @sizeOf(i64) * LOCAL_STACK_MULTIPLIER;
-}
-
-/// Get the sequential field index for a field name.
-/// For arrays of structs with known field patterns (x=0, y=1), returns sequential index.
-/// Falls back to hash-based index for unknown field names.
-fn getSequentialFieldIndex(name: []const u8) i32 {
-    if (std.mem.eql(u8, name, "x")) return 0;
-    if (std.mem.eql(u8, name, "y")) return 1;
-    // Fallback to hash-based index
-    var hash: u32 = 0;
-    for (name) |ch| hash = hash *% 31 +% ch;
-    return @intCast(hash % MAX_STRUCT_FIELDS);
 }
 
 /// Load the second field of a struct from memory into rdx.
@@ -482,8 +468,12 @@ fn lowerInst(
                 const ptr_vreg = vreg_count.* - 1;
                 try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .VReg = ptr_vreg }, .src = ptr_mem } });
 
-                // Use stored struct layout for field offset, falling back to sequential/hash
-                const field_offset: i64 = getFieldOffsetFromLayout(ctx.mir_crate, null, payload.name);
+                // Use stored struct layout for field offset
+                // Report warning and use offset 0 if field layout not found
+                const field_offset: i64 = getFieldOffsetFromLayout(ctx.mir_crate, null, payload.name) orelse blk: {
+                    ctx.diagnostics.reportWarning(zero_span, "field layout not found, using offset 0 which may cause incorrect behavior");
+                    break :blk 0;
+                };
 
                 // Store field through the pointer
                 if (field_offset != 0) {
@@ -500,8 +490,11 @@ fn lowerInst(
                 switch (target) {
                     .Mem => |base_mem| {
                         // Use stored struct layout for field offset based on declaration order
-                        // Falls back to sequential/hash if struct layout not found
-                        const field_offset = getFieldOffsetFromLayout(ctx.mir_crate, null, payload.name);
+                        // Report warning and use offset 0 if field layout not found
+                        const field_offset = getFieldOffsetFromLayout(ctx.mir_crate, null, payload.name) orelse blk: {
+                            ctx.diagnostics.reportWarning(zero_span, "field layout not found, using offset 0 which may cause incorrect behavior");
+                            break :blk 0;
+                        };
                         const offset = base_mem.offset + field_offset;
                         const mem = machine.MOperand{ .Mem = .{ .base = base_mem.base, .offset = offset } };
                         try insts.append(ctx.allocator, .{ .Mov = .{ .dst = mem, .src = src } });
@@ -513,7 +506,11 @@ fn lowerInst(
                         if (ctx.dynamic_index_addr_map.get(vreg)) |addr_vreg| {
                             // We have the address of the array element, compute field offset from it
                             // Use stored struct layout for field offset
-                            const field_offset: i64 = getFieldOffsetFromLayout(ctx.mir_crate, null, payload.name);
+                            // Report warning and use offset 0 if field layout not found
+                            const field_offset: i64 = getFieldOffsetFromLayout(ctx.mir_crate, null, payload.name) orelse blk: {
+                                ctx.diagnostics.reportWarning(zero_span, "field layout not found, using offset 0 which may cause incorrect behavior");
+                                break :blk 0;
+                            };
 
                             // Add field offset to the base address
                             vreg_count.* += 1;
@@ -528,7 +525,11 @@ fn lowerInst(
                         } else if (ctx.index_mem_map.get(vreg)) |mem_loc| {
                             // VReg came from immediate-indexed array access, we have its memory location
                             // Use stored struct layout for field offset
-                            const field_offset: i32 = getFieldOffsetFromLayout(ctx.mir_crate, null, payload.name);
+                            // Report warning and use offset 0 if field layout not found
+                            const field_offset: i32 = getFieldOffsetFromLayout(ctx.mir_crate, null, payload.name) orelse blk: {
+                                ctx.diagnostics.reportWarning(zero_span, "field layout not found, using offset 0 which may cause incorrect behavior");
+                                break :blk 0;
+                            };
                             const offset = mem_loc.offset + field_offset;
                             const mem = machine.MOperand{ .Mem = .{ .base = mem_loc.base, .offset = offset } };
                             try insts.append(ctx.allocator, .{ .Mov = .{ .dst = mem, .src = src } });
@@ -920,8 +921,12 @@ fn lowerInst(
                     const ptr_vreg = vreg_count.* - 1;
                     try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .VReg = ptr_vreg }, .src = ptr_mem } });
 
-                    // Use stored struct layout for field offset, falling back to sequential/hash
-                    const field_offset: i64 = getFieldOffsetFromLayout(ctx.mir_crate, null, payload.name);
+                    // Use stored struct layout for field offset
+                    // Report warning and use offset 0 if field layout not found
+                    const field_offset: i64 = getFieldOffsetFromLayout(ctx.mir_crate, null, payload.name) orelse blk: {
+                        ctx.diagnostics.reportWarning(zero_span, "field layout not found, using offset 0 which may cause incorrect behavior");
+                        break :blk 0;
+                    };
 
                     // Access field through the pointer
                     if (field_offset != 0) {
@@ -940,8 +945,11 @@ fn lowerInst(
                     switch (target) {
                         .Mem => |base_mem| {
                             // Use stored struct layout for field offset based on declaration order
-                            // Falls back to sequential/hash if struct layout not found
-                            const field_offset = getFieldOffsetFromLayout(ctx.mir_crate, null, payload.name);
+                            // Report warning and use offset 0 if field layout not found
+                            const field_offset = getFieldOffsetFromLayout(ctx.mir_crate, null, payload.name) orelse blk: {
+                                ctx.diagnostics.reportWarning(zero_span, "field layout not found, using offset 0 which may cause incorrect behavior");
+                                break :blk 0;
+                            };
                             const offset = base_mem.offset + field_offset;
                             const mem = machine.MOperand{ .Mem = .{ .base = base_mem.base, .offset = offset } };
                             try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .VReg = dst }, .src = mem } });
@@ -953,7 +961,11 @@ fn lowerInst(
                             if (ctx.dynamic_index_addr_map.get(vreg)) |addr_vreg| {
                                 // We have the address of the array element, compute field offset from it
                                 // Use stored struct layout for field offset
-                                const field_offset: i64 = getFieldOffsetFromLayout(ctx.mir_crate, null, payload.name);
+                                // Report warning and use offset 0 if field layout not found
+                                const field_offset: i64 = getFieldOffsetFromLayout(ctx.mir_crate, null, payload.name) orelse blk: {
+                                    ctx.diagnostics.reportWarning(zero_span, "field layout not found, using offset 0 which may cause incorrect behavior");
+                                    break :blk 0;
+                                };
 
                                 // Add field offset to the base address and load the value
                                 vreg_count.* += 1;
@@ -970,7 +982,11 @@ fn lowerInst(
                             } else if (ctx.index_mem_map.get(vreg)) |mem_loc| {
                                 // VReg came from immediate-indexed array access, we have its memory location
                                 // Use stored struct layout for field offset
-                                const field_offset: i32 = getFieldOffsetFromLayout(ctx.mir_crate, null, payload.name);
+                                // Report warning and use offset 0 if field layout not found
+                                const field_offset: i32 = getFieldOffsetFromLayout(ctx.mir_crate, null, payload.name) orelse blk: {
+                                    ctx.diagnostics.reportWarning(zero_span, "field layout not found, using offset 0 which may cause incorrect behavior");
+                                    break :blk 0;
+                                };
                                 const offset = mem_loc.offset + field_offset;
                                 const mem = machine.MOperand{ .Mem = .{ .base = mem_loc.base, .offset = offset } };
                                 try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .VReg = dst }, .src = mem } });
