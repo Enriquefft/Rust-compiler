@@ -401,11 +401,33 @@ pub const Const = struct {
     span: Span,
 };
 
+/// Type interning cache for O(1) lookup of commonly used primitive types.
+/// Caches TypeIds for primitive types, Bool, Char, String, Str, and Unknown.
+/// This avoids repeated linear scans through the type arena for common types.
+pub const TypeCache = struct {
+    // Primitive integer types
+    u32_ty: ?TypeId = null,
+    u64_ty: ?TypeId = null,
+    usize_ty: ?TypeId = null,
+    i32_ty: ?TypeId = null,
+    i64_ty: ?TypeId = null,
+    // Primitive float types
+    f32_ty: ?TypeId = null,
+    f64_ty: ?TypeId = null,
+    // Other common types
+    bool_ty: ?TypeId = null,
+    char_ty: ?TypeId = null,
+    string_ty: ?TypeId = null,
+    str_ty: ?TypeId = null,
+    unknown_ty: ?TypeId = null,
+};
+
 /// The root container for all HIR data structures.
 ///
 /// A crate contains arenas for items, expressions, statements, types, and patterns.
 /// All HIR nodes are stored in these arenas and referenced by their respective IDs.
 /// Includes HashMaps for O(1) lookups of structs and functions by name.
+/// Includes type interning cache for O(1) primitive type lookups.
 pub const Crate = struct {
     /// Arena allocator for all HIR allocations.
     arena: std.heap.ArenaAllocator,
@@ -427,6 +449,8 @@ pub const Crate = struct {
     fn_defs: std.StringHashMapUnmanaged(DefId) = .{},
     /// O(1) lookup for type aliases by name.
     type_alias_defs: std.StringHashMapUnmanaged(DefId) = .{},
+    /// Type interning cache for common primitive types (O(1) lookup).
+    type_cache: TypeCache = .{},
 
     /// Initializes a new empty crate with the given backing allocator.
     pub fn init(backing_allocator: std.mem.Allocator) Crate {
@@ -441,6 +465,7 @@ pub const Crate = struct {
             .struct_defs = .{},
             .fn_defs = .{},
             .type_alias_defs = .{},
+            .type_cache = .{},
         };
     }
 

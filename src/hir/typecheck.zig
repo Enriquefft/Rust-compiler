@@ -721,14 +721,66 @@ fn ensurePatternBinding(crate: *hir.Crate, local_id: hir.LocalId, locals: *std.A
 }
 
 // Finds or creates a type with the given kind in the type arena.
+// Uses O(1) cache lookup for common primitive types, falls back to linear scan for complex types.
 // Returns the existing TypeId if found, otherwise creates a new type.
 fn ensureType(crate: *hir.Crate, kind: hir.Type.Kind) Error!hir.TypeId {
+    // O(1) cache lookup for common primitive types
+    switch (kind) {
+        .PrimInt => |int_kind| {
+            const cached = switch (int_kind) {
+                .U32 => crate.type_cache.u32_ty,
+                .U64 => crate.type_cache.u64_ty,
+                .Usize => crate.type_cache.usize_ty,
+                .I32 => crate.type_cache.i32_ty,
+                .I64 => crate.type_cache.i64_ty,
+            };
+            if (cached) |ty| return ty;
+        },
+        .PrimFloat => |float_kind| {
+            const cached = switch (float_kind) {
+                .F32 => crate.type_cache.f32_ty,
+                .F64 => crate.type_cache.f64_ty,
+            };
+            if (cached) |ty| return ty;
+        },
+        .Bool => if (crate.type_cache.bool_ty) |ty| return ty,
+        .Char => if (crate.type_cache.char_ty) |ty| return ty,
+        .String => if (crate.type_cache.string_ty) |ty| return ty,
+        .Str => if (crate.type_cache.str_ty) |ty| return ty,
+        .Unknown => if (crate.type_cache.unknown_ty) |ty| return ty,
+        else => {},
+    }
+
+    // Fall back to linear scan for complex types (Array, Ref, Pointer, Fn, Struct, Path)
     for (crate.types.items) |existing| {
         if (typeKindsEqual(existing.kind, kind)) return existing.id;
     }
 
+    // Create a new type and update cache if applicable
     const id: hir.TypeId = @intCast(crate.types.items.len);
     try crate.types.append(crate.allocator(), .{ .id = id, .kind = kind });
+
+    // Update cache for primitive types
+    switch (kind) {
+        .PrimInt => |int_kind| switch (int_kind) {
+            .U32 => crate.type_cache.u32_ty = id,
+            .U64 => crate.type_cache.u64_ty = id,
+            .Usize => crate.type_cache.usize_ty = id,
+            .I32 => crate.type_cache.i32_ty = id,
+            .I64 => crate.type_cache.i64_ty = id,
+        },
+        .PrimFloat => |float_kind| switch (float_kind) {
+            .F32 => crate.type_cache.f32_ty = id,
+            .F64 => crate.type_cache.f64_ty = id,
+        },
+        .Bool => crate.type_cache.bool_ty = id,
+        .Char => crate.type_cache.char_ty = id,
+        .String => crate.type_cache.string_ty = id,
+        .Str => crate.type_cache.str_ty = id,
+        .Unknown => crate.type_cache.unknown_ty = id,
+        else => {},
+    }
+
     return id;
 }
 
