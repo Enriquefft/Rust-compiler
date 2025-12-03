@@ -97,15 +97,25 @@ The build script (\`build.zig\`) exposes standard target/optimization options an
 
 ## Testing
 
-Unit tests are wired through Zig's test runner:
+Unit tests and end-to-end integration tests are wired through Zig's test runner:
 
 \`\`\`bash
 zig build test
 \`\`\`
 
-This target compiles and runs tests for the main binary and module-level test blocks. Tests are implemented as inline Zig \`test\` blocks within source modules (e.g., lexer tests, parser tests, HIR lowering tests, driver integration tests).
+or directly:
 
-Sample programs in the \`codes/\` directory can be used for manual testing and validation.
+\`\`\`bash
+zig test src/main.zig
+\`\`\`
+
+This target compiles and runs all tests including:
+- Inline Zig \`test\` blocks within source modules (lexer tests, parser tests, HIR lowering tests, driver integration tests)
+- End-to-end tests that compile sample programs from \`codes/\`, execute them, and verify their output against expected results
+
+The expected outputs for end-to-end tests are defined in \`codes/expected_outputs.txt\`. Each line specifies a source file and its expected stdout output in the format \`filename.rs=expected_output\`.
+
+Sample programs in the \`codes/\` directory can also be used for manual testing and validation.
 
 ## Documentation index
 
