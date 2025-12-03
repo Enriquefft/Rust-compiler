@@ -13,6 +13,7 @@ test "all modules" {
     _ = @import("backend/x86_64/emitter.zig");
     _ = @import("hir/hir.zig");
     _ = @import("hir/name_res.zig");
+    _ = @import("hir/ownership.zig");
     _ = @import("hir/typecheck.zig");
     _ = @import("mir/mir.zig");
     _ = @import("mir/lower.zig");

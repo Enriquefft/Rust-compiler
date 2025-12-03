@@ -473,7 +473,19 @@ Output:
 * Fully typed `HirCrate` where all `HirExpr.ty` fields are filled.
 * Diagnostics on type errors.
 
-Borrow checker and lifetime analysis are explicitly **out of scope** for the initial version.
+### 7.4 Ownership/Borrow Checking (`ownership.zig`)
+
+Responsibilities:
+
+* Track moves of non-Copy locals and report use-after-move.
+* Enforce borrow rules using lexical lifetimes:
+  * Immutable borrows may coexist.
+  * Mutable borrows require exclusivity and block moves while active.
+* End borrows at block boundaries to approximate lifetimes.
+
+Output:
+
+* Diagnostics for move/borrow violations (use-after-move, conflicting borrows, moves of borrowed values).
 
 ---
 

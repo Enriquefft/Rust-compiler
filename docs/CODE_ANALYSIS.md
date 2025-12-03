@@ -10,6 +10,7 @@ This document provides a comprehensive analysis of the Rust-subset compiler code
 4. [Logic That Doesn't Scale](#logic-that-doesnt-scale)
 5. [Architecture Concerns](#architecture-concerns)
 6. [Recommendations Summary](#recommendations-summary)
+7. [Current Failing Tests](#current-failing-tests)
 
 ---
 
@@ -451,15 +452,12 @@ No abstraction layer between MIR and target architecture:
 
 ---
 
-### 3. Missing Lifetime/Borrow Analysis
+### 3. Minimal Lifetime/Borrow Analysis
 
-The type checker notes:
-```zig
-/// ## Limitations
-/// - No borrow checking or lifetime analysis
-/// - Limited generic type support
-/// - No trait bounds checking
-```
+A lightweight ownership/borrow checker now runs after type checking. It tracks
+move-only locals, enforces simple borrowing rules (shared vs. unique), and ends
+borrows at block boundaries. The model is intentionally conservative and
+currently only reasons about locals.
 
 ---
 
@@ -491,6 +489,30 @@ Currently single-file compilation only:
 10. **Add backend abstraction** - Enable multi-target compilation
 11. **Implement incremental compilation** - Cache intermediate results
 12. **Add borrow checking** - Essential for Rust semantics
+
+---
+
+## Current Failing Tests
+
+This section tracks the currently failing tests (from `zig test src/all_tests.zig`), their root causes, and the most direct fixes.
+
+### 1. `frontend.parser.test.parse unsafe block as tail expression`
+
+- **Failure**: The parsed function body has `result == null`, so the unsafe block is not captured as the tail expression.
+- **Root Cause**: The parser’s tail-expression detection treats `unsafe { ... }` encountered at the end of a block as a statement, not an expression result. The `KwUnsafe` path returns `ast.Expr.Tag.Block`, but the surrounding block parsing does not plumb that value into the `result` slot when it is the final item.
+- **Best Fix**: Update `parseBlock`/`parseFunction` tail handling to treat `KwUnsafe`-originated blocks like other expression nodes—i.e., if the final item is an unsafe block without a trailing semicolon, set `body.result` to that expression instead of emitting only a statement node. This preserves the tail expression for `-> T` functions.
+
+### 2. `e2e_tests.test.e2e: arrays3.rs`
+
+- **Failure**: Array elements print as `(0, 1033491000)` instead of the shifted `(2, 3)`, `(-2, 5)`, `(11, -4)`.
+- **Root Cause**: Arrays of structs are indexed with incorrect byte strides, so the backend reads/writes the wrong addresses when computing `points[i]`. The index arithmetic currently uses pointer-sized steps instead of the struct’s full size, leading to corrupted field loads/stores during iteration.
+- **Best Fix**: Rework array indexing/lowering to multiply indices by the element type’s layout (size + alignment) rather than a fixed pointer stride. Centralize element-size queries so both load and store paths use the same struct layout metadata.
+
+### 3. `e2e_tests.test.e2e: core_language_test1.rs`
+
+- **Failure**: Output is `1 4 7` instead of `1 6 10` after calling `Point::offset(self, dx, dy)` by value.
+- **Root Cause**: Struct copies for by-value method receivers drop or misplace fields—the second field (`y`) is copied using an incorrect offset/size, so the callee sees stale or zeroed data. This mirrors the array-of-structs stride bug: struct layout information is not respected when materializing call arguments.
+- **Best Fix**: Ensure struct moves/copies use the full computed layout (per-type field offsets and total size) when spilling `self` to the call frame. Share the same layout logic between method-call lowering and general struct copy routines to avoid hardcoded offsets.
 
 ---
 
