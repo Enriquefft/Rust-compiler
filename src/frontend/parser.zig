@@ -437,9 +437,9 @@ const Parser = struct {
                         // - this is a tail expression of the outer block
                         const expr_ptr = self.arena.create(ast.Expr) catch @panic("out of memory");
                         expr_ptr.* = ast.Expr{
-                            .tag = .Block,
+                            .tag = .Unsafe,
                             .span = span,
-                            .data = .{ .Block = blk },
+                            .data = .{ .Unsafe = .{ .block = blk } },
                         };
                         result_expr = expr_ptr;
                         break;
@@ -1205,9 +1205,8 @@ test "parse unsafe block as tail expression" {
 
     const fn_item = fixture.crate.items[0].data.Fn;
     try std.testing.expect(fn_item.body.result != null);
-    // When parsed as tail expression via parsePrimary(), unsafe blocks are returned as Block
-    // (see parsePrimary KwUnsafe case which returns Block, not Unsafe)
-    try std.testing.expectEqual(ast.Expr.Tag.Block, fn_item.body.result.?.tag);
+    // Unsafe blocks as tail expressions have .Unsafe tag
+    try std.testing.expectEqual(ast.Expr.Tag.Unsafe, fn_item.body.result.?.tag);
 }
 
 test "parse unsafe block in expression context" {
