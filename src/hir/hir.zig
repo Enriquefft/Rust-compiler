@@ -27,6 +27,7 @@ const source_map = @import("../diag/source_map.zig");
 const ast = @import("../frontend/ast.zig");
 const name_res = @import("name_res.zig");
 const typecheck = @import("typecheck.zig");
+const ownership = @import("ownership.zig");
 
 /// Unique identifier for top-level definitions (functions, structs, type aliases, impls).
 pub const DefId = u32;
@@ -1303,8 +1304,10 @@ fn parseCharLiteral(lexeme: []const u8) !u21 {
 fn stripIntegerSuffix(lexeme: []const u8) []const u8 {
     const suffixes = [_][]const u8{
         "usize", "isize", // Check longer suffixes first
-        "u64", "u32", "u16", "u8",
-        "i64", "i32", "i16", "i8",
+        "u64",   "u32",
+        "u16",   "u8",
+        "i64",   "i32",
+        "i16",   "i8",
     };
 
     for (suffixes) |suffix| {
@@ -1362,6 +1365,14 @@ pub fn performNameResolution(crate: *Crate, diagnostics: *diag.Diagnostics) !voi
 /// (operand types, return types, assignment compatibility, etc.).
 pub fn performTypeCheck(crate: *Crate, diagnostics: *diag.Diagnostics) !void {
     try typecheck.typecheck(crate, diagnostics);
+}
+
+/// Performs a lightweight ownership/borrow/lifetime check on the HIR crate.
+///
+/// The pass enforces simple Rust-like rules for moves and borrows using
+/// lexical lifetimes and local-only tracking.
+pub fn performOwnershipCheck(crate: *Crate, diagnostics: *diag.Diagnostics) !void {
+    try ownership.checkOwnership(crate, diagnostics);
 }
 
 /// Creates an empty span for the given file ID.

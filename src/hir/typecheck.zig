@@ -22,7 +22,6 @@
 //!
 //! ## Limitations
 //!
-//! - No borrow checking or lifetime analysis
 //! - Limited generic type support
 //! - No trait bounds checking
 
@@ -355,7 +354,7 @@ fn checkExpr(
                             if (expected_kind != .Fn and !typesCompatible(crate, arg_ty, expected)) {
                                 diagnostics.reportError(span, "argument type does not match parameter");
                             }
-                            
+
                             // For generic functions: if the return type is a type parameter that
                             // matches this parameter's type, infer the return type from the argument
                             if (expected < crate.types.items.len and ret_ty < crate.types.items.len) {

@@ -134,6 +134,11 @@ pub fn compileFile(options: CompileOptions) !CompileResult {
         try hir.performTypeCheck(&hir_crate, &diagnostics);
     }
 
+    // === OWNERSHIP / BORROW CHECKING ===
+    if (!diagnostics.hasErrors()) {
+        try hir.performOwnershipCheck(&hir_crate, &diagnostics);
+    }
+
     // Optional debugging: pretty-print the HIR structure.
     if (options.visualize_hir) {
         try hir_printer.printCrateTree(options.allocator, &hir_crate);
@@ -141,7 +146,6 @@ pub fn compileFile(options: CompileOptions) !CompileResult {
 
     // === HIR → MIR LOWERING ===
     if (!diagnostics.hasErrors()) {
-
         mir_crate = try mir_lower.lowerFromHir(
             options.allocator,
             &hir_crate,
