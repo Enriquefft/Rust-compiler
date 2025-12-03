@@ -19,5 +19,5 @@ test "all modules" {
     _ = @import("mir/passes/passes.zig");
     _ = @import("parser_tests.zig");
     _ = @import("main.zig");
-    _ = @import("e2e_println.zig");
+    _ = @import("e2e_tests.zig");
 }
