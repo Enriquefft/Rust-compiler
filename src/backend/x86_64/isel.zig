@@ -28,6 +28,17 @@ fn getFieldOffsetFromLayout(mir_crate: *const mir.MirCrate, struct_name: ?[]cons
             return offset;
         }
     }
+    
+    // When struct name is not provided, search all struct layouts for the field
+    var iter = mir_crate.struct_layouts.iterator();
+    while (iter.next()) |entry| {
+        for (entry.value_ptr.fields) |field_layout| {
+            if (std.mem.eql(u8, field_layout.name, field_name)) {
+                return field_layout.offset;
+            }
+        }
+    }
+    
     // Fall back to computing offset from sequential index for common field names
     // Convert index to offset: offset = -index * FIELD_STRIDE
     const field_index = getSequentialFieldIndex(field_name);
