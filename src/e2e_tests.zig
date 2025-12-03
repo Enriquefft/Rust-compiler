@@ -13,6 +13,11 @@ const TestCase = struct {
     expected: []const u8,
 };
 
+const FailTestCase = struct {
+    filename: []const u8,
+    expected_error: []const u8,
+};
+
 /// All test cases from expected_outputs.txt
 /// Format matches: filename=expected_output (with \n for newlines)
 const test_cases = [_]TestCase{
@@ -55,6 +60,11 @@ const test_cases = [_]TestCase{
     .{ .filename = "struct_init_shorthand_test2.rs", .expected = "100 50 0 0" },
     .{ .filename = "unsafe_blocks_test1.rs", .expected = "42" },
     .{ .filename = "unsafe_blocks_test2.rs", .expected = "20" },
+    .{ .filename = "ownership.rs", .expected = "hi" },
+};
+
+const failing_test_cases = [_]FailTestCase{
+    .{ .filename = "ownership_fail.rs", .expected_error = "use of moved value" },
 };
 
 /// Run a single end-to-end test case
@@ -153,159 +163,59 @@ fn runE2ETest(allocator: std.mem.Allocator, comptime tc: TestCase) !void {
     }
 }
 
+fn runFailingTest(allocator: std.mem.Allocator, comptime tc: FailTestCase) !void {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const tmp_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(tmp_path);
+
+    const stem = tc.filename[0 .. tc.filename.len - 3];
+    const asm_filename = stem ++ ".s";
+    const asm_path = try std.fs.path.join(allocator, &.{ tmp_path, asm_filename });
+    defer allocator.free(asm_path);
+
+    const input_path = "codes/" ++ tc.filename;
+
+    var result = try driver.compileFile(.{
+        .allocator = allocator,
+        .input_path = input_path,
+        .output_path = asm_path,
+        .opt_level = .basic,
+        .emit = .assembly,
+        .emit_diagnostics = false,
+        .exit_on_error = false,
+    });
+    defer result.deinit();
+
+    if (result.status != .errors) {
+        std.debug.print("\nCompilation for {s} unexpectedly succeeded\n", .{tc.filename});
+        return error.TestExpectedEqual;
+    }
+
+    var diag_buffer = std.array_list.Managed(u8).init(allocator);
+    defer diag_buffer.deinit();
+    try result.diagnostics.emitAllToWriter(&result.source_map, diag_buffer.writer());
+
+    if (std.mem.indexOf(u8, diag_buffer.items, tc.expected_error) == null) {
+        std.debug.print("\nExpected diagnostics for {s} to contain '{s}', got:\n{s}\n", .{
+            tc.filename,
+            tc.expected_error,
+            diag_buffer.items,
+        });
+        return error.TestExpectedEqual;
+    }
+}
+
 // Generate individual test declarations for each test case
-test "e2e: arrays1.rs" {
-    try runE2ETest(std.testing.allocator, test_cases[29]);
+test "e2e output cases" {
+    inline for (test_cases) |tc| {
+        try runE2ETest(std.testing.allocator, tc);
+    }
 }
 
-test "e2e: arrays2.rs" {
-    try runE2ETest(std.testing.allocator, test_cases[30]);
-}
-
-test "e2e: arrays3.rs" {
-    try runE2ETest(std.testing.allocator, test_cases[31]);
-}
-
-test "e2e: closures_test1.rs" {
-    try runE2ETest(std.testing.allocator, test_cases[0]);
-}
-
-test "e2e: closures_test2.rs" {
-    try runE2ETest(std.testing.allocator, test_cases[1]);
-}
-
-test "e2e: conditionals_and_ranges_test1.rs" {
-    try runE2ETest(std.testing.allocator, test_cases[2]);
-}
-
-test "e2e: conditionals_and_ranges_test2.rs" {
-    try runE2ETest(std.testing.allocator, test_cases[3]);
-}
-
-test "e2e: const_items_test1.rs" {
-    try runE2ETest(std.testing.allocator, test_cases[33]);
-}
-
-test "e2e: const_items_test2.rs" {
-    try runE2ETest(std.testing.allocator, test_cases[34]);
-}
-
-test "e2e: control_flow_test1.rs" {
-    try runE2ETest(std.testing.allocator, test_cases[4]);
-}
-
-test "e2e: control_flow_test2.rs" {
-    try runE2ETest(std.testing.allocator, test_cases[5]);
-}
-
-test "e2e: conversions_test1.rs" {
-    try runE2ETest(std.testing.allocator, test_cases[6]);
-}
-
-test "e2e: conversions_test2.rs" {
-    try runE2ETest(std.testing.allocator, test_cases[7]);
-}
-
-test "e2e: core_language_test1.rs" {
-    try runE2ETest(std.testing.allocator, test_cases[8]);
-}
-
-test "e2e: core_language_test2.rs" {
-    try runE2ETest(std.testing.allocator, test_cases[9]);
-}
-
-test "e2e: dynamic_data_test1.rs" {
-    try runE2ETest(std.testing.allocator, test_cases[10]);
-}
-
-test "e2e: dynamic_data_test2.rs" {
-    try runE2ETest(std.testing.allocator, test_cases[11]);
-}
-
-test "e2e: expressions_test1.rs" {
-    try runE2ETest(std.testing.allocator, test_cases[12]);
-}
-
-test "e2e: expressions_test2.rs" {
-    try runE2ETest(std.testing.allocator, test_cases[13]);
-}
-
-test "e2e: functions_and_methods_test1.rs" {
-    try runE2ETest(std.testing.allocator, test_cases[14]);
-}
-
-test "e2e: functions_and_methods_test2.rs" {
-    try runE2ETest(std.testing.allocator, test_cases[15]);
-}
-
-test "e2e: generics_test1.rs" {
-    try runE2ETest(std.testing.allocator, test_cases[16]);
-}
-
-test "e2e: generics_test2.rs" {
-    try runE2ETest(std.testing.allocator, test_cases[17]);
-}
-
-test "e2e: hello_println.rs" {
-    try runE2ETest(std.testing.allocator, test_cases[18]);
-}
-
-test "e2e: input1.rs" {
-    try runE2ETest(std.testing.allocator, test_cases[19]);
-}
-
-test "e2e: input2.rs" {
-    try runE2ETest(std.testing.allocator, test_cases[20]);
-}
-
-test "e2e: input3.rs" {
-    try runE2ETest(std.testing.allocator, test_cases[21]);
-}
-
-test "e2e: input4.rs" {
-    try runE2ETest(std.testing.allocator, test_cases[22]);
-}
-
-test "e2e: macros_test1.rs" {
-    try runE2ETest(std.testing.allocator, test_cases[23]);
-}
-
-test "e2e: macros_test2.rs" {
-    try runE2ETest(std.testing.allocator, test_cases[24]);
-}
-
-test "e2e: optimizations.rs" {
-    try runE2ETest(std.testing.allocator, test_cases[32]);
-}
-
-test "e2e: statements_and_patterns_test1.rs" {
-    try runE2ETest(std.testing.allocator, test_cases[25]);
-}
-
-test "e2e: statements_and_patterns_test2.rs" {
-    try runE2ETest(std.testing.allocator, test_cases[26]);
-}
-
-test "e2e: struct_init_shorthand_test1.rs" {
-    try runE2ETest(std.testing.allocator, test_cases[35]);
-}
-
-test "e2e: struct_init_shorthand_test2.rs" {
-    try runE2ETest(std.testing.allocator, test_cases[36]);
-}
-
-test "e2e: types_test1.rs" {
-    try runE2ETest(std.testing.allocator, test_cases[27]);
-}
-
-test "e2e: types_test2.rs" {
-    try runE2ETest(std.testing.allocator, test_cases[28]);
-}
-
-test "e2e: unsafe_blocks_test1.rs" {
-    try runE2ETest(std.testing.allocator, test_cases[37]);
-}
-
-test "e2e: unsafe_blocks_test2.rs" {
-    try runE2ETest(std.testing.allocator, test_cases[38]);
+test "e2e failure cases" {
+    inline for (failing_test_cases) |tc| {
+        try runFailingTest(std.testing.allocator, tc);
+    }
 }

@@ -916,11 +916,20 @@ fn lowerExpr(crate: *Crate, expr: ast.Expr, diagnostics: *diag.Diagnostics, next
             return id;
         },
         .Call => {
-            // Handle String::from("...") specially - just return the string literal as String type
-            if (isStringFromCall(&expr.data.Call)) {
-                if (expr.data.Call.args.len == 1) {
-                    return try lowerExpr(crate, expr.data.Call.args[0], diagnostics, next_type_id);
+            // Handle String::from("...") specially by lowering the argument
+            // and forcing the resulting expression to have owned String type.
+            if (isStringFromCall(&expr.data.Call) and expr.data.Call.args.len == 1) {
+                const lowered_arg = try lowerExpr(crate, expr.data.Call.args[0], diagnostics, next_type_id);
+
+                const string_ty: TypeId = next_type_id.*;
+                next_type_id.* += 1;
+                try crate.types.append(crate.allocator(), .{ .id = string_ty, .kind = .String });
+
+                if (lowered_arg < crate.exprs.items.len) {
+                    crate.exprs.items[lowered_arg].ty = string_ty;
                 }
+
+                return lowered_arg;
             }
             const callee = try lowerExpr(crate, expr.data.Call.callee.*, diagnostics, next_type_id);
             var args = std.ArrayListUnmanaged(ExprId){};
@@ -1240,7 +1249,7 @@ fn literalType(crate: *Crate, lit: ast.Literal, diagnostics: *diag.Diagnostics, 
         .Float => .{ .PrimFloat = .F64 },
         .Bool => .Bool,
         .Char => .Char,
-        .String => .String,
+        .String => .Str,
     };
     try crate.types.append(crate.allocator(), .{ .id = ty_id, .kind = kind });
     return ty_id;

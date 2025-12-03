@@ -43,3 +43,4 @@ struct_init_shorthand_test1.rs=10 20
 struct_init_shorthand_test2.rs=100 50 0 0
 unsafe_blocks_test1.rs=42
 unsafe_blocks_test2.rs=20
+ownership.rs=hi

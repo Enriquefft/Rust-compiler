@@ -201,9 +201,15 @@ fn checkExpr(
             expr.ty = try ensureType(crate, .Char);
         },
         .ConstString => {
-            // String literals in Rust have type &str, not String
-            const str_ty = try ensureType(crate, .Str);
-            expr.ty = try ensureType(crate, .{ .Ref = .{ .mutable = false, .inner = str_ty } });
+            // Default to &str for string literals, but preserve explicit String
+            // types inserted by special lowering (e.g., String::from("...")) so
+            // ownership checking treats the value as move-only.
+            if (expr.ty < crate.types.items.len and crate.types.items[expr.ty].kind == .String) {
+                expr.ty = try ensureType(crate, .String);
+            } else {
+                const str_ty = try ensureType(crate, .Str);
+                expr.ty = try ensureType(crate, .{ .Ref = .{ .mutable = false, .inner = str_ty } });
+            }
         },
         .LocalRef => |local_id| {
             if (locals.get(local_id)) |ty| {
@@ -772,7 +778,6 @@ fn typeKindsEqual(a: hir.Type.Kind, b: hir.Type.Kind) bool {
         else => std.meta.eql(a, b),
     };
 }
-
 
 // Checks if a type is Unknown (unresolved or error type).
 fn isUnknown(crate: *hir.Crate, ty: hir.TypeId) bool {
