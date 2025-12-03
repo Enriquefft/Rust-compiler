@@ -32,7 +32,7 @@ const hir = @import("hir.zig");
 const TypeParamSet = struct {
     map: std.StringHashMapUnmanaged(void) = .{},
 
-    pub fn init(allocator: std.mem.Allocator, params: [][]const u8) !TypeParamSet {
+    pub fn init(allocator: std.mem.Allocator, params: []const []const u8) !TypeParamSet {
         var set = TypeParamSet{};
         try set.map.ensureTotalCapacity(allocator, @intCast(params.len));
         for (params) |param| {
@@ -371,6 +371,11 @@ fn checkExpr(
                 var param_types: []hir.TypeId = &[_]hir.TypeId{};
                 var ret_ty: hir.TypeId = try ensureType(crate, .Unknown);
 
+                // Get the callee's type parameters for generic function calls
+                const callee_type_params_slice = getCalleeTypeParams(crate, call.callee) orelse &[_][]const u8{};
+                var callee_type_params = try TypeParamSet.init(crate.allocator(), callee_type_params_slice);
+                defer callee_type_params.deinit(crate.allocator());
+
                 if (isBuiltinPrintln(crate, call.callee)) {
                     for (call.args) |arg_id| {
                         _ = try checkExpr(crate, arg_id, diagnostics, locals, in_unsafe, type_params);
@@ -419,7 +424,8 @@ fn checkExpr(
                                 crate.types.items[expected].kind
                             else
                                 .Unknown;
-                            if (expected_kind != .Fn and !typesCompatible(crate, arg_ty, expected, type_params)) {
+                            // Use callee's type parameters for compatibility check
+                            if (expected_kind != .Fn and !typesCompatible(crate, arg_ty, expected, &callee_type_params)) {
                                 diagnostics.reportError(span, "argument type does not match parameter");
                             }
 
@@ -1181,6 +1187,20 @@ fn isBuiltinPrintln(crate: *hir.Crate, callee_id: hir.ExprId) bool {
     if (def_id >= crate.items.items.len) return false;
     const item = crate.items.items[def_id];
     return item.kind == .Function and std.mem.eql(u8, item.kind.Function.name, "println");
+}
+
+/// Gets the type parameters of a callee function from a GlobalRef expression.
+fn getCalleeTypeParams(crate: *hir.Crate, callee_id: hir.ExprId) ?[]const []const u8 {
+    if (callee_id >= crate.exprs.items.len) return null;
+    const expr = crate.exprs.items[callee_id];
+    if (expr.kind != .GlobalRef) return null;
+    const def_id = expr.kind.GlobalRef;
+    if (def_id >= crate.items.items.len) return null;
+    const item = crate.items.items[def_id];
+    if (item.kind == .Function) {
+        return item.kind.Function.type_params;
+    }
+    return null;
 }
 
 /// Helper struct for pointer method call detection.
