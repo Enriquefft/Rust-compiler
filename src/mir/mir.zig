@@ -189,6 +189,30 @@ pub const StructField = struct {
     value: Operand,
 };
 
+/// Layout information for a single struct field.
+/// Stores the offset in bytes from the struct's base address based on declaration order.
+pub const FieldLayout = struct {
+    /// Field name for lookup
+    name: []const u8,
+    /// Offset in bytes from struct base (computed from declaration order)
+    offset: i32,
+    /// Size of this field in bytes
+    size: u32,
+    /// Declaration order index (0-based)
+    index: u32,
+};
+
+/// Layout information for a struct type.
+/// Contains field layouts computed from declaration order for stable, collision-free access.
+pub const StructLayout = struct {
+    /// Struct name for lookup
+    name: []const u8,
+    /// Field layouts in declaration order
+    fields: []FieldLayout,
+    /// Total size of the struct in bytes
+    total_size: u32,
+};
+
 /// A single MIR instruction with optional type and destination.
 pub const Inst = struct {
     /// Type of the result value, if the instruction produces one
@@ -228,15 +252,22 @@ pub const MirCrate = struct {
     arena: std.heap.ArenaAllocator,
     /// List of functions in this crate
     fns: std.ArrayListUnmanaged(MirFn),
+    /// Struct layouts computed from declaration order (keyed by struct name)
+    struct_layouts: std.StringHashMapUnmanaged(StructLayout),
 
     /// Initialize an empty MIR crate with the given backing allocator.
     pub fn init(backing_allocator: std.mem.Allocator) MirCrate {
-        return .{ .arena = std.heap.ArenaAllocator.init(backing_allocator), .fns = .{} };
+        return .{
+            .arena = std.heap.ArenaAllocator.init(backing_allocator),
+            .fns = .{},
+            .struct_layouts = .{},
+        };
     }
 
     /// Release all memory associated with this crate.
     pub fn deinit(self: *MirCrate) void {
         self.fns.deinit(self.arena.allocator());
+        self.struct_layouts.deinit(self.arena.allocator());
         self.arena.deinit();
     }
 
@@ -244,4 +275,94 @@ pub const MirCrate = struct {
     pub fn allocator(self: *MirCrate) std.mem.Allocator {
         return self.arena.allocator();
     }
+
+    /// Look up the layout for a struct by name.
+    /// Returns the StructLayout if found, or null otherwise.
+    pub fn getStructLayout(self: *const MirCrate, name: []const u8) ?StructLayout {
+        return self.struct_layouts.get(name);
+    }
+
+    /// Get the offset for a specific field in a struct.
+    /// Returns the field offset if found, or null otherwise.
+    pub fn getFieldOffset(self: *const MirCrate, struct_name: []const u8, field_name: []const u8) ?i32 {
+        const layout = self.struct_layouts.get(struct_name) orelse return null;
+        for (layout.fields) |field| {
+            if (std.mem.eql(u8, field.name, field_name)) {
+                return field.offset;
+            }
+        }
+        return null;
+    }
 };
+
+// ============================================================================
+// Tests for StructLayout and MirCrate layout functionality
+// ============================================================================
+
+test "MirCrate stores and retrieves struct layouts" {
+    const allocator = std.testing.allocator;
+    var crate = MirCrate.init(allocator);
+    defer crate.deinit();
+
+    // Create a sample struct layout with two fields
+    var field_layouts = [_]FieldLayout{
+        .{ .name = "x", .offset = 0, .size = 32, .index = 0 },
+        .{ .name = "y", .offset = -32, .size = 32, .index = 1 },
+    };
+
+    const layout = StructLayout{
+        .name = "Point",
+        .fields = &field_layouts,
+        .total_size = 64,
+    };
+
+    try crate.struct_layouts.put(crate.allocator(), "Point", layout);
+
+    // Verify we can retrieve the layout
+    const retrieved = crate.getStructLayout("Point");
+    try std.testing.expect(retrieved != null);
+    try std.testing.expectEqual(@as(u32, 64), retrieved.?.total_size);
+    try std.testing.expectEqual(@as(usize, 2), retrieved.?.fields.len);
+}
+
+test "MirCrate.getFieldOffset returns correct offset from declaration order" {
+    const allocator = std.testing.allocator;
+    var crate = MirCrate.init(allocator);
+    defer crate.deinit();
+
+    // Create a struct layout with fields in declaration order
+    var field_layouts = [_]FieldLayout{
+        .{ .name = "first", .offset = 0, .size = 32, .index = 0 },
+        .{ .name = "second", .offset = -32, .size = 32, .index = 1 },
+        .{ .name = "third", .offset = -64, .size = 32, .index = 2 },
+    };
+
+    const layout = StructLayout{
+        .name = "ThreeFields",
+        .fields = &field_layouts,
+        .total_size = 96,
+    };
+
+    try crate.struct_layouts.put(crate.allocator(), "ThreeFields", layout);
+
+    // Verify field offsets are retrieved correctly
+    try std.testing.expectEqual(@as(?i32, 0), crate.getFieldOffset("ThreeFields", "first"));
+    try std.testing.expectEqual(@as(?i32, -32), crate.getFieldOffset("ThreeFields", "second"));
+    try std.testing.expectEqual(@as(?i32, -64), crate.getFieldOffset("ThreeFields", "third"));
+    try std.testing.expectEqual(@as(?i32, null), crate.getFieldOffset("ThreeFields", "nonexistent"));
+    try std.testing.expectEqual(@as(?i32, null), crate.getFieldOffset("NonexistentStruct", "field"));
+}
+
+test "FieldLayout stores correct declaration order index" {
+    const layout = FieldLayout{
+        .name = "my_field",
+        .offset = -96,
+        .size = 32,
+        .index = 3,
+    };
+
+    try std.testing.expectEqualStrings("my_field", layout.name);
+    try std.testing.expectEqual(@as(i32, -96), layout.offset);
+    try std.testing.expectEqual(@as(u32, 32), layout.size);
+    try std.testing.expectEqual(@as(u32, 3), layout.index);
+}

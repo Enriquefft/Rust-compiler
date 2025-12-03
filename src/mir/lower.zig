@@ -25,15 +25,72 @@ const LowerError = error{OutOfMemory};
 const MAX_STRUCT_FIELDS = shared.MAX_STRUCT_FIELDS;
 const LOCAL_STACK_MULTIPLIER = shared.LOCAL_STACK_MULTIPLIER;
 
+/// Compute field layout for a struct based on declaration order.
+/// Each field is placed at sequential offsets using LOCAL_STACK_MULTIPLIER spacing.
+/// Returns the StructLayout or null if memory allocation fails.
+fn computeStructLayout(alloc: std.mem.Allocator, struct_item: hir.Struct) LowerError!mir.StructLayout {
+    var field_layouts = std.ArrayListUnmanaged(mir.FieldLayout){};
+    defer field_layouts.deinit(alloc);
+
+    var current_offset: i32 = 0;
+    const field_size: u32 = @sizeOf(i64) * LOCAL_STACK_MULTIPLIER;
+
+    for (struct_item.fields, 0..) |field, idx| {
+        const layout = mir.FieldLayout{
+            .name = field.name,
+            .offset = current_offset,
+            .size = field_size,
+            .index = @intCast(idx),
+        };
+        try field_layouts.append(alloc, layout);
+        // Move to next field offset (negative direction for stack growth)
+        current_offset -= @as(i32, @intCast(field_size));
+    }
+
+    const total_size: u32 = @intCast(struct_item.fields.len * field_size);
+
+    return mir.StructLayout{
+        .name = struct_item.name,
+        .fields = try field_layouts.toOwnedSlice(alloc),
+        .total_size = total_size,
+    };
+}
+
+/// Get the field index (local offset index) for a field by name from the struct's fields.
+/// Uses declaration order: first field = 0, second field = 1, etc.
+/// Returns 0 if field not found (fallback).
+fn getFieldIndexFromDeclaration(fields: []const hir.Field, field_name: []const u8) hir.LocalId {
+    for (fields, 0..) |field, idx| {
+        if (std.mem.eql(u8, field.name, field_name)) {
+            return @intCast(idx);
+        }
+    }
+    // Fallback to 0 if field not found
+    return 0;
+}
+
 /// Lower a complete HIR crate to MIR representation.
 ///
 /// Iterates over all items in the HIR crate and lowers functions to MIR.
 /// Built-in functions like `println` without bodies are skipped.
+/// Also computes and stores struct layouts based on declaration order.
 ///
 /// Returns the lowered MIR crate or an error if allocation fails.
 pub fn lowerFromHir(allocator: std.mem.Allocator, hir_crate: *const hir.Crate, diagnostics: *diag.Diagnostics) LowerError!mir.MirCrate {
     var crate = mir.MirCrate.init(allocator);
 
+    // First pass: compute struct layouts from HIR struct definitions
+    for (hir_crate.items.items) |item| {
+        switch (item.kind) {
+            .Struct => |struct_item| {
+                const layout = try computeStructLayout(crate.allocator(), struct_item);
+                try crate.struct_layouts.put(crate.allocator(), struct_item.name, layout);
+            },
+            else => {},
+        }
+    }
+
+    // Second pass: lower functions
     for (hir_crate.items.items) |item| {
         switch (item.kind) {
             .Function => |fn_item| {
@@ -400,11 +457,9 @@ const FunctionBuilder = struct {
 
                     if (is_struct_arg and struct_fields != null and arg_expr.kind == .LocalRef) {
                         const base_local = self.param_local_map.get(arg_expr.kind.LocalRef) orelse arg_expr.kind.LocalRef;
-                        // Pass each field using same hash-based ordering as struct init
-                        for (struct_fields.?) |field| {
-                            var hash: u32 = 0;
-                            for (field.name) |ch| hash = hash *% 31 +% ch;
-                            const field_index: hir.LocalId = @intCast(hash % MAX_STRUCT_FIELDS);
+                        // Pass each field using declaration order (not hash-based)
+                        for (struct_fields.?, 0..) |_, field_idx| {
+                            const field_index: hir.LocalId = @intCast(field_idx);
                             const field_local = base_local + field_index;
                             try args.append(self.allocator, .{ .Local = field_local });
                         }
@@ -1178,20 +1233,14 @@ const FunctionBuilder = struct {
                                 }
 
                                 if (field_names) |names| {
-                                    // Store first return value (rax) to hash-indexed location for first field
+                                    // Store first return value (rax) to first field using declaration order
                                     if (names.len > 0) {
-                                        var hash: u32 = 0;
-                                        for (names[0]) |ch| hash = hash *% 31 +% ch;
-                                        const field_index: hir.LocalId = @intCast(hash % MAX_STRUCT_FIELDS);
-                                        const first_local = base_local + field_index;
+                                        const first_local = base_local;
                                         _ = try self.emitInst(.{ .ty = mapType(self.hir_crate, let_stmt.ty, stmt.span, self.diagnostics), .dest = null, .kind = .{ .StoreLocal = .{ .local = first_local, .src = value_op } } });
                                     }
-                                    // Store second return value (rdx) to hash-indexed location for second field
+                                    // Store second return value (rdx) to second field using declaration order
                                     if (names.len > 1) {
-                                        var hash: u32 = 0;
-                                        for (names[1]) |ch| hash = hash *% 31 +% ch;
-                                        const field_index: hir.LocalId = @intCast(hash % MAX_STRUCT_FIELDS);
-                                        const second_local = base_local + field_index;
+                                        const second_local = base_local + 1;
                                         _ = try self.emitInst(.{ .ty = null, .dest = null, .kind = .{ .StoreLocal = .{ .local = second_local, .src = .RetSecond } } });
                                     }
                                 } else {
@@ -1217,20 +1266,41 @@ const FunctionBuilder = struct {
     }
 
     /// Lower a struct initialization expression directly to local variable slots.
-    /// Uses hash-based ordering to match field access patterns in the backend.
+    /// Uses declaration order to ensure stable, collision-free field access.
     fn lowerStructInitToLocal(self: *FunctionBuilder, struct_init: hir.StructInit, base_local: hir.LocalId, span: hir.Span) LowerError!void {
-        // Store each field to a separate local slot
-        // Use hash-based ordering to match field access
+        // First, try to find the struct definition to get the correct field order
+        var struct_fields_order: ?[]const hir.Field = null;
+
+        // Look up struct definition by path
+        if (struct_init.path.len > 0) {
+            const struct_name = struct_init.path[struct_init.path.len - 1];
+            for (self.hir_crate.items.items) |item| {
+                if (item.kind == .Struct and std.mem.eql(u8, item.kind.Struct.name, struct_name)) {
+                    struct_fields_order = item.kind.Struct.fields;
+                    break;
+                }
+            }
+        }
+
+        // Store each field to a separate local slot using declaration order
         for (struct_init.fields) |field| {
             const value_op = try self.lowerExpr(field.value) orelse continue;
 
-            // Calculate field index using same hash as backend field access
-            var hash: u32 = 0;
-            for (field.name) |ch| hash = hash *% 31 +% ch;
-            const field_index: hir.LocalId = @intCast(hash % MAX_STRUCT_FIELDS);
+            // Use declaration order from struct definition
+            const field_index: hir.LocalId = if (struct_fields_order) |fields|
+                getFieldIndexFromDeclaration(fields, field.name)
+            else
+                // Fallback: iterate struct_init.fields to find position
+                blk: {
+                    for (struct_init.fields, 0..) |f, idx| {
+                        if (std.mem.eql(u8, f.name, field.name)) {
+                            break :blk @intCast(idx);
+                        }
+                    }
+                    break :blk 0;
+                };
 
             // Store to local slot: base_local + field_index
-            // First field (index 0) goes to base_local, others go to adjacent slots
             const target_local = base_local + field_index;
             try self.ensureLocal(target_local, null, span);
             _ = try self.emitInst(.{ .ty = null, .dest = null, .kind = .{ .StoreLocal = .{ .local = target_local, .src = value_op } } });
@@ -2533,6 +2603,102 @@ test "lower print macro preserves format string without newline" {
     const first_arg = call_inst.kind.Call.args[0];
     try std.testing.expect(first_arg == .ImmString);
     try std.testing.expectEqualStrings("value: %d", first_arg.ImmString);
+}
+
+test "struct layouts are computed during HIR to MIR lowering" {
+    const allocator = std.testing.allocator;
+    var diagnostics = diag.Diagnostics.init(allocator);
+    defer diagnostics.deinit();
+
+    var crate = hir.Crate.init(allocator);
+    defer crate.deinit();
+
+    const span = hir.emptySpan(0);
+    const i64_ty = ensureType(&crate, .{ .PrimInt = .I64 });
+
+    // Define a struct with three fields
+    const fields = try crate.allocator().alloc(hir.Field, 3);
+    fields[0] = .{ .name = "alpha", .ty = i64_ty, .span = span };
+    fields[1] = .{ .name = "beta", .ty = i64_ty, .span = span };
+    fields[2] = .{ .name = "gamma", .ty = i64_ty, .span = span };
+
+    try crate.items.append(crate.allocator(), .{
+        .id = 0,
+        .kind = .{ .Struct = .{
+            .def_id = 0,
+            .name = "TestStruct",
+            .type_params = &[_][]const u8{},
+            .fields = fields,
+            .span = span,
+        } },
+        .span = span,
+    });
+
+    // Define a simple function to trigger lowering
+    const const_expr_id: hir.ExprId = @intCast(crate.exprs.items.len);
+    try crate.exprs.append(crate.allocator(), .{ .id = const_expr_id, .kind = .{ .ConstInt = 42 }, .ty = i64_ty, .span = span });
+
+    try crate.items.append(crate.allocator(), .{
+        .id = 1,
+        .kind = .{ .Function = .{
+            .def_id = 1,
+            .name = "main",
+            .type_params = &[_][]const u8{},
+            .params = &[_]hir.LocalId{},
+            .param_types = &[_]hir.TypeId{},
+            .return_type = i64_ty,
+            .body = const_expr_id,
+            .span = span,
+        } },
+        .span = span,
+    });
+
+    var mir_crate = try lowerFromHir(allocator, &crate, &diagnostics);
+    defer mir_crate.deinit();
+
+    try std.testing.expect(!diagnostics.hasErrors());
+
+    // Verify struct layout was computed correctly
+    const layout = mir_crate.getStructLayout("TestStruct");
+    try std.testing.expect(layout != null);
+    try std.testing.expectEqual(@as(usize, 3), layout.?.fields.len);
+
+    // Verify field offsets are in declaration order
+    // First field at offset 0, second at -32, third at -64
+    const expected_size: u32 = @sizeOf(i64) * shared.LOCAL_STACK_MULTIPLIER;
+    try std.testing.expectEqualStrings("alpha", layout.?.fields[0].name);
+    try std.testing.expectEqual(@as(i32, 0), layout.?.fields[0].offset);
+    try std.testing.expectEqual(@as(u32, 0), layout.?.fields[0].index);
+
+    try std.testing.expectEqualStrings("beta", layout.?.fields[1].name);
+    try std.testing.expectEqual(-@as(i32, @intCast(expected_size)), layout.?.fields[1].offset);
+    try std.testing.expectEqual(@as(u32, 1), layout.?.fields[1].index);
+
+    try std.testing.expectEqualStrings("gamma", layout.?.fields[2].name);
+    try std.testing.expectEqual(-2 * @as(i32, @intCast(expected_size)), layout.?.fields[2].offset);
+    try std.testing.expectEqual(@as(u32, 2), layout.?.fields[2].index);
+}
+
+test "field indices from declaration order are consistent" {
+    const allocator = std.testing.allocator;
+
+    // Create mock HIR fields
+    var fields = [_]hir.Field{
+        .{ .name = "a", .ty = 0, .span = hir.emptySpan(0) },
+        .{ .name = "b", .ty = 0, .span = hir.emptySpan(0) },
+        .{ .name = "c", .ty = 0, .span = hir.emptySpan(0) },
+        .{ .name = "d", .ty = 0, .span = hir.emptySpan(0) },
+    };
+    _ = allocator;
+
+    // Verify field indices are returned in declaration order
+    try std.testing.expectEqual(@as(hir.LocalId, 0), getFieldIndexFromDeclaration(&fields, "a"));
+    try std.testing.expectEqual(@as(hir.LocalId, 1), getFieldIndexFromDeclaration(&fields, "b"));
+    try std.testing.expectEqual(@as(hir.LocalId, 2), getFieldIndexFromDeclaration(&fields, "c"));
+    try std.testing.expectEqual(@as(hir.LocalId, 3), getFieldIndexFromDeclaration(&fields, "d"));
+
+    // Verify unknown field returns 0 as fallback
+    try std.testing.expectEqual(@as(hir.LocalId, 0), getFieldIndexFromDeclaration(&fields, "unknown"));
 }
 
 fn ensureType(crate: *hir.Crate, kind: hir.Type.Kind) hir.TypeId {
