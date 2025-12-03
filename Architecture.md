@@ -52,55 +52,63 @@ Each stage is implemented as a separate module with clear inputs and outputs.
 
 ## 3. Project Layout
 
-Proposed directory structure:
+Current directory structure:
 
 ```text
 src/
-  main.zig
-  driver.zig
+  main.zig              # Entry point and CLI argument parsing
+  driver.zig            # Compiler driver orchestrating the pipeline
+  all_tests.zig         # Aggregated test runner
+  shared_consts.zig     # Shared constants across modules
 
   diag/
-    source_map.zig
-    diagnostics.zig
+    source_map.zig      # Source file tracking and span mapping
+    diagnostics.zig     # Central diagnostics collector
 
   frontend/
-    tokens.zig
-    lexer.zig
-    ast.zig
-    parser.zig
+    tokens.zig          # Token kinds and structures
+    lexer.zig           # Lexical analysis
+    ast.zig             # AST node definitions
+    ast_printer.zig     # AST pretty-printing for debugging
+    parser.zig          # Recursive descent parser
 
   hir/
-    hir.zig
-    name_res.zig
-    typecheck.zig
+    hir.zig             # HIR representation and lowering from AST
+    hir_printer.zig     # HIR pretty-printing for debugging
+    name_res.zig        # Name resolution pass
+    typecheck.zig       # Type checking pass
 
   mir/
-    mir.zig
-    builder.zig
+    mir.zig             # MIR representation
+    lower.zig           # HIR to MIR lowering (builder)
+    mir_printer.zig     # MIR pretty-printing for debugging
     passes/
-      const_fold.zig
-      dce.zig
+      passes.zig        # Pass infrastructure and runner
+      constant_folding.zig
+      dead_code_elimination.zig
       cfg_simplify.zig
+      debug_dump.zig
 
   backend/
+    backend.zig         # Backend entry point
     x86_64/
-      abi.zig
-      isel.zig
-      regalloc.zig
-      peephole.zig
-      emitter.zig
+      codegen.zig       # x86-64 code generation orchestration
+      machine.zig       # Machine IR representation
+      isel.zig          # Instruction selection
+      regalloc.zig      # Register allocation
+      emitter.zig       # Assembly text emission
 
-  util/
-    arena.zig
-    interner.zig
-    cfg.zig
+codes/                  # Sample programs and test inputs
 ```
 
 Additional files:
 
-* `grammar.ebnf` – language grammar (already exists).
-* `architecture.md` – this document.
-* `tests/` – test inputs and expected outputs (see section 10).
+* `grammar.ebnf` – language grammar.
+* `Architecture.md` – this document.
+* `Features.md` – language subset description.
+* `README.md` – project overview.
+
+> **Note:** The `util/` directory mentioned in earlier versions of this document is not currently implemented. Utility functions are inlined in the modules that use them. A separate `tests/` directory with golden files may be added in the future.
 
 ---
 
@@ -569,7 +577,7 @@ pub const MirCrate = struct {
 };
 ```
 
-### 8.2 MIR Builder (`builder.zig`)
+### 8.2 MIR Lowering (`lower.zig`)
 
 Responsibilities:
 
@@ -722,7 +730,7 @@ Key lowering patterns:
 
 All passes operate on `MirCrate` and are optional based on `CompileOptions.opt_level`.
 
-### 9.1 Constant Folding (`const_fold.zig`)
+### 9.1 Constant Folding (`constant_folding.zig`)
 
 Responsibilities:
 
@@ -732,7 +740,7 @@ Responsibilities:
   * Replace instruction with `Copy Imm*` result, adjust `ty` and `dest` accordingly.
   * Propagate constants in simple chains.
 
-### 9.2 Dead Code Elimination (`dce.zig`)
+### 9.2 Dead Code Elimination (`dead_code_elimination.zig`)
 
 Responsibilities:
 
@@ -824,29 +832,11 @@ pub const MachineCrate = struct {
 };
 ```
 
-### 10.2 ABI Handling (`abi.zig`)
+### 10.2 Instruction Selection (`isel.zig`)
 
 Responsibilities:
 
-* Implement calling convention:
-
-  * Map function parameters to registers/stack slots.
-  * Align stack.
-  * Handle return values.
-* Provide utility functions used by instruction selection:
-
-```zig
-pub fn assignParamsToLocals(
-    fn: *MirFn,
-    abi_info: *AbiInfo,
-) void;
-```
-
-### 10.3 Instruction Selection (`isel.zig`)
-
-Responsibilities:
-
-* Lower `MirFn` to `MFn`.
+* Lower `MirFn` to `MachineFn`.
 * Map:
 
   * MIR `LocalId` → stack slots.
@@ -859,6 +849,10 @@ Responsibilities:
   * `TermKind.If` → `Cmp/Test` + `Jcc`.
   * `TermKind.Goto` → `Jmp`.
   * `TermKind.Ret` → move return value into return register and `Ret`.
+* Handle ABI concerns inline:
+
+  * Map function parameters to registers/stack slots per System V ABI.
+  * Align stack appropriately.
 * Insert prologue and epilogue:
 
   * `push rbp; mov rbp, rsp; sub rsp, stack_size;`
@@ -870,14 +864,15 @@ Public API:
 pub fn lowerCrate(
     allocator: std.mem.Allocator,
     mir: *const MirCrate,
+    diagnostics: *Diagnostics,
 ) !MachineCrate;
 ```
 
-### 10.4 Register Allocation (`regalloc.zig`)
+### 10.3 Register Allocation (`regalloc.zig`)
 
 Responsibilities:
 
-* Implement a simple **linear scan** register allocator on `MFn`.
+* Implement a simple **linear scan** register allocator on `MachineFn`.
 
 Steps:
 
@@ -893,43 +888,33 @@ Steps:
    * `MOperand.Phys` or
    * `MOperand.Mem` using stack slots.
 
-### 10.5 Peephole Optimizations (`peephole.zig`)
+### 10.4 Emitter (`emitter.zig`)
 
 Responsibilities:
 
-* Walk `MFn` instructions and apply small local transformations:
+* Convert `MachineCrate` to textual assembly (`.s`).
 
-Examples:
-
-* Eliminate `mov reg, reg`.
-* Eliminate `add reg, 0` / `sub reg, 0`.
-* Simplify simple `cmp`/`test` patterns if possible.
-
-### 10.6 Emitter (`emitter.zig`)
-
-Responsibilities:
-
-* Convert `MachineCrate` to textual assembly (`.s`) or object (`.o`).
-
-Initial focus:
+Current implementation:
 
 * Emit `.s` with:
 
   * Global labels.
   * Function prologue/epilogue.
-  * Data sections if needed.
+  * Data sections for string literals.
+  * External symbol declarations (e.g., `printf`).
 
 API:
 
 ```zig
-pub fn emit(
+pub fn emitAssembly(
+    allocator: std.mem.Allocator,
     mc: *const MachineCrate,
-    options: CompileOptions,
-    input_path: []const u8,
-) !void;
+) ![]const u8;
 ```
 
-### 10.7 `println!` lowering and libc interop
+> **Note:** Object file (`.o`) emission is not yet implemented. A dedicated `peephole.zig` pass is planned but not currently present.
+
+### 10.5 `println!` lowering and libc interop
 
 * Backend assumes the MIR builder has rewritten `println!` into a direct call
   to `printf` with a C-style format string and any evaluated operands.
@@ -948,56 +933,45 @@ pub fn emit(
 
 ---
 
-## 11. Utilities (`util/`)
+## 11. Utilities
 
-### 11.1 Arena Allocator (`arena.zig`)
-
-Responsibilities:
-
-* Provide bump-allocator style arenas for AST, HIR, MIR.
-* Avoid many small allocations from the general allocator.
-
-### 11.2 String/Identifier Interner (`interner.zig`)
-
-Responsibilities:
-
-* Map `[]const u8` to a stable `IdentId` (u32).
-* Use for identifiers, type names, etc.
-* Enable fast equality checks and deduplication.
-
-### 11.3 CFG Helpers (`cfg.zig`)
-
-Responsibilities:
-
-* Common functions for CFG analysis on MIR/Machine IR:
-
-  * Predecessor/successor computation.
-  * Reachability analysis.
-  * Block orderings if needed.
+> **Note:** A dedicated `util/` directory is not currently implemented. The compiler uses:
+>
+> * Zig's built-in `std.heap.ArenaAllocator` for arena allocation within each IR crate (AST, HIR, MIR).
+> * Inline string handling within modules rather than a separate interner.
+> * CFG analysis functions embedded in the optimization passes and backend.
+>
+> Future versions may extract common utilities into a shared module.
 
 ---
 
 ## 12. Testing Strategy
 
-### 12.1 Layout
+### 12.1 Current Layout
 
-* `tests/lexer/` – lexer tests (source → token streams).
-* `tests/parser/` – parser tests (source → AST shape).
-* `tests/hir/` – name resolution and type checking tests.
-* `tests/mir/` – MIR generation tests (source → MIR dumps).
-* `tests/backend/` – assembly output tests and runtime execution tests.
+Tests are implemented as inline Zig `test` blocks within source modules:
+
+* `src/frontend/lexer.zig` – lexer unit tests
+* `src/frontend/parser.zig` – parser unit tests (via `parser_tests.zig`)
+* `src/hir/hir.zig` – HIR lowering tests
+* `src/mir/passes/*.zig` – MIR pass tests
+* `src/backend/backend.zig` – backend integration tests
+* `src/driver.zig` – end-to-end compilation tests
+* `src/all_tests.zig` – aggregated test runner importing all modules
+
+Sample source files are located in `codes/` and used for integration testing.
 
 ### 12.2 Types of Tests
 
-* **Unit tests** inside each module (Zig `test` blocks).
-* **Golden-file tests**:
+* **Unit tests** inside each module (Zig `test` blocks), run via `zig build test`.
+* **End-to-end tests** in `driver.zig` that compile source snippets and verify outputs.
+* **Sample programs** in `codes/` directory for manual testing and validation.
 
-  * input `.rs`-like file
-  * expected `.mir`, `.s` snapshots for comparison.
-* **Execution tests**:
+### 12.3 Future Enhancements
 
-  * compile source to `.s`, assemble and link, run executable,
-  * check exit code or printed output.
+* **Golden-file tests** with input `.rs`-like files and expected `.mir`, `.s` snapshots.
+* **Execution tests** that compile, assemble, link, and run executables to check output.
+* Dedicated `tests/` directory structure may be added as the test suite grows.
 
 ---
 
@@ -1005,7 +979,7 @@ Responsibilities:
 
 1. Core infra:
 
-   * `source_map`, `diagnostics`, `arena`, `interner`.
+   * `source_map`, `diagnostics`.
 2. Lexing + parsing:
 
    * Enough of grammar to handle basic `fn main()` with expressions and control flow.
