@@ -718,13 +718,55 @@ fn ensurePatternBinding(crate: *hir.Crate, local_id: hir.LocalId, locals: *std.A
 // Returns the existing TypeId if found, otherwise creates a new type.
 fn ensureType(crate: *hir.Crate, kind: hir.Type.Kind) Error!hir.TypeId {
     for (crate.types.items) |existing| {
-        if (std.meta.eql(existing.kind, kind)) return existing.id;
+        if (typeKindsEqual(existing.kind, kind)) return existing.id;
     }
 
     const id: hir.TypeId = @intCast(crate.types.items.len);
     try crate.types.append(crate.allocator(), .{ .id = id, .kind = kind });
     return id;
 }
+
+/// Compares two Type.Kind values for structural equality, comparing slices by content.
+fn typeKindsEqual(a: hir.Type.Kind, b: hir.Type.Kind) bool {
+    const TagType = @typeInfo(hir.Type.Kind).@"union".tag_type.?;
+    const a_tag: TagType = a;
+    const b_tag: TagType = b;
+    if (a_tag != b_tag) return false;
+
+    return switch (a) {
+        .Struct => |a_struct| {
+            const b_struct = b.Struct;
+            return a_struct.def_id == b_struct.def_id and
+                std.mem.eql(hir.TypeId, a_struct.type_args, b_struct.type_args);
+        },
+        .Array => |a_arr| {
+            const b_arr = b.Array;
+            return a_arr.elem == b_arr.elem and a_arr.size_const == b_arr.size_const;
+        },
+        .Ref => |a_ref| {
+            const b_ref = b.Ref;
+            return a_ref.mutable == b_ref.mutable and a_ref.inner == b_ref.inner;
+        },
+        .Pointer => |a_ptr| {
+            const b_ptr = b.Pointer;
+            return a_ptr.mutable == b_ptr.mutable and a_ptr.inner == b_ptr.inner;
+        },
+        .Fn => |a_fn| {
+            const b_fn = b.Fn;
+            return std.mem.eql(hir.TypeId, a_fn.params, b_fn.params) and a_fn.ret == b_fn.ret;
+        },
+        .Path => |a_path| {
+            const b_path = b.Path;
+            if (a_path.segments.len != b_path.segments.len) return false;
+            for (a_path.segments, b_path.segments) |a_seg, b_seg| {
+                if (!std.mem.eql(u8, a_seg, b_seg)) return false;
+            }
+            return std.mem.eql(hir.TypeId, a_path.args, b_path.args);
+        },
+        else => std.meta.eql(a, b),
+    };
+}
+
 
 // Checks if a type is Unknown (unresolved or error type).
 fn isUnknown(crate: *hir.Crate, ty: hir.TypeId) bool {

@@ -75,8 +75,8 @@ fn emitCalleeSavedStores(writer: anytype, func: machine.MachineFn) !void {
     }
 
     for (func.callee_saved_xmms.items) |entry| {
-        try writer.writeAll("    movsd ");
-        try writeOperand(writer, .{ .Mem = .{ .base = .rbp, .offset = entry.offset } });
+        try writer.writeAll("    movsd qword ptr ");
+        try writeMem(writer, .{ .base = .rbp, .offset = entry.offset });
         try writer.writeAll(", ");
         try writeOperand(writer, .{ .Xmm = entry.reg });
         try writer.writeByte('\n');
@@ -87,16 +87,16 @@ fn emitCalleeSavedRestores(writer: anytype, func: machine.MachineFn) !void {
     for (func.callee_saved_gprs.items) |entry| {
         try writer.writeAll("    mov ");
         try writeOperand(writer, .{ .Phys = entry.reg });
-        try writer.writeAll(", ");
-        try writeOperand(writer, .{ .Mem = .{ .base = .rbp, .offset = entry.offset } });
+        try writer.writeAll(", qword ptr ");
+        try writeMem(writer, .{ .base = .rbp, .offset = entry.offset });
         try writer.writeByte('\n');
     }
 
     for (func.callee_saved_xmms.items) |entry| {
         try writer.writeAll("    movsd ");
         try writeOperand(writer, .{ .Xmm = entry.reg });
-        try writer.writeAll(", ");
-        try writeOperand(writer, .{ .Mem = .{ .base = .rbp, .offset = entry.offset } });
+        try writer.writeAll(", qword ptr ");
+        try writeMem(writer, .{ .base = .rbp, .offset = entry.offset });
         try writer.writeByte('\n');
     }
 }

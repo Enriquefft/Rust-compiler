@@ -95,7 +95,8 @@ pub fn lowerFromHir(allocator: std.mem.Allocator, hir_crate: *const hir.Crate, d
     for (hir_crate.items.items) |item| {
         switch (item.kind) {
             .Function => |fn_item| {
-                if (std.mem.eql(u8, fn_item.name, "println") and fn_item.body == null) continue;
+                // Skip builtin macros (println, print) with no body
+                if (fn_item.body == null and (std.mem.eql(u8, fn_item.name, "println") or std.mem.eql(u8, fn_item.name, "print"))) continue;
                 const lowered = try lowerFunction(&crate, fn_item, hir_crate, diagnostics);
                 try crate.fns.append(crate.allocator(), lowered);
             },

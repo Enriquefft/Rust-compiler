@@ -414,24 +414,48 @@ const Parser = struct {
                 continue;
             }
 
-            // If we see 'unsafe' here, treat the whole unsafe block as a statement,
-            // not as a tail expression of the enclosing block.
+            // If we see 'unsafe' here, check if it's a tail expression or statement.
             if (self.check(.KwUnsafe)) {
                 const unsafe_tok = self.advance();
                 if (self.parseBlock()) |blk| {
                     const span = Span{ .file_id = unsafe_tok.span.file_id, .start = unsafe_tok.span.start, .end = blk.span.end };
-                    const expr_val = ast.Expr{
-                        .tag = .Unsafe,
-                        .span = span,
-                        .data = .{ .Unsafe = .{ .block = blk } },
-                    };
-                    stmts.append(self.arena, .{
-                        .tag = .Expr,
-                        .span = span,
-                        .data = .{ .Expr = .{ .expr = expr_val } },
-                    }) catch {};
-                    // Optional trailing semicolon after the unsafe block, e.g. "unsafe { ... };"
-                    _ = self.match(.Semicolon);
+                    // Check if there's a semicolon after the block
+                    if (self.match(.Semicolon)) {
+                        // Unsafe block as statement: `unsafe { ... };`
+                        const expr_val = ast.Expr{
+                            .tag = .Unsafe,
+                            .span = span,
+                            .data = .{ .Unsafe = .{ .block = blk } },
+                        };
+                        stmts.append(self.arena, .{
+                            .tag = .Expr,
+                            .span = span,
+                            .data = .{ .Expr = .{ .expr = expr_val } },
+                        }) catch {};
+                    } else if (self.check(.RBrace) and blk.result != null) {
+                        // No semicolon, next token is `}`, and inner block has a tail expression
+                        // - this is a tail expression of the outer block
+                        const expr_ptr = self.arena.create(ast.Expr) catch @panic("out of memory");
+                        expr_ptr.* = ast.Expr{
+                            .tag = .Block,
+                            .span = span,
+                            .data = .{ .Block = blk },
+                        };
+                        result_expr = expr_ptr;
+                        break;
+                    } else {
+                        // No semicolon but not a tail expression - treat as statement
+                        const expr_val = ast.Expr{
+                            .tag = .Unsafe,
+                            .span = span,
+                            .data = .{ .Unsafe = .{ .block = blk } },
+                        };
+                        stmts.append(self.arena, .{
+                            .tag = .Expr,
+                            .span = span,
+                            .data = .{ .Expr = .{ .expr = expr_val } },
+                        }) catch {};
+                    }
                 } else {
                     self.synchronize();
                 }
