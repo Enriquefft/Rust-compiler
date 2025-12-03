@@ -31,6 +31,9 @@ const LOCAL_STACK_MULTIPLIER = shared.LOCAL_STACK_MULTIPLIER;
 /// Returns the StructLayout or null if memory allocation fails.
 fn computeStructLayout(alloc: std.mem.Allocator, struct_item: hir.Struct, diagnostics: *diag.Diagnostics) LowerError!mir.StructLayout {
     // Check for MAX_STRUCT_FIELDS limit
+    // Note: We report an error but continue to compute the layout.
+    // The driver will check hasErrors() and stop compilation before code generation,
+    // so this is safe. We still compute the layout to allow collecting all errors.
     if (struct_item.fields.len > MAX_STRUCT_FIELDS) {
         diagnostics.reportError(struct_item.span, "struct has too many fields: maximum supported is 16");
     }
@@ -1295,6 +1298,8 @@ const FunctionBuilder = struct {
             const value_op = try self.lowerExpr(field.value) orelse continue;
 
             // Use declaration order from struct definition
+            // Note: If field not found, we report an error and use index 0 as fallback.
+            // The driver will check hasErrors() and stop compilation before code generation.
             const field_index: hir.LocalId = if (struct_fields_order) |fields|
                 getFieldIndexFromDeclaration(fields, field.name) orelse blk: {
                     self.diagnostics.reportError(span, "field not found in struct definition");
