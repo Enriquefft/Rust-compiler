@@ -99,31 +99,11 @@ Generic parameters are now tracked through type resolution, creating monomorphiz
 
 ---
 
-### 2. Type Compatibility Workarounds (`src/hir/typecheck.zig`)
+### ~~2. Type Compatibility Workarounds (`src/hir/typecheck.zig`)~~
 
-**Location**: Lines 700-768
+**Status**: ✅ FIXED - Type compatibility now uses declared generic parameter sets and reports undeclared type names.
 
-```zig
-// Check if rhs is a type parameter (single-segment path that doesn't resolve to a known type)
-// If so, it's compatible with any type (for generic type inference)
-if (rhs_kind == .Path) {
-    const rhs_path = rhs_kind.Path;
-    if (rhs_path.segments.len == 1 and !isKnownTypeName(crate, rhs_path.segments[0])) {
-        return true;
-    }
-}
-// ...
-// If the path is a single-segment path that doesn't resolve to a known type,
-// treat it as a generic type parameter that's compatible with any type.
-// This enables basic generic type inference for structs like Pair<T>.
-```
-
-**Issues**:
-- Any unknown single-segment type path is treated as a type parameter
-- Could mask actual type errors (typos become valid "generics")
-- No proper generic constraint tracking
-
-**Recommendation**: Explicitly track declared type parameters from generic declarations.
+Type checking builds a scoped set of declared type parameters for structs and functions, threads it through expression and statement checking, and consults it in `typesCompatible`. Single-segment paths no longer default to "generic" when they do not match that set; `ensureKnownType` emits diagnostics for undeclared or misspelled type names in signatures, casts, and initializers.
 
 ---
 

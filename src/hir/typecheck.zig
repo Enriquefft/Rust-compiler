@@ -29,6 +29,31 @@ const std = @import("std");
 const diag = @import("../diag/diagnostics.zig");
 const hir = @import("hir.zig");
 
+const TypeParamSet = struct {
+    map: std.StringHashMapUnmanaged(void) = .{},
+
+    pub fn init(allocator: std.mem.Allocator, params: [][]const u8) !TypeParamSet {
+        var set = TypeParamSet{};
+        try set.map.ensureTotalCapacity(allocator, @intCast(params.len));
+        for (params) |param| {
+            try set.map.put(allocator, param, {});
+        }
+        return set;
+    }
+
+    pub fn empty() TypeParamSet {
+        return .{};
+    }
+
+    pub fn deinit(self: *TypeParamSet, allocator: std.mem.Allocator) void {
+        self.map.deinit(allocator);
+    }
+
+    pub fn contains(self: *const TypeParamSet, name: []const u8) bool {
+        return self.map.get(name) != null;
+    }
+};
+
 /// Error type for type checking operations (currently only allocation errors).
 const Error = error{OutOfMemory};
 
@@ -45,7 +70,10 @@ pub fn typecheck(crate: *hir.Crate, diagnostics: *diag.Diagnostics) Error!void {
         switch (item.kind) {
             .Function => |*func| try typecheckFunction(crate, func, diagnostics),
             .Struct => |*structure| try typecheckStruct(crate, structure, diagnostics),
-            .TypeAlias => |*alias| try ensureKnownType(crate, alias.target, item.span, diagnostics),
+            .TypeAlias => |*alias| {
+                const empty_type_params = TypeParamSet.empty();
+                try ensureKnownType(crate, alias.target, item.span, diagnostics, &empty_type_params);
+            },
             .Const => |*const_item| try typecheckConst(crate, const_item, diagnostics),
             else => {},
         }
@@ -58,6 +86,16 @@ fn typecheckFunction(crate: *hir.Crate, func: *hir.Function, diagnostics: *diag.
     var locals = std.AutoHashMap(hir.LocalId, hir.TypeId).init(crate.allocator());
     defer locals.deinit();
 
+    var type_params = try TypeParamSet.init(crate.allocator(), func.type_params);
+    defer type_params.deinit(crate.allocator());
+
+    for (func.param_types) |param_ty| {
+        try ensureKnownType(crate, param_ty, func.span, diagnostics, &type_params);
+    }
+    if (func.return_type) |ret| {
+        try ensureKnownType(crate, ret, func.span, diagnostics, &type_params);
+    }
+
     for (func.params, 0..) |local_id, idx| {
         const ty = if (idx < func.param_types.len)
             func.param_types[idx]
@@ -67,9 +105,9 @@ fn typecheckFunction(crate: *hir.Crate, func: *hir.Function, diagnostics: *diag.
     }
 
     if (func.body) |body_id| {
-        const body_ty = try checkExpr(crate, body_id, diagnostics, &locals, false);
+        const body_ty = try checkExpr(crate, body_id, diagnostics, &locals, false, &type_params);
         if (func.return_type) |ret_ty| {
-            if (!typesCompatible(crate, ret_ty, body_ty)) {
+            if (!typesCompatible(crate, ret_ty, body_ty, &type_params)) {
                 diagnostics.reportError(func.span, "function return type does not match body");
             }
         } else {
@@ -80,8 +118,10 @@ fn typecheckFunction(crate: *hir.Crate, func: *hir.Function, diagnostics: *diag.
 
 // Type checks a struct definition, ensuring all field types are known.
 fn typecheckStruct(crate: *hir.Crate, structure: *hir.Struct, diagnostics: *diag.Diagnostics) Error!void {
+    var type_params = try TypeParamSet.init(crate.allocator(), structure.type_params);
+    defer type_params.deinit(crate.allocator());
     for (structure.fields) |field| {
-        try ensureKnownType(crate, field.ty, field.span, diagnostics);
+        try ensureKnownType(crate, field.ty, field.span, diagnostics, &type_params);
     }
 }
 
@@ -89,22 +129,48 @@ fn typecheckStruct(crate: *hir.Crate, structure: *hir.Struct, diagnostics: *diag
 fn typecheckConst(crate: *hir.Crate, const_item: *hir.Const, diagnostics: *diag.Diagnostics) Error!void {
     var empty_locals = std.AutoHashMap(hir.LocalId, hir.TypeId).init(crate.allocator());
     defer empty_locals.deinit();
-    const value_ty = try checkExpr(crate, const_item.value, diagnostics, &empty_locals, false);
-    if (!typesCompatible(crate, const_item.ty, value_ty)) {
+    const empty_type_params = TypeParamSet.empty();
+    try ensureKnownType(crate, const_item.ty, const_item.span, diagnostics, &empty_type_params);
+    const value_ty = try checkExpr(crate, const_item.value, diagnostics, &empty_locals, false, &empty_type_params);
+    if (!typesCompatible(crate, const_item.ty, value_ty, &empty_type_params)) {
         diagnostics.reportError(const_item.span, "const type does not match initializer");
     }
 }
 
 // Validates that a type is known (not Unknown) and reports an error if not.
-fn ensureKnownType(crate: *hir.Crate, ty: hir.TypeId, span: hir.Span, diagnostics: *diag.Diagnostics) Error!void {
+fn ensureKnownType(
+    crate: *hir.Crate,
+    ty: hir.TypeId,
+    span: hir.Span,
+    diagnostics: *diag.Diagnostics,
+    type_params: *const TypeParamSet,
+) Error!void {
     if (ty >= crate.types.items.len) {
         diagnostics.reportError(span, "unknown type reference");
         return;
     }
 
     const kind = crate.types.items[ty].kind;
-    if (kind == .Unknown) {
-        diagnostics.reportError(span, "type could not be resolved");
+    switch (kind) {
+        .Unknown => diagnostics.reportError(span, "type could not be resolved"),
+        .Struct => |info| {
+            for (info.type_args) |arg| {
+                try ensureKnownType(crate, arg, span, diagnostics, type_params);
+            }
+        },
+        .Path => |path| {
+            for (path.args) |arg| {
+                try ensureKnownType(crate, arg, span, diagnostics, type_params);
+            }
+            if (path.segments.len == 1) {
+                const name = path.segments[0];
+                if (type_params.contains(name)) return;
+                if (!isKnownTypeName(crate, name)) {
+                    diagnostics.reportError(span, "undeclared type or type parameter");
+                }
+            }
+        },
+        else => {},
     }
 }
 
@@ -116,6 +182,7 @@ fn checkExpr(
     diagnostics: *diag.Diagnostics,
     locals: *std.AutoHashMap(hir.LocalId, hir.TypeId),
     in_unsafe: bool,
+    type_params: *const TypeParamSet,
 ) Error!hir.TypeId {
     const expr = &crate.exprs.items[expr_id];
     const span = expr.span;
@@ -169,17 +236,17 @@ fn checkExpr(
         .Block => |block| {
             var last_ty: ?hir.TypeId = null;
             for (block.stmts) |stmt_id| {
-                try checkStmt(crate, stmt_id, diagnostics, locals, &last_ty, in_unsafe);
+                try checkStmt(crate, stmt_id, diagnostics, locals, &last_ty, in_unsafe, type_params);
             }
             if (block.tail) |tail| {
-                last_ty = try checkExpr(crate, tail, diagnostics, locals, in_unsafe);
+                last_ty = try checkExpr(crate, tail, diagnostics, locals, in_unsafe, type_params);
             }
             expr.ty = last_ty orelse try ensureType(crate, .Unknown);
         },
 
         .Unsafe => |u| {
             // Inside the unsafe block body, we typecheck with in_unsafe = true.
-            const body_ty = try checkExpr(crate, u.body, diagnostics, locals, true);
+            const body_ty = try checkExpr(crate, u.body, diagnostics, locals, true, type_params);
             expr.ty = body_ty;
         },
 
@@ -189,12 +256,13 @@ fn checkExpr(
         },
         .Cast => |c| {
             // Type check the inner expression first
-            _ = try checkExpr(crate, c.expr, diagnostics, locals, in_unsafe);
+            _ = try checkExpr(crate, c.expr, diagnostics, locals, in_unsafe, type_params);
+            try ensureKnownType(crate, c.ty, span, diagnostics, type_params);
             expr.ty = c.ty;
         },
         .Binary => |bin| {
-            const lhs_ty = try checkExpr(crate, bin.lhs, diagnostics, locals, in_unsafe);
-            const rhs_ty = try checkExpr(crate, bin.rhs, diagnostics, locals, in_unsafe);
+            const lhs_ty = try checkExpr(crate, bin.lhs, diagnostics, locals, in_unsafe, type_params);
+            const rhs_ty = try checkExpr(crate, bin.rhs, diagnostics, locals, in_unsafe, type_params);
 
             switch (bin.op) {
                 .LogicalOr, .LogicalAnd => {
@@ -204,13 +272,13 @@ fn checkExpr(
                     expr.ty = try ensureType(crate, .Bool);
                 },
                 .Eq, .Ne, .Lt, .Le, .Gt, .Ge => {
-                    if (!typesCompatible(crate, lhs_ty, rhs_ty)) {
+                    if (!typesCompatible(crate, lhs_ty, rhs_ty, type_params)) {
                         diagnostics.reportError(span, "comparison operands must have the same type");
                     }
                     expr.ty = try ensureType(crate, .Bool);
                 },
                 .Add, .Sub, .Mul, .Div, .Mod => {
-                    if (!typesCompatible(crate, lhs_ty, rhs_ty)) {
+                    if (!typesCompatible(crate, lhs_ty, rhs_ty, type_params)) {
                         diagnostics.reportError(span, "arithmetic operands must have the same type");
                         expr.ty = try ensureType(crate, .Unknown);
                     } else if (!isNumeric(crate, lhs_ty)) {
@@ -223,7 +291,7 @@ fn checkExpr(
             }
         },
         .Unary => |un| {
-            const operand_ty = try checkExpr(crate, un.expr, diagnostics, locals, in_unsafe);
+            const operand_ty = try checkExpr(crate, un.expr, diagnostics, locals, in_unsafe, type_params);
             switch (un.op) {
                 .Not => {
                     if (!isBool(crate, operand_ty)) diagnostics.reportError(span, "`!` expects a boolean operand");
@@ -266,7 +334,7 @@ fn checkExpr(
         },
         .Call => |call| {
             // Check if this is an array method call (e.g., data.len())
-            if (isArrayMethodCall(crate, call.callee, diagnostics, locals, in_unsafe)) |method_info| {
+            if (isArrayMethodCall(crate, call.callee, diagnostics, locals, in_unsafe, type_params)) |method_info| {
                 // Handle array method calls
                 if (std.mem.eql(u8, method_info.method_name, "len")) {
                     // len() takes no arguments and returns usize
@@ -278,7 +346,7 @@ fn checkExpr(
                     diagnostics.reportError(span, "unknown array method");
                     expr.ty = try ensureType(crate, .Unknown);
                 }
-            } else if (isPointerMethodCall(crate, call.callee, diagnostics, locals, in_unsafe)) |method_info| {
+            } else if (isPointerMethodCall(crate, call.callee, diagnostics, locals, in_unsafe, type_params)) |method_info| {
                 // Handle pointer method calls
                 if (std.mem.eql(u8, method_info.method_name, "is_null")) {
                     // is_null() takes no arguments and returns bool
@@ -290,22 +358,22 @@ fn checkExpr(
                     diagnostics.reportError(span, "unknown pointer method");
                     expr.ty = try ensureType(crate, .Unknown);
                 }
-            } else if (isStructMethodCall(crate, call.callee, diagnostics, locals, in_unsafe)) |method_info| {
+            } else if (isStructMethodCall(crate, call.callee, diagnostics, locals, in_unsafe, type_params)) |method_info| {
                 // Handle struct method calls (e.g., point.offset(1, 2))
                 // Type check all arguments
                 for (call.args) |arg_id| {
-                    _ = try checkExpr(crate, arg_id, diagnostics, locals, in_unsafe);
+                    _ = try checkExpr(crate, arg_id, diagnostics, locals, in_unsafe, type_params);
                 }
                 // Set the return type from the method
                 expr.ty = method_info.ret_ty;
             } else {
-                const callee_ty = try checkExpr(crate, call.callee, diagnostics, locals, in_unsafe);
+                const callee_ty = try checkExpr(crate, call.callee, diagnostics, locals, in_unsafe, type_params);
                 var param_types: []hir.TypeId = &[_]hir.TypeId{};
                 var ret_ty: hir.TypeId = try ensureType(crate, .Unknown);
 
                 if (isBuiltinPrintln(crate, call.callee)) {
                     for (call.args) |arg_id| {
-                        _ = try checkExpr(crate, arg_id, diagnostics, locals, in_unsafe);
+                        _ = try checkExpr(crate, arg_id, diagnostics, locals, in_unsafe, type_params);
                     }
                     expr.ty = ret_ty;
                 } else {
@@ -344,14 +412,14 @@ fn checkExpr(
                             }
                         }
 
-                        const arg_ty = try checkExpr(crate, arg_id, diagnostics, locals, in_unsafe);
+                        const arg_ty = try checkExpr(crate, arg_id, diagnostics, locals, in_unsafe, type_params);
                         if (idx < param_types.len) {
                             const expected = param_types[idx];
                             const expected_kind = if (expected < crate.types.items.len)
                                 crate.types.items[expected].kind
                             else
                                 .Unknown;
-                            if (expected_kind != .Fn and !typesCompatible(crate, arg_ty, expected)) {
+                            if (expected_kind != .Fn and !typesCompatible(crate, arg_ty, expected, type_params)) {
                                 diagnostics.reportError(span, "argument type does not match parameter");
                             }
 
@@ -378,17 +446,17 @@ fn checkExpr(
             }
         },
         .MethodCall => |call| {
-            _ = try checkExpr(crate, call.target, diagnostics, locals, in_unsafe);
+            _ = try checkExpr(crate, call.target, diagnostics, locals, in_unsafe, type_params);
             for (call.args) |arg_id| {
-                _ = try checkExpr(crate, arg_id, diagnostics, locals, in_unsafe);
+                _ = try checkExpr(crate, arg_id, diagnostics, locals, in_unsafe, type_params);
             }
             expr.ty = try ensureType(crate, .Unknown);
         },
         .Assignment => |assign| {
-            const target_ty = try checkExpr(crate, assign.target, diagnostics, locals, in_unsafe);
-            const value_ty = try checkExpr(crate, assign.value, diagnostics, locals, in_unsafe);
+            const target_ty = try checkExpr(crate, assign.target, diagnostics, locals, in_unsafe, type_params);
+            const value_ty = try checkExpr(crate, assign.value, diagnostics, locals, in_unsafe, type_params);
 
-            if (!typesCompatible(crate, target_ty, value_ty)) {
+            if (!typesCompatible(crate, target_ty, value_ty, type_params)) {
                 diagnostics.reportError(span, "assignment types do not match");
             }
 
@@ -396,19 +464,19 @@ fn checkExpr(
         },
         .Return => |ret| {
             if (ret) |value_id| {
-                expr.ty = try checkExpr(crate, value_id, diagnostics, locals, in_unsafe);
+                expr.ty = try checkExpr(crate, value_id, diagnostics, locals, in_unsafe, type_params);
             } else {
                 expr.ty = try ensureType(crate, .Unknown);
             }
         },
         .If => |ifs| {
-            const cond_ty = try checkExpr(crate, ifs.cond, diagnostics, locals, in_unsafe);
+            const cond_ty = try checkExpr(crate, ifs.cond, diagnostics, locals, in_unsafe, type_params);
             if (!isBool(crate, cond_ty)) diagnostics.reportError(span, "if condition must be boolean");
 
-            const then_ty = try checkExpr(crate, ifs.then_branch, diagnostics, locals, in_unsafe);
+            const then_ty = try checkExpr(crate, ifs.then_branch, diagnostics, locals, in_unsafe, type_params);
             if (ifs.else_branch) |else_id| {
-                const else_ty = try checkExpr(crate, else_id, diagnostics, locals, in_unsafe);
-                if (typesCompatible(crate, then_ty, else_ty)) {
+                const else_ty = try checkExpr(crate, else_id, diagnostics, locals, in_unsafe, type_params);
+                if (typesCompatible(crate, then_ty, else_ty, type_params)) {
                     expr.ty = then_ty;
                 } else {
                     diagnostics.reportError(span, "if branches must have the same type");
@@ -419,13 +487,13 @@ fn checkExpr(
             }
         },
         .While => |wh| {
-            const cond_ty = try checkExpr(crate, wh.cond, diagnostics, locals, in_unsafe);
+            const cond_ty = try checkExpr(crate, wh.cond, diagnostics, locals, in_unsafe, type_params);
             if (!isBool(crate, cond_ty)) diagnostics.reportError(span, "while condition must be boolean");
-            _ = try checkExpr(crate, wh.body, diagnostics, locals, in_unsafe);
+            _ = try checkExpr(crate, wh.body, diagnostics, locals, in_unsafe, type_params);
             expr.ty = try ensureType(crate, .Unknown);
         },
         .For => |for_expr| {
-            const iter_ty = try checkExpr(crate, for_expr.iter, diagnostics, locals, in_unsafe);
+            const iter_ty = try checkExpr(crate, for_expr.iter, diagnostics, locals, in_unsafe, type_params);
 
             // Check if the iterator is a range expression
             const iter_expr = &crate.exprs.items[for_expr.iter];
@@ -444,17 +512,17 @@ fn checkExpr(
             };
 
             const pat_ty = try ensurePatternBinding(crate, for_expr.pat.id, locals);
-            if (!isUnknown(crate, pat_ty) and !typesCompatible(crate, pat_ty, elem_ty)) {
+            if (!isUnknown(crate, pat_ty) and !typesCompatible(crate, pat_ty, elem_ty, type_params)) {
                 diagnostics.reportError(span, "for pattern type does not match iterator");
             }
             try locals.put(for_expr.pat.id, elem_ty);
-            _ = try checkExpr(crate, for_expr.body, diagnostics, locals, in_unsafe);
+            _ = try checkExpr(crate, for_expr.body, diagnostics, locals, in_unsafe, type_params);
             expr.ty = try ensureType(crate, .Unknown);
         },
         .Range => |range| {
-            const start_ty = try checkExpr(crate, range.start, diagnostics, locals, in_unsafe);
-            const end_ty = try checkExpr(crate, range.end, diagnostics, locals, in_unsafe);
-            if (!typesCompatible(crate, start_ty, end_ty)) {
+            const start_ty = try checkExpr(crate, range.start, diagnostics, locals, in_unsafe, type_params);
+            const end_ty = try checkExpr(crate, range.end, diagnostics, locals, in_unsafe, type_params);
+            if (!typesCompatible(crate, start_ty, end_ty, type_params)) {
                 diagnostics.reportError(span, "range bounds must have the same type");
                 expr.ty = try ensureType(crate, .Unknown);
             } else {
@@ -462,8 +530,8 @@ fn checkExpr(
             }
         },
         .Index => |index| {
-            const target_ty = try checkExpr(crate, index.target, diagnostics, locals, in_unsafe);
-            _ = try checkExpr(crate, index.index, diagnostics, locals, in_unsafe);
+            const target_ty = try checkExpr(crate, index.target, diagnostics, locals, in_unsafe, type_params);
+            _ = try checkExpr(crate, index.index, diagnostics, locals, in_unsafe, type_params);
             expr.ty = switch (getArrayElementType(crate, target_ty)) {
                 .ok => |elem_ty| elem_ty,
                 .err => blk: {
@@ -473,15 +541,15 @@ fn checkExpr(
             };
         },
         .Field => |field| {
-            const target_ty = try checkExpr(crate, field.target, diagnostics, locals, in_unsafe);
+            const target_ty = try checkExpr(crate, field.target, diagnostics, locals, in_unsafe, type_params);
             expr.ty = try resolveFieldType(crate, target_ty, field.name, span, diagnostics);
         },
         .Array => |elements| {
             var element_ty: ?hir.TypeId = null;
             for (elements) |elem_id| {
-                const ty = try checkExpr(crate, elem_id, diagnostics, locals, in_unsafe);
+                const ty = try checkExpr(crate, elem_id, diagnostics, locals, in_unsafe, type_params);
                 if (element_ty) |existing| {
-                    if (!typesCompatible(crate, existing, ty)) {
+                    if (!typesCompatible(crate, existing, ty, type_params)) {
                         diagnostics.reportError(span, "array elements must have the same type");
                     }
                 } else {
@@ -504,7 +572,7 @@ fn checkExpr(
                 const inferred_args = try crate.allocator().alloc(hir.TypeId, struct_item.type_params.len);
                 @memset(inferred_args, unknown_ty);
                 for (init.fields) |field_init| {
-                    const value_ty = try checkExpr(crate, field_init.value, diagnostics, locals, in_unsafe);
+                    const value_ty = try checkExpr(crate, field_init.value, diagnostics, locals, in_unsafe, type_params);
                     const expected_ty = findFieldType(struct_item, field_init.name);
                     if (expected_ty) |ty| {
                         const expected_kind = if (ty < crate.types.items.len) crate.types.items[ty].kind else null;
@@ -516,12 +584,12 @@ fn checkExpr(
                                         const inferred = inferred_args[param_idx];
                                         if (isUnknown(crate, inferred)) {
                                             inferred_args[param_idx] = value_ty;
-                                        } else if (!typesCompatible(crate, inferred, value_ty)) {
+                                        } else if (!typesCompatible(crate, inferred, value_ty, type_params)) {
                                             diagnostics.reportError(span, "struct field type mismatch");
                                         }
 
                                         const compare_ty = inferred_args[param_idx];
-                                        if (!isUnknown(crate, compare_ty) and !typesCompatible(crate, compare_ty, value_ty)) {
+                                        if (!isUnknown(crate, compare_ty) and !typesCompatible(crate, compare_ty, value_ty, type_params)) {
                                             diagnostics.reportError(span, "struct field type mismatch");
                                         }
                                         continue;
@@ -530,7 +598,7 @@ fn checkExpr(
                             }
                         }
 
-                        if (!typesCompatible(crate, ty, value_ty)) {
+                        if (!typesCompatible(crate, ty, value_ty, type_params)) {
                             diagnostics.reportError(span, "struct field type mismatch");
                         }
                     } else {
@@ -561,7 +629,7 @@ fn checkExpr(
                 try lambda_locals.put(entry.key_ptr.*, entry.value_ptr.*);
             }
 
-            const body_ty = try checkExpr(crate, lambda.body, diagnostics, &lambda_locals, in_unsafe);
+            const body_ty = try checkExpr(crate, lambda.body, diagnostics, &lambda_locals, in_unsafe, type_params);
             expr.ty = try ensureType(crate, .{ .Fn = .{ .params = param_types, .ret = body_ty } });
         },
         .Path => {
@@ -583,23 +651,25 @@ fn checkStmt(
     locals: *std.AutoHashMap(hir.LocalId, hir.TypeId),
     last_ty: *?hir.TypeId,
     in_unsafe: bool,
+    type_params: *const TypeParamSet,
 ) Error!void {
     const stmt = &crate.stmts.items[stmt_id];
     switch (stmt.kind) {
         .Let => |*let_stmt| {
             var declared_ty = let_stmt.ty;
             if (let_stmt.value) |value_id| {
-                const value_ty = try checkExpr(crate, value_id, diagnostics, locals, in_unsafe);
+                const value_ty = try checkExpr(crate, value_id, diagnostics, locals, in_unsafe, type_params);
                 if (declared_ty) |*ty_id| {
-                    if (!typesCompatible(crate, ty_id.*, value_ty)) {
-                        // view types
-
+                    try ensureKnownType(crate, ty_id.*, stmt.span, diagnostics, type_params);
+                    if (!typesCompatible(crate, ty_id.*, value_ty, type_params)) {
                         diagnostics.reportError(stmt.span, "mismatched types in let binding");
                     }
                 } else {
                     declared_ty = value_ty;
                     let_stmt.ty = value_ty;
                 }
+            } else if (declared_ty) |ty_id| {
+                try ensureKnownType(crate, ty_id, stmt.span, diagnostics, type_params);
             }
 
             if (let_stmt.pat.kind == .Identifier) {
@@ -608,7 +678,7 @@ fn checkStmt(
             last_ty.* = declared_ty;
         },
         .Expr => |expr_id| {
-            last_ty.* = try checkExpr(crate, expr_id, diagnostics, locals, in_unsafe);
+            last_ty.* = try checkExpr(crate, expr_id, diagnostics, locals, in_unsafe, type_params);
         },
         .Unknown => {},
     }
@@ -722,7 +792,7 @@ fn resolveType(crate: *hir.Crate, ty: hir.TypeId) hir.TypeId {
 
 // Checks if two types are compatible for assignment or comparison.
 // Resolves type aliases and allows coercion between compatible types.
-fn typesCompatible(crate: *hir.Crate, lhs: hir.TypeId, rhs: hir.TypeId) bool {
+fn typesCompatible(crate: *hir.Crate, lhs: hir.TypeId, rhs: hir.TypeId, type_params: *const TypeParamSet) bool {
     // Resolve type aliases before comparing
     const resolved_lhs = resolveType(crate, lhs);
     const resolved_rhs = resolveType(crate, rhs);
@@ -735,16 +805,11 @@ fn typesCompatible(crate: *hir.Crate, lhs: hir.TypeId, rhs: hir.TypeId) bool {
     const lhs_kind = crate.types.items[resolved_lhs].kind;
     const rhs_kind = crate.types.items[resolved_rhs].kind;
 
-    // Check if rhs is a type parameter (single-segment path that is a declared type param
-    // or doesn't resolve to a known type). If so, it's compatible with any type (for generic type inference)
+    // Check if rhs is a declared type parameter. If so, it's compatible with any type (for generic type inference)
     if (rhs_kind == .Path) {
         const rhs_path = rhs_kind.Path;
-        if (rhs_path.segments.len == 1) {
-            const type_name = rhs_path.segments[0];
-            // Use declared type params for better detection, fall back to !isKnownTypeName
-            if (isDeclaredTypeParam(crate, type_name) or !isKnownTypeName(crate, type_name)) {
-                return true;
-            }
+        if (rhs_path.segments.len == 1 and type_params.contains(rhs_path.segments[0])) {
+            return true;
         }
     }
 
@@ -756,13 +821,13 @@ fn typesCompatible(crate: *hir.Crate, lhs: hir.TypeId, rhs: hir.TypeId) bool {
             else => false,
         },
         .Pointer => |lhs_ptr| switch (rhs_kind) {
-            .Pointer => |rhs_ptr| lhs_ptr.mutable == rhs_ptr.mutable and typesCompatible(crate, lhs_ptr.inner, rhs_ptr.inner),
+            .Pointer => |rhs_ptr| lhs_ptr.mutable == rhs_ptr.mutable and typesCompatible(crate, lhs_ptr.inner, rhs_ptr.inner, type_params),
             // Allow Ref to Pointer coercion (like Rust's implicit conversion)
-            .Ref => |rhs_ref| !lhs_ptr.mutable or rhs_ref.mutable and typesCompatible(crate, lhs_ptr.inner, rhs_ref.inner),
+            .Ref => |rhs_ref| !lhs_ptr.mutable or rhs_ref.mutable and typesCompatible(crate, lhs_ptr.inner, rhs_ref.inner, type_params),
             else => false,
         },
         .Ref => |lhs_ref| switch (rhs_kind) {
-            .Ref => |rhs_ref| lhs_ref.mutable == rhs_ref.mutable and typesCompatible(crate, lhs_ref.inner, rhs_ref.inner),
+            .Ref => |rhs_ref| lhs_ref.mutable == rhs_ref.mutable and typesCompatible(crate, lhs_ref.inner, rhs_ref.inner, type_params),
             // Allow &str to be compatible with String (simplified for this compiler)
             .String => isStr(crate, lhs_ref.inner),
             else => false,
@@ -783,25 +848,14 @@ fn typesCompatible(crate: *hir.Crate, lhs: hir.TypeId, rhs: hir.TypeId) bool {
         .Path => |lhs_path| switch (rhs_kind) {
             .Struct => |rhs_struct| structMatchesPath(crate, rhs_struct.def_id, lhs_path.segments),
             .Path => |rhs_path| pathsMatch(lhs_path.segments, rhs_path.segments),
-            else => blk: {
-                // If the path is a single-segment path that is a declared type param
-                // or doesn't resolve to a known type, treat it as a generic type parameter
-                // that's compatible with any type. This enables basic generic type inference.
-                if (lhs_path.segments.len == 1) {
-                    const type_name = lhs_path.segments[0];
-                    if (isDeclaredTypeParam(crate, type_name) or !isKnownTypeName(crate, type_name)) {
-                        break :blk true;
-                    }
-                }
-                break :blk false;
-            },
+            else => lhs_path.segments.len == 1 and type_params.contains(lhs_path.segments[0]),
         },
 
         .Array => |lhs_arr| switch (rhs_kind) {
             .Array => |rhs_arr| blk: {
                 if (lhs_arr.size_const != rhs_arr.size_const) break :blk false;
 
-                break :blk typesCompatible(crate, lhs_arr.elem, rhs_arr.elem);
+                break :blk typesCompatible(crate, lhs_arr.elem, rhs_arr.elem, type_params);
             },
             else => false,
         },
@@ -860,32 +914,6 @@ fn isKnownTypeName(crate: *hir.Crate, type_name: []const u8) bool {
         switch (item.kind) {
             .Struct => |s| if (std.mem.eql(u8, s.name, type_name)) return true,
             .TypeAlias => |a| if (std.mem.eql(u8, a.name, type_name)) return true,
-            else => {},
-        }
-    }
-    return false;
-}
-
-/// Checks if a name is a declared type parameter in any struct, function, or impl block.
-/// Returns true if the name matches a declared type parameter.
-fn isDeclaredTypeParam(crate: *hir.Crate, type_name: []const u8) bool {
-    for (crate.items.items) |item| {
-        switch (item.kind) {
-            .Struct => |s| {
-                for (s.type_params) |param| {
-                    if (std.mem.eql(u8, param, type_name)) return true;
-                }
-            },
-            .Function => |f| {
-                for (f.type_params) |param| {
-                    if (std.mem.eql(u8, param, type_name)) return true;
-                }
-            },
-            .Impl => |impl_item| {
-                for (impl_item.type_params) |param| {
-                    if (std.mem.eql(u8, param, type_name)) return true;
-                }
-            },
             else => {},
         }
     }
@@ -1126,6 +1154,7 @@ fn isPointerMethodCall(
     diagnostics: *diag.Diagnostics,
     locals: *std.AutoHashMap(hir.LocalId, hir.TypeId),
     in_unsafe: bool,
+    type_params: *const TypeParamSet,
 ) ?PointerMethodInfo {
     if (callee_id >= crate.exprs.items.len) return null;
     const callee_expr = crate.exprs.items[callee_id];
@@ -1136,7 +1165,7 @@ fn isPointerMethodCall(
     const field = callee_expr.kind.Field;
 
     // Check if the target is a pointer type
-    const target_ty = checkExpr(crate, field.target, diagnostics, locals, in_unsafe) catch return null;
+    const target_ty = checkExpr(crate, field.target, diagnostics, locals, in_unsafe, type_params) catch return null;
     if (target_ty >= crate.types.items.len) return null;
 
     switch (crate.types.items[target_ty].kind) {
@@ -1163,6 +1192,7 @@ fn isArrayMethodCall(
     diagnostics: *diag.Diagnostics,
     locals: *std.AutoHashMap(hir.LocalId, hir.TypeId),
     in_unsafe: bool,
+    type_params: *const TypeParamSet,
 ) ?ArrayMethodInfo {
     if (callee_id >= crate.exprs.items.len) return null;
     const callee_expr = crate.exprs.items[callee_id];
@@ -1173,7 +1203,7 @@ fn isArrayMethodCall(
     const field = callee_expr.kind.Field;
 
     // Check if the target is an array type (or ref/pointer to array)
-    const target_ty = checkExpr(crate, field.target, diagnostics, locals, in_unsafe) catch return null;
+    const target_ty = checkExpr(crate, field.target, diagnostics, locals, in_unsafe, type_params) catch return null;
     if (target_ty >= crate.types.items.len) return null;
 
     // Check if it's an array or ref/pointer to array
@@ -1213,6 +1243,7 @@ fn isStructMethodCall(
     diagnostics: *diag.Diagnostics,
     locals: *std.AutoHashMap(hir.LocalId, hir.TypeId),
     in_unsafe: bool,
+    type_params: *const TypeParamSet,
 ) ?StructMethodInfo {
     if (callee_id >= crate.exprs.items.len) return null;
     const callee_expr = crate.exprs.items[callee_id];
@@ -1223,7 +1254,7 @@ fn isStructMethodCall(
     const field = callee_expr.kind.Field;
 
     // Check if the target is a struct type
-    const target_ty = checkExpr(crate, field.target, diagnostics, locals, in_unsafe) catch return null;
+    const target_ty = checkExpr(crate, field.target, diagnostics, locals, in_unsafe, type_params) catch return null;
     const resolved_ty = resolveType(crate, target_ty);
     if (resolved_ty >= crate.types.items.len) return null;
 
@@ -1391,13 +1422,14 @@ test "typechecker handles composite expressions" {
 
     var locals = std.AutoHashMap(hir.LocalId, hir.TypeId).init(crate.allocator());
     defer locals.deinit();
+    const empty_type_params = TypeParamSet.empty();
 
-    try std.testing.expectEqual(i64_ty, try checkExpr(&crate, binary_expr_id, &diagnostics, &locals, false));
-    try std.testing.expectEqual(bool_ty, try checkExpr(&crate, unary_expr_id, &diagnostics, &locals, false));
+    try std.testing.expectEqual(i64_ty, try checkExpr(&crate, binary_expr_id, &diagnostics, &locals, false, &empty_type_params));
+    try std.testing.expectEqual(bool_ty, try checkExpr(&crate, unary_expr_id, &diagnostics, &locals, false, &empty_type_params));
     const expected_arr_ty = try ensureType(&crate, .{ .Array = .{ .elem = i64_ty, .size_const = 2 } });
-    try std.testing.expectEqual(expected_arr_ty, try checkExpr(&crate, array_expr_id, &diagnostics, &locals, false));
-    try std.testing.expectEqual(struct_ty, try checkExpr(&crate, struct_init_expr_id, &diagnostics, &locals, false));
-    try std.testing.expectEqual(i64_ty, try checkExpr(&crate, field_expr_id, &diagnostics, &locals, false));
+    try std.testing.expectEqual(expected_arr_ty, try checkExpr(&crate, array_expr_id, &diagnostics, &locals, false, &empty_type_params));
+    try std.testing.expectEqual(struct_ty, try checkExpr(&crate, struct_init_expr_id, &diagnostics, &locals, false, &empty_type_params));
+    try std.testing.expectEqual(i64_ty, try checkExpr(&crate, field_expr_id, &diagnostics, &locals, false, &empty_type_params));
     try std.testing.expect(!diagnostics.hasErrors());
 }
 
@@ -1440,8 +1472,10 @@ test "typechecker infers generic struct field types from init values" {
     var locals = std.AutoHashMap(hir.LocalId, hir.TypeId).init(crate.allocator());
     defer locals.deinit();
 
-    const struct_ty = try checkExpr(&crate, struct_init_expr_id, &diagnostics, &locals, false);
-    try std.testing.expectEqual(bool_ty, try checkExpr(&crate, field_expr_id, &diagnostics, &locals, false));
+    const empty_type_params = TypeParamSet.empty();
+
+    const struct_ty = try checkExpr(&crate, struct_init_expr_id, &diagnostics, &locals, false, &empty_type_params);
+    try std.testing.expectEqual(bool_ty, try checkExpr(&crate, field_expr_id, &diagnostics, &locals, false, &empty_type_params));
 
     try std.testing.expect(!diagnostics.hasErrors());
 
@@ -1495,7 +1529,9 @@ test "typechecker reports conflicts when generic fields infer different types" {
     var locals = std.AutoHashMap(hir.LocalId, hir.TypeId).init(crate.allocator());
     defer locals.deinit();
 
-    _ = try checkExpr(&crate, struct_init_expr_id, &diagnostics, &locals, false);
+    const empty_type_params = TypeParamSet.empty();
+
+    _ = try checkExpr(&crate, struct_init_expr_id, &diagnostics, &locals, false, &empty_type_params);
 
     try std.testing.expect(diagnostics.hasErrors());
 
@@ -1503,7 +1539,54 @@ test "typechecker reports conflicts when generic fields infer different types" {
     try std.testing.expect(struct_kind == .Struct);
     try std.testing.expectEqual(@as(usize, 1), struct_kind.Struct.type_args.len);
     try std.testing.expectEqual(i64_ty, struct_kind.Struct.type_args[0]);
-    try std.testing.expect(!typesCompatible(&crate, struct_kind.Struct.type_args[0], bool_ty));
+    try std.testing.expect(!typesCompatible(&crate, struct_kind.Struct.type_args[0], bool_ty, &empty_type_params));
+}
+
+test "typechecker reports undeclared type parameters" {
+    const allocator = std.testing.allocator;
+    var diagnostics = diag.Diagnostics.init(allocator);
+    defer diagnostics.deinit();
+
+    var crate = hir.Crate.init(allocator);
+    defer crate.deinit();
+
+    const span = hir.emptySpan(0);
+
+    const type_params = try crate.allocator().alloc([]const u8, 1);
+    type_params[0] = "T";
+
+    const u_segments = try crate.allocator().alloc([]const u8, 1);
+    u_segments[0] = "U";
+    const unknown_ty = try ensureType(&crate, .{ .Path = .{ .segments = u_segments, .args = &[_]hir.TypeId{} } });
+
+    const struct_fields = try crate.allocator().alloc(hir.Field, 1);
+    struct_fields[0] = .{ .name = "value", .ty = unknown_ty, .span = span };
+
+    try crate.items.append(crate.allocator(), .{ .id = 0, .kind = .{ .Struct = .{ .def_id = 0, .name = "Holder", .type_params = type_params, .fields = struct_fields, .span = span } }, .span = span });
+
+    try typecheck(&crate, &diagnostics);
+    try std.testing.expect(diagnostics.hasErrors());
+}
+
+test "typesCompatible only treats declared params as generic" {
+    const allocator = std.testing.allocator;
+    var crate = hir.Crate.init(allocator);
+    defer crate.deinit();
+
+    const t_segments = try crate.allocator().alloc([]const u8, 1);
+    t_segments[0] = "T";
+    const t_ty = try ensureType(&crate, .{ .Path = .{ .segments = t_segments, .args = &[_]hir.TypeId{} } });
+    const bool_ty = try ensureType(&crate, .Bool);
+
+    const params = try crate.allocator().alloc([]const u8, 1);
+    params[0] = "T";
+    var declared = try TypeParamSet.init(crate.allocator(), params);
+    defer declared.deinit(crate.allocator());
+
+    const empty_type_params = TypeParamSet.empty();
+
+    try std.testing.expect(!typesCompatible(&crate, t_ty, bool_ty, &empty_type_params));
+    try std.testing.expect(typesCompatible(&crate, t_ty, bool_ty, &declared));
 }
 
 test "typechecker reports invalid expressions" {
@@ -1536,8 +1619,10 @@ test "typechecker reports invalid expressions" {
     var locals = std.AutoHashMap(hir.LocalId, hir.TypeId).init(crate.allocator());
     defer locals.deinit();
 
-    _ = try checkExpr(&crate, bad_binary_expr_id, &diagnostics, &locals, false);
-    _ = try checkExpr(&crate, array_expr_id, &diagnostics, &locals, false);
+    const empty_type_params = TypeParamSet.empty();
+
+    _ = try checkExpr(&crate, bad_binary_expr_id, &diagnostics, &locals, false, &empty_type_params);
+    _ = try checkExpr(&crate, array_expr_id, &diagnostics, &locals, false, &empty_type_params);
 
     try std.testing.expect(diagnostics.hasErrors());
 }
