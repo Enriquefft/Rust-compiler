@@ -108,8 +108,6 @@ Additional files:
 * `Features.md` – language subset description.
 * `README.md` – project overview.
 
-> **Note:** The `util/` directory mentioned in earlier versions of this document is not currently implemented. Utility functions are inlined in the modules that use them. A separate `tests/` directory with golden files may be added in the future.
-
 ---
 
 ## 4. Entry Point and Driver
@@ -912,7 +910,7 @@ pub fn emitAssembly(
 ) ![]const u8;
 ```
 
-> **Note:** Object file (`.o`) emission is not yet implemented. A dedicated `peephole.zig` pass is planned but not currently present.
+> **Note:** Object file (`.o`) emission is not yet implemented. A dedicated `peephole.zig` pass is planned.
 
 ### 10.5 `println!` lowering and libc interop
 
@@ -933,21 +931,9 @@ pub fn emitAssembly(
 
 ---
 
-## 11. Utilities
+## 11. Testing Strategy
 
-> **Note:** A dedicated `util/` directory is not currently implemented. The compiler uses:
->
-> * Zig's built-in `std.heap.ArenaAllocator` for arena allocation within each IR crate (AST, HIR, MIR).
-> * Inline string handling within modules rather than a separate interner.
-> * CFG analysis functions embedded in the optimization passes and backend.
->
-> Future versions may extract common utilities into a shared module.
-
----
-
-## 12. Testing Strategy
-
-### 12.1 Current Layout
+### 11.1 Current Layout
 
 Tests are implemented as inline Zig `test` blocks within source modules:
 
@@ -961,13 +947,13 @@ Tests are implemented as inline Zig `test` blocks within source modules:
 
 Sample source files are located in `codes/` and used for integration testing.
 
-### 12.2 Types of Tests
+### 11.2 Types of Tests
 
 * **Unit tests** inside each module (Zig `test` blocks), run via `zig build test`.
 * **End-to-end tests** in `driver.zig` that compile source snippets and verify outputs.
 * **Sample programs** in `codes/` directory for manual testing and validation.
 
-### 12.3 Future Enhancements
+### 11.3 Future Enhancements
 
 * **Golden-file tests** with input `.rs`-like files and expected `.mir`, `.s` snapshots.
 * **Execution tests** that compile, assemble, link, and run executables to check output.
@@ -975,7 +961,7 @@ Sample source files are located in `codes/` and used for integration testing.
 
 ---
 
-## 13. Incremental Implementation Plan
+## 12. Incremental Implementation Plan
 
 1. Core infra:
 
