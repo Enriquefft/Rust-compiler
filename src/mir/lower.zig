@@ -2556,7 +2556,6 @@ test "monomorphize struct path parameters" {
     try std.testing.expectEqual(@as(usize, 2), store_count);
 }
 
-
 test "lower print macro preserves format string without newline" {
     const allocator = std.testing.allocator;
     var diagnostics = diag.Diagnostics.init(allocator);
