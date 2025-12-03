@@ -27,8 +27,17 @@ const LOCAL_STACK_MULTIPLIER = shared.LOCAL_STACK_MULTIPLIER;
 
 /// Compute field layout for a struct based on declaration order.
 /// Each field is placed at sequential offsets using LOCAL_STACK_MULTIPLIER spacing.
+/// Reports an error if the struct has more than MAX_STRUCT_FIELDS fields.
 /// Returns the StructLayout or null if memory allocation fails.
-fn computeStructLayout(alloc: std.mem.Allocator, struct_item: hir.Struct) LowerError!mir.StructLayout {
+fn computeStructLayout(alloc: std.mem.Allocator, struct_item: hir.Struct, diagnostics: *diag.Diagnostics) LowerError!mir.StructLayout {
+    // Check for MAX_STRUCT_FIELDS limit
+    // Note: We report an error but continue to compute the layout.
+    // The driver will check hasErrors() and stop compilation before code generation,
+    // so this is safe. We still compute the layout to allow collecting all errors.
+    if (struct_item.fields.len > MAX_STRUCT_FIELDS) {
+        diagnostics.reportError(struct_item.span, "struct has too many fields: maximum supported is 16");
+    }
+
     var field_layouts = std.ArrayListUnmanaged(mir.FieldLayout){};
     defer field_layouts.deinit(alloc);
 
@@ -59,15 +68,15 @@ fn computeStructLayout(alloc: std.mem.Allocator, struct_item: hir.Struct) LowerE
 
 /// Get the field index (local offset index) for a field by name from the struct's fields.
 /// Uses declaration order: first field = 0, second field = 1, etc.
-/// Returns 0 if field not found (fallback).
-fn getFieldIndexFromDeclaration(fields: []const hir.Field, field_name: []const u8) hir.LocalId {
+/// Returns null if field not found.
+fn getFieldIndexFromDeclaration(fields: []const hir.Field, field_name: []const u8) ?hir.LocalId {
     for (fields, 0..) |field, idx| {
         if (std.mem.eql(u8, field.name, field_name)) {
             return @intCast(idx);
         }
     }
-    // Fallback to 0 if field not found
-    return 0;
+    // Field not found - return null instead of incorrect fallback
+    return null;
 }
 
 /// Lower a complete HIR crate to MIR representation.
@@ -84,7 +93,7 @@ pub fn lowerFromHir(allocator: std.mem.Allocator, hir_crate: *const hir.Crate, d
     for (hir_crate.items.items) |item| {
         switch (item.kind) {
             .Struct => |struct_item| {
-                const layout = try computeStructLayout(crate.allocator(), struct_item);
+                const layout = try computeStructLayout(crate.allocator(), struct_item, diagnostics);
                 try crate.struct_layouts.put(crate.allocator(), struct_item.name, layout);
             },
             else => {},
@@ -1289,8 +1298,13 @@ const FunctionBuilder = struct {
             const value_op = try self.lowerExpr(field.value) orelse continue;
 
             // Use declaration order from struct definition
+            // Note: If field not found, we report an error and use index 0 as fallback.
+            // The driver will check hasErrors() and stop compilation before code generation.
             const field_index: hir.LocalId = if (struct_fields_order) |fields|
-                getFieldIndexFromDeclaration(fields, field.name)
+                getFieldIndexFromDeclaration(fields, field.name) orelse blk: {
+                    self.diagnostics.reportError(span, "field not found in struct definition");
+                    break :blk 0;
+                }
             else
                 // Fallback: iterate struct_init.fields to find position
                 blk: {
@@ -1299,6 +1313,7 @@ const FunctionBuilder = struct {
                             break :blk @intCast(idx);
                         }
                     }
+                    self.diagnostics.reportError(span, "field not found in struct initialization");
                     break :blk 0;
                 };
 
@@ -2693,13 +2708,13 @@ test "field indices from declaration order are consistent" {
     _ = allocator;
 
     // Verify field indices are returned in declaration order
-    try std.testing.expectEqual(@as(hir.LocalId, 0), getFieldIndexFromDeclaration(&fields, "a"));
-    try std.testing.expectEqual(@as(hir.LocalId, 1), getFieldIndexFromDeclaration(&fields, "b"));
-    try std.testing.expectEqual(@as(hir.LocalId, 2), getFieldIndexFromDeclaration(&fields, "c"));
-    try std.testing.expectEqual(@as(hir.LocalId, 3), getFieldIndexFromDeclaration(&fields, "d"));
+    try std.testing.expectEqual(@as(?hir.LocalId, 0), getFieldIndexFromDeclaration(&fields, "a"));
+    try std.testing.expectEqual(@as(?hir.LocalId, 1), getFieldIndexFromDeclaration(&fields, "b"));
+    try std.testing.expectEqual(@as(?hir.LocalId, 2), getFieldIndexFromDeclaration(&fields, "c"));
+    try std.testing.expectEqual(@as(?hir.LocalId, 3), getFieldIndexFromDeclaration(&fields, "d"));
 
-    // Verify unknown field returns 0 as fallback
-    try std.testing.expectEqual(@as(hir.LocalId, 0), getFieldIndexFromDeclaration(&fields, "unknown"));
+    // Verify unknown field returns null instead of incorrect fallback
+    try std.testing.expectEqual(@as(?hir.LocalId, null), getFieldIndexFromDeclaration(&fields, "unknown"));
 }
 
 fn ensureType(crate: *hir.Crate, kind: hir.Type.Kind) hir.TypeId {
