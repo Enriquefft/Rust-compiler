@@ -3,10 +3,17 @@
 //! This module centralizes constants that must be kept in sync between
 //! MIR lowering and backend code generation. Having them in one place
 //! ensures consistency and makes it easier to adjust limits.
+//!
+//! ## Field Layout Strategy
+//!
+//! Struct fields use declaration order for layout computation. Each field is
+//! placed at a sequential offset from the struct's base address using
+//! LOCAL_STACK_MULTIPLIER spacing. This ensures stable, collision-free access
+//! compared to the previous hash-based approach.
 
-/// Maximum number of struct fields supported for hash-based field indexing.
-/// This limits the field layout to avoid collisions in the hash-based approach.
-/// A larger value reduces collision probability but increases memory usage per struct.
+/// Maximum number of struct fields supported.
+/// This limits local allocation for struct variables.
+/// Note: Field layout now uses declaration order, not hash-based indexing.
 pub const MAX_STRUCT_FIELDS: u32 = 16;
 
 /// Assumed number of fields for generic type parameters when the concrete type is unknown.
@@ -17,6 +24,7 @@ pub const ASSUMED_GENERIC_STRUCT_FIELDS: u32 = 4;
 /// Multiplier for local variable stack allocation.
 /// Each local gets this many 8-byte slots to accommodate structs and arrays.
 /// A higher value allows larger structs but uses more stack space.
+/// Field offsets are computed as: field_index * LOCAL_STACK_MULTIPLIER * sizeof(i64)
 pub const LOCAL_STACK_MULTIPLIER: u32 = 4;
 
 /// Maximum number of additional array elements (beyond the first) that can be

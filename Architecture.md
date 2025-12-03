@@ -584,6 +584,20 @@ pub const MirFn = struct {
 
 pub const MirCrate = struct {
     fns: []MirFn;
+    struct_layouts: HashMap(string, StructLayout); // Struct field layouts for declaration-order access
+};
+
+pub const FieldLayout = struct {
+    name: []const u8,    // Field name for lookup
+    offset: i32,         // Offset in bytes from struct base (declaration order)
+    size: u32,           // Size of this field in bytes
+    index: u32,          // Declaration order index (0-based)
+};
+
+pub const StructLayout = struct {
+    name: []const u8,    // Struct name for lookup
+    fields: []FieldLayout,  // Field layouts in declaration order
+    total_size: u32,     // Total struct size in bytes
 };
 ```
 
@@ -593,6 +607,7 @@ Responsibilities:
 
 * Lower each `HirFn` to `MirFn`.
 * Allocate `LocalId` indices for parameters and locals.
+* Compute and store struct layouts based on declaration order.
 * Maintain a current block and generate additional blocks as needed.
 * For each HIR expression:
 

@@ -14,6 +14,26 @@ const LOCAL_STACK_MULTIPLIER = shared.LOCAL_STACK_MULTIPLIER;
 const MAX_EXTRA_ARRAY_ELEMENTS = shared.MAX_EXTRA_ARRAY_ELEMENTS;
 const STRUCT_SECOND_FIELD_OFFSET = shared.STRUCT_SECOND_FIELD_OFFSET;
 
+/// Field stride: each struct field occupies this many bytes in memory.
+/// Computed as LOCAL_STACK_MULTIPLIER * sizeof(i64).
+const FIELD_STRIDE: i32 = @intCast(@sizeOf(i64) * LOCAL_STACK_MULTIPLIER);
+
+/// Get the field offset from stored struct layouts using declaration order.
+/// Falls back to computing offset from sequential index for known field patterns (x=0, y=1).
+/// Uses hash-based index only as a last resort for unknown field names.
+fn getFieldOffsetFromLayout(mir_crate: *const mir.MirCrate, struct_name: ?[]const u8, field_name: []const u8) i32 {
+    // Try to look up from stored struct layouts first
+    if (struct_name) |name| {
+        if (mir_crate.getFieldOffset(name, field_name)) |offset| {
+            return offset;
+        }
+    }
+    // Fall back to computing offset from sequential index for common field names
+    // Convert index to offset: offset = -index * FIELD_STRIDE
+    const field_index = getSequentialFieldIndex(field_name);
+    return -field_index * FIELD_STRIDE;
+}
+
 /// Get the sequential field index for a field name.
 /// For arrays of structs with known field patterns (x=0, y=1), returns sequential index.
 /// Falls back to hash-based index for unknown field names.
@@ -424,14 +444,8 @@ fn lowerInst(
                 const ptr_vreg = vreg_count.* - 1;
                 try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .VReg = ptr_vreg }, .src = ptr_mem } });
 
-                // For pointer-based struct access, compute hash-based field offset
-                // This matches the layout used in StructInit and StoreLocal
-                var hash: u32 = 0;
-                for (payload.name) |ch| hash = hash *% 31 +% ch;
-                const field_index: i32 = @intCast(hash % MAX_STRUCT_FIELDS);
-                // Each field is at offset = field_index * LOCAL_STACK_MULTIPLIER * sizeof(i64)
-                // Since locals grow downward (negative offsets), we subtract
-                const field_offset: i64 = -@as(i64, field_index) * @as(i64, LOCAL_STACK_MULTIPLIER) * @as(i64, @sizeOf(i64));
+                // Use stored struct layout for field offset, falling back to sequential/hash
+                const field_offset: i64 = getFieldOffsetFromLayout(ctx.mir_crate, null, payload.name);
 
                 // Store field through the pointer
                 if (field_offset != 0) {
@@ -447,15 +461,11 @@ fn lowerInst(
                 const target = try lowerOperand(ctx, payload.target, vreg_count);
                 switch (target) {
                     .Mem => |base_mem| {
-                        // Field layout uses hash-indexed local slots
-                        // Each field is stored at base_local + hash_index, which maps to
-                        // offset = -(base_local + hash_index + 1) * LOCAL_STACK_MULTIPLIER * 8
-                        var hash: u32 = 0;
-                        for (payload.name) |ch| hash = hash *% 31 +% ch;
-                        const field_index: i32 = @intCast(hash % MAX_STRUCT_FIELDS);
-                        // Compute the field's local offset: each additional index adds -LOCAL_STACK_MULTIPLIER * 8
-                        const field_offset = base_mem.offset - field_index * @as(i32, @intCast(@sizeOf(i64) * LOCAL_STACK_MULTIPLIER));
-                        const mem = machine.MOperand{ .Mem = .{ .base = base_mem.base, .offset = field_offset } };
+                        // Use stored struct layout for field offset based on declaration order
+                        // Falls back to sequential/hash if struct layout not found
+                        const field_offset = getFieldOffsetFromLayout(ctx.mir_crate, null, payload.name);
+                        const offset = base_mem.offset + field_offset;
+                        const mem = machine.MOperand{ .Mem = .{ .base = base_mem.base, .offset = offset } };
                         try insts.append(ctx.allocator, .{ .Mov = .{ .dst = mem, .src = src } });
                     },
                     .VReg => |vreg| {
@@ -464,9 +474,8 @@ fn lowerInst(
                         // 2. An immediate-indexed array element (memory location in index_mem_map)
                         if (ctx.dynamic_index_addr_map.get(vreg)) |addr_vreg| {
                             // We have the address of the array element, compute field offset from it
-                            // Use sequential field layout for arrays of structs
-                            const field_index: i64 = getSequentialFieldIndex(payload.name);
-                            const field_offset: i64 = -field_index * @as(i64, @sizeOf(i64) * LOCAL_STACK_MULTIPLIER);
+                            // Use stored struct layout for field offset
+                            const field_offset: i64 = getFieldOffsetFromLayout(ctx.mir_crate, null, payload.name);
 
                             // Add field offset to the base address
                             vreg_count.* += 1;
@@ -480,9 +489,9 @@ fn lowerInst(
                             }
                         } else if (ctx.index_mem_map.get(vreg)) |mem_loc| {
                             // VReg came from immediate-indexed array access, we have its memory location
-                            // Use sequential field layout for arrays of structs
-                            const field_index: i32 = getSequentialFieldIndex(payload.name);
-                            const offset = mem_loc.offset - field_index * @as(i32, @intCast(@sizeOf(i64) * LOCAL_STACK_MULTIPLIER));
+                            // Use stored struct layout for field offset
+                            const field_offset: i32 = getFieldOffsetFromLayout(ctx.mir_crate, null, payload.name);
+                            const offset = mem_loc.offset + field_offset;
                             const mem = machine.MOperand{ .Mem = .{ .base = mem_loc.base, .offset = offset } };
                             try insts.append(ctx.allocator, .{ .Mov = .{ .dst = mem, .src = src } });
                         } else {
@@ -873,14 +882,8 @@ fn lowerInst(
                     const ptr_vreg = vreg_count.* - 1;
                     try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .VReg = ptr_vreg }, .src = ptr_mem } });
 
-                    // For pointer-based struct access, compute hash-based field offset
-                    // This matches the layout used in StructInit and StoreLocal
-                    var hash: u32 = 0;
-                    for (payload.name) |ch| hash = hash *% 31 +% ch;
-                    const field_index: i32 = @intCast(hash % MAX_STRUCT_FIELDS);
-                    // Each field is at offset = field_index * LOCAL_STACK_MULTIPLIER * sizeof(i64)
-                    // Since locals grow downward (negative offsets), we subtract
-                    const field_offset: i64 = -@as(i64, field_index) * @as(i64, LOCAL_STACK_MULTIPLIER) * @as(i64, @sizeOf(i64));
+                    // Use stored struct layout for field offset, falling back to sequential/hash
+                    const field_offset: i64 = getFieldOffsetFromLayout(ctx.mir_crate, null, payload.name);
 
                     // Access field through the pointer
                     if (field_offset != 0) {
@@ -898,15 +901,11 @@ fn lowerInst(
                     const target = try lowerOperand(ctx, payload.target, vreg_count);
                     switch (target) {
                         .Mem => |base_mem| {
-                            // Field layout uses hash-indexed local slots
-                            // Each field is stored at base_local + hash_index, which maps to
-                            // offset = -(base_local + hash_index + 1) * LOCAL_STACK_MULTIPLIER * 8
-                            var hash: u32 = 0;
-                            for (payload.name) |ch| hash = hash *% 31 +% ch;
-                            const field_index: i32 = @intCast(hash % MAX_STRUCT_FIELDS);
-                            // Compute the field's local offset: each additional index adds -LOCAL_STACK_MULTIPLIER * 8
-                            const field_offset = base_mem.offset - field_index * @as(i32, @intCast(@sizeOf(i64) * LOCAL_STACK_MULTIPLIER));
-                            const mem = machine.MOperand{ .Mem = .{ .base = base_mem.base, .offset = field_offset } };
+                            // Use stored struct layout for field offset based on declaration order
+                            // Falls back to sequential/hash if struct layout not found
+                            const field_offset = getFieldOffsetFromLayout(ctx.mir_crate, null, payload.name);
+                            const offset = base_mem.offset + field_offset;
+                            const mem = machine.MOperand{ .Mem = .{ .base = base_mem.base, .offset = offset } };
                             try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .VReg = dst }, .src = mem } });
                         },
                         .VReg => |vreg| {
@@ -915,9 +914,8 @@ fn lowerInst(
                             // 2. An immediate-indexed array element (memory location in index_mem_map)
                             if (ctx.dynamic_index_addr_map.get(vreg)) |addr_vreg| {
                                 // We have the address of the array element, compute field offset from it
-                                // Use sequential field layout for arrays of structs
-                                const field_index: i64 = getSequentialFieldIndex(payload.name);
-                                const field_offset: i64 = -field_index * @as(i64, @sizeOf(i64) * LOCAL_STACK_MULTIPLIER);
+                                // Use stored struct layout for field offset
+                                const field_offset: i64 = getFieldOffsetFromLayout(ctx.mir_crate, null, payload.name);
 
                                 // Add field offset to the base address and load the value
                                 vreg_count.* += 1;
@@ -933,9 +931,9 @@ fn lowerInst(
                                 try ctx.dynamic_index_addr_map.put(dst, if (field_offset != 0) field_addr_vreg else addr_vreg);
                             } else if (ctx.index_mem_map.get(vreg)) |mem_loc| {
                                 // VReg came from immediate-indexed array access, we have its memory location
-                                // Use sequential field layout for arrays of structs
-                                const field_index: i32 = getSequentialFieldIndex(payload.name);
-                                const offset = mem_loc.offset - field_index * @as(i32, @intCast(@sizeOf(i64) * LOCAL_STACK_MULTIPLIER));
+                                // Use stored struct layout for field offset
+                                const field_offset: i32 = getFieldOffsetFromLayout(ctx.mir_crate, null, payload.name);
+                                const offset = mem_loc.offset + field_offset;
                                 const mem = machine.MOperand{ .Mem = .{ .base = mem_loc.base, .offset = offset } };
                                 try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .VReg = dst }, .src = mem } });
                                 // Record for potential StoreField
