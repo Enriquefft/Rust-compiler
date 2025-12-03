@@ -14,8 +14,12 @@ const LOCAL_STACK_MULTIPLIER = shared.LOCAL_STACK_MULTIPLIER;
 const MAX_EXTRA_ARRAY_ELEMENTS = shared.MAX_EXTRA_ARRAY_ELEMENTS;
 const STRUCT_SECOND_FIELD_OFFSET = shared.STRUCT_SECOND_FIELD_OFFSET;
 
+/// Field stride: each struct field occupies this many bytes in memory.
+/// Computed as LOCAL_STACK_MULTIPLIER * sizeof(i64).
+const FIELD_STRIDE: i32 = @intCast(@sizeOf(i64) * LOCAL_STACK_MULTIPLIER);
+
 /// Get the field offset from stored struct layouts using declaration order.
-/// Falls back to sequential index for known field patterns (x=0, y=1) if struct not found.
+/// Falls back to computing offset from sequential index for known field patterns (x=0, y=1).
 /// Uses hash-based index only as a last resort for unknown field names.
 fn getFieldOffsetFromLayout(mir_crate: *const mir.MirCrate, struct_name: ?[]const u8, field_name: []const u8) i32 {
     // Try to look up from stored struct layouts first
@@ -24,8 +28,10 @@ fn getFieldOffsetFromLayout(mir_crate: *const mir.MirCrate, struct_name: ?[]cons
             return offset;
         }
     }
-    // Fall back to sequential index for common field names
-    return getSequentialFieldIndex(field_name);
+    // Fall back to computing offset from sequential index for common field names
+    // Convert index to offset: offset = -index * FIELD_STRIDE
+    const field_index = getSequentialFieldIndex(field_name);
+    return -field_index * FIELD_STRIDE;
 }
 
 /// Get the sequential field index for a field name.

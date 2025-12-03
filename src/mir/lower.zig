@@ -33,21 +33,22 @@ fn computeStructLayout(alloc: std.mem.Allocator, struct_item: hir.Struct) LowerE
     defer field_layouts.deinit(alloc);
 
     var current_offset: i32 = 0;
-    const field_size: u32 = @sizeOf(i64) * LOCAL_STACK_MULTIPLIER;
+    // Field stride: each field occupies LOCAL_STACK_MULTIPLIER * sizeof(i64) bytes
+    const field_stride: i32 = @intCast(@sizeOf(i64) * LOCAL_STACK_MULTIPLIER);
 
     for (struct_item.fields, 0..) |field, idx| {
         const layout = mir.FieldLayout{
             .name = field.name,
             .offset = current_offset,
-            .size = field_size,
+            .size = @intCast(field_stride),
             .index = @intCast(idx),
         };
         try field_layouts.append(alloc, layout);
         // Move to next field offset (negative direction for stack growth)
-        current_offset -= @as(i32, @intCast(field_size));
+        current_offset -= field_stride;
     }
 
-    const total_size: u32 = @intCast(struct_item.fields.len * field_size);
+    const total_size: u32 = @as(u32, @intCast(struct_item.fields.len)) * @as(u32, @intCast(field_stride));
 
     return mir.StructLayout{
         .name = struct_item.name,
