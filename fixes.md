@@ -185,7 +185,7 @@ fn main() {
 Looking at the generated assembly (around lines 86-100), the compound operations are incorrectly ordered or use wrong operands:
 ```asm
 mov rax, [rbp-288]  ; reads uninitialized memory
-...
+; ... (intermediate register shuffling) ...
 imul rax, rax       ; multiplies wrong value
 ```
 
