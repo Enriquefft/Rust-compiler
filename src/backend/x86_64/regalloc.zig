@@ -186,6 +186,14 @@ fn rewriteOperands(
             }
 
             if (payload.op == .imul and isMem(dst)) {
+                // For imul with memory destination, we need to use rax.
+                // If rhs is in rax, we need to save it to a different register first.
+                if (rhs == .Phys and rhs.Phys == .rax) {
+                    // rhs is in rax, save it to rcx (a different scratch register)
+                    try spillIfMapped(.rcx, map, rewritten, allocator, stack_slots);
+                    try rewritten.append(allocator, .{ .Mov = .{ .dst = .{ .Phys = .rcx }, .src = rhs } });
+                    rhs = .{ .Phys = .rcx };
+                }
                 try rewritten.append(allocator, .{ .Mov = .{ .dst = .{ .Phys = .rax }, .src = dst } });
                 try rewritten.append(allocator, .{ .Bin = .{ .op = payload.op, .dst = .{ .Phys = .rax }, .lhs = .{ .Phys = .rax }, .rhs = rhs } });
                 try rewritten.append(allocator, .{ .Mov = .{ .dst = dst, .src = .{ .Phys = .rax } } });
@@ -323,8 +331,16 @@ fn rewriteOperands(
                 addr = .{ .Phys = scratch.gpr };
             }
             if (isMem(src)) {
-                try rewritten.append(allocator, .{ .Mov = .{ .dst = .{ .Phys = .rax }, .src = src } });
-                src = .{ .Phys = .rax };
+                // Check if addr is in rax before loading src to rax
+                if (addr == .Phys and addr.Phys == .rax) {
+                    // addr is in rax, use rcx for src instead
+                    try spillIfMapped(.rcx, map, rewritten, allocator, stack_slots);
+                    try rewritten.append(allocator, .{ .Mov = .{ .dst = .{ .Phys = .rcx }, .src = src } });
+                    src = .{ .Phys = .rcx };
+                } else {
+                    try rewritten.append(allocator, .{ .Mov = .{ .dst = .{ .Phys = .rax }, .src = src } });
+                    src = .{ .Phys = .rax };
+                }
             }
             try rewritten.append(allocator, .{ .StoreDeref = .{ .addr = addr, .src = src } });
         },

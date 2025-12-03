@@ -28,10 +28,32 @@ fn getFieldOffsetFromLayout(mir_crate: *const mir.MirCrate, struct_name: ?[]cons
             return offset;
         }
     }
+    
+    // When struct name is not provided, search all struct layouts for the field
+    var iter = mir_crate.struct_layouts.iterator();
+    while (iter.next()) |entry| {
+        for (entry.value_ptr.fields) |field_layout| {
+            if (std.mem.eql(u8, field_layout.name, field_name)) {
+                return field_layout.offset;
+            }
+        }
+    }
+    
     // Fall back to computing offset from sequential index for common field names
     // Convert index to offset: offset = -index * FIELD_STRIDE
     const field_index = getSequentialFieldIndex(field_name);
     return -field_index * FIELD_STRIDE;
+}
+
+/// Get the struct element size from stored layouts.
+/// Searches all layouts and returns the size of the first one found.
+/// Falls back to ASSUMED_STRUCT_FIELDS * field_stride if no layout is found.
+fn getStructElemSize(mir_crate: *const mir.MirCrate) i64 {
+    var iter = mir_crate.struct_layouts.iterator();
+    if (iter.next()) |entry| {
+        return @intCast(entry.value_ptr.total_size);
+    }
+    return ASSUMED_STRUCT_FIELDS * @sizeOf(i64) * LOCAL_STACK_MULTIPLIER;
 }
 
 /// Get the sequential field index for a field name.
@@ -320,7 +342,6 @@ fn lowerInst(
 
             // For array types, also store additional elements from physical registers
             // For struct types from function returns, store the second field from rdx.
-            // Skip this for Param sources since parameters are stored to separate locals.
             const is_param_source = payload.src == .Param;
             if (inst.ty) |ty| {
                 if (ty == .Array) {
@@ -341,6 +362,23 @@ fn lowerInst(
                         },
                     };
                     try insts.append(ctx.allocator, .{ .Mov = .{ .dst = second_field_mem, .src = .{ .Phys = .rdx } } });
+                }
+            }
+            
+            // For Param sources from generic functions (where type is Unknown), also store next param
+            // This handles generic functions like identity<T>(value: T) where T might be a struct
+            if (is_param_source) {
+                const param_idx = payload.src.Param;
+                // If this is param 0 (first argument), also store param 1 (rsi) to the adjacent slot
+                // This ensures struct values passed to generic functions are fully captured
+                if (param_idx == 0) {
+                    const second_field_mem = machine.MOperand{
+                        .Mem = .{
+                            .base = mem.Mem.base,
+                            .offset = mem.Mem.offset + @as(i32, @truncate(STRUCT_SECOND_FIELD_OFFSET)),
+                        },
+                    };
+                    try insts.append(ctx.allocator, .{ .Mov = .{ .dst = second_field_mem, .src = .{ .Phys = .rsi } } });
                 }
             }
         },
@@ -681,10 +719,10 @@ fn lowerInst(
                 const idx = try lowerOperand(ctx, payload.index, vreg_count);
 
                 // Determine element size based on result type
-                // For struct-typed elements, use ASSUMED_STRUCT_FIELDS * 8 bytes
+                // For struct-typed elements, use actual struct layout size if available
                 // For other types, use 8 bytes
                 const elem_size: i64 = if (inst.ty) |ty| switch (ty) {
-                    .Struct => ASSUMED_STRUCT_FIELDS * @sizeOf(i64) * LOCAL_STACK_MULTIPLIER,
+                    .Struct => getStructElemSize(ctx.mir_crate),
                     else => @sizeOf(i64),
                 } else @sizeOf(i64);
 
@@ -1053,10 +1091,10 @@ fn lowerTerm(
                 switch (op) {
                     .Local => |local_id| {
                         const next_local_id = local_id + 1;
-                        if (next_local_id < ctx.current_fn_locals.len) {
-                            const next_local_mem = localMem(next_local_id);
-                            try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .Phys = .rdx }, .src = next_local_mem } });
-                        }
+                        // Always try to return the second local for struct compatibility
+                        // For non-struct types, the caller will ignore rdx
+                        const next_local_mem = localMem(next_local_id);
+                        try insts.append(ctx.allocator, .{ .Mov = .{ .dst = .{ .Phys = .rdx }, .src = next_local_mem } });
                     },
                     else => {},
                 }
