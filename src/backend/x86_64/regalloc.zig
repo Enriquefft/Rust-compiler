@@ -331,8 +331,16 @@ fn rewriteOperands(
                 addr = .{ .Phys = scratch.gpr };
             }
             if (isMem(src)) {
-                try rewritten.append(allocator, .{ .Mov = .{ .dst = .{ .Phys = .rax }, .src = src } });
-                src = .{ .Phys = .rax };
+                // Check if addr is in rax before loading src to rax
+                if (addr == .Phys and addr.Phys == .rax) {
+                    // addr is in rax, use rcx for src instead
+                    try spillIfMapped(.rcx, map, rewritten, allocator, stack_slots);
+                    try rewritten.append(allocator, .{ .Mov = .{ .dst = .{ .Phys = .rcx }, .src = src } });
+                    src = .{ .Phys = .rcx };
+                } else {
+                    try rewritten.append(allocator, .{ .Mov = .{ .dst = .{ .Phys = .rax }, .src = src } });
+                    src = .{ .Phys = .rax };
+                }
             }
             try rewritten.append(allocator, .{ .StoreDeref = .{ .addr = addr, .src = src } });
         },
