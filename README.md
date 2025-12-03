@@ -22,82 +22,97 @@ This repository hosts a Zig-based compiler for a Rust-like language subset. The 
 - Implement a Rust-like language defined by the accompanying EBNF grammar and feature list.
 - Provide an end-to-end pipeline from source code through lexing, parsing, HIR/MIR construction, optimization, and x86-64 code generation.
 - Deliver helpful diagnostics and a maintainable modular codebase written in Zig.
-- Keep early scope focused: simple optimizations (constant folding, DCE, CFG simplification), inherent impls without traits, and x86-64 as the initial backend target.【F:Architecture.md†L1-L69】
+- Keep early scope focused: simple optimizations (constant folding, DCE, CFG simplification), inherent impls without traits, and x86-64 as the initial backend target.
 
 ## Language subset
 
 Key capabilities supported by the compiler align with the documented Rust-like subset:
 
-- **Core items:** functions, structs with fields, type aliases, and inherent `impl` blocks. The compilation unit is a crate containing a sequence of items, with `fn main()` serving as the entry point.【F:Features.md†L6-L33】
-- **Types:** primitive integers (`i32`, `i64`, `u32`, `u64`, `usize`), floats, booleans, `char`, and string-related types, plus arrays `[T; N]`, references `&T` / `&mut T`, raw pointers, function types, and generic paths with type arguments.【F:Features.md†L35-L81】
-- **Expressions and statements:** arithmetic and logical operators, explicit casts with `as`, assignments (including compound assignments) to place expressions, conditionals, ranges (`a..b`, `a..=b`), `while` and `for` loops, and `return` with optional values. Expression statements and empty statements are supported; `break` and `continue` are intentionally omitted.【F:Features.md†L83-L143】
-- **Bindings and patterns:** `let` bindings with optional mutability and type annotations, identifier or wildcard patterns, and block expressions that yield a value when the final expression omits a semicolon.【F:Features.md†L117-L143】
-- **Functions, methods, and generics:** functions and inherent methods accept by-value or reference parameters, support generics on functions/structs/impls, and allow generic arguments in paths. Trait bounds are out of scope for this subset.【F:Features.md†L145-L207】
-- **Closures and macros:** closure expressions are first-class and typed via function types; macro call syntax is parsed but treated as a plain function call without hygienic expansion.【F:Features.md†L209-L249】
+- **Core items:** functions, structs with fields, type aliases, const items, and inherent \`impl\` blocks. The compilation unit is a crate containing a sequence of items, with \`fn main()\` serving as the entry point.
+- **Types:** primitive integers (\`i32\`, \`i64\`, \`u32\`, \`u64\`, \`usize\`), floats (\`f32\`, \`f64\`), booleans, \`char\`, and string-related types (\`str\`, \`String\`), plus arrays \`[T; N]\`, references \`&T\` / \`&mut T\`, raw pointers, function types, and generic paths with type arguments.
+- **Expressions and statements:** arithmetic and logical operators, explicit casts with \`as\`, assignments (including compound assignments) to place expressions, conditionals, ranges (\`a..b\`, \`a..=b\`), \`while\` and \`for\` loops, and \`return\` with optional values. Expression statements and empty statements are supported. **Note:** \`break\` and \`continue\` are intentionally omitted from this subset.
+- **Bindings and patterns:** \`let\` bindings with optional mutability and type annotations, identifier or wildcard patterns, and block expressions that yield a value when the final expression omits a semicolon.
+- **Functions, methods, and generics:** functions and inherent methods accept by-value or reference parameters (\`self\`, \`&self\`, \`&mut self\`), support generics on functions/structs/impls, and allow generic arguments in paths. Trait bounds are out of scope for this subset.
+- **Closures and macros:** closure expressions are first-class and typed via function types; macro call syntax (e.g., \`println!\`) is parsed but treated as a plain function call without hygienic expansion.
+- **Unsafe blocks:** \`unsafe { ... }\` blocks are syntactically supported and parsed as expressions.
 
 ## Grammar reference
 
-The language grammar is formalized in `grammar.ebnf`. Highlights include identifier rules (supporting raw identifiers), literals, type forms (arrays, references, pointers, function types, paths with generics), item definitions (`fn`, `struct`, `impl`, `type`), statements, expressions (with operator precedence), and closure syntax. Use this file as the authoritative syntactic reference when extending the parser or adding new language constructs.【F:grammar.ebnf†L1-L99】【F:grammar.ebnf†L101-L199】
+The language grammar is formalized in \`grammar.ebnf\`. Highlights include identifier rules, literals, type forms (arrays, references, pointers, function types, paths with generics), item definitions (\`fn\`, \`struct\`, \`impl\`, \`type\`, \`const\`), statements, expressions (with operator precedence), and closure syntax. Use this file as the authoritative syntactic reference when extending the parser or adding new language constructs.
+
+> **Note:** Raw identifiers (\`r#\` prefix) are defined in the Rust specification but are **not implemented** in this compiler. The grammar has been updated to reflect this.
 
 ## Compiler architecture
 
 The compiler is structured as staged transformations with clear module boundaries:
 
-1. **Lexing and parsing:** convert source text into tokens and an AST following `grammar.ebnf`.
+1. **Lexing and parsing:** convert source text into tokens and an AST following \`grammar.ebnf\`.
 2. **HIR (High-Level IR):** resolve names, annotate types, and validate constructs.
 3. **MIR (Mid-Level IR):** build basic-block-based, non-SSA IR suitable for analysis and optimization.
 4. **MIR passes:** apply constant folding, dead code elimination, and CFG simplification.
-5. **x86-64 backend:** lower MIR to machine IR, perform register allocation, peephole optimizations, and emit assembly or object output.
+5. **x86-64 backend:** lower MIR to machine IR, perform register allocation, and emit assembly output.
 
-Modules are organized under `frontend/`, `hir/`, `mir/`, `backend/`, and `util/` namespaces, with dedicated files for diagnostics, interning, arenas, CFG helpers, and backend components like ABI handling, instruction selection, register allocation, and emission.【F:Architecture.md†L11-L118】【F:Architecture.md†L120-L190】
+Modules are organized under \`frontend/\`, \`hir/\`, \`mir/\`, \`backend/\`, and \`diag/\` namespaces. See \`Architecture.md\` for detailed module descriptions.
 
 ## Repository layout
 
-Planned directory structure mirrors the architecture description:
+Current directory structure:
 
-- `src/main.zig` and `src/driver.zig`: entry point and compiler driver.
-- `src/diag/`: source mapping and diagnostics utilities.
-- `src/frontend/`: tokens, lexer, AST, and parser.
-- `src/hir/`: HIR representation, name resolution, and type checking.
-- `src/mir/`: MIR representation, builder, and optimization passes.
-- `src/backend/x86_64/`: ABI, instruction selection, register allocation, peephole, and emitter modules.
-- `src/util/`: arenas, interner, and CFG helpers.
-- `tests/`: lexer, parser, HIR, MIR, backend, and execution tests (golden files and runtime checks).【F:Architecture.md†L71-L188】
+- \`src/main.zig\` and \`src/driver.zig\`: entry point and compiler driver.
+- \`src/diag/\`: source mapping and diagnostics utilities.
+- \`src/frontend/\`: tokens, lexer, AST, AST printer, and parser.
+- \`src/hir/\`: HIR representation, HIR printer, name resolution, and type checking.
+- \`src/mir/\`: MIR representation, lowering, MIR printer, and optimization passes.
+- \`src/backend/\`: backend entry point and x86-64 code generation (machine IR, instruction selection, register allocation, emitter).
+- \`codes/\`: sample programs and test inputs.
 
 ## Building and running
 
-The project uses Zig’s build system. Common workflows:
+The project uses Zig's build system. Common workflows:
 
 - Build the compiler executable:
-  ```bash
+  \`\`\`bash
   zig build
-  ```
+  \`\`\`
 - Run the compiler with arguments:
-  ```bash
-  zig build run -- <compiler-args>
-  ```
-- Generate module documentation for the lexer and parser (tests configured to emit docs):
-  ```bash
-  zig build docs
-  ```
+  \`\`\`bash
+  zig build run -- <file.rs>
+  \`\`\`
+- Run the compiler with debugging output:
+  \`\`\`bash
+  zig build run -- --print-tokens --print-ast --print-hir --print-mir <file.rs>
+  \`\`\`
 
-The build script (`build.zig`) exposes standard target/optimization options and installs the `rust-compiler` executable by default.【F:build.zig†L1-L73】
+Available compiler options:
+- \`--print-tokens\`: display lexer output
+- \`--print-ast\`: display parsed AST
+- \`--print-hir\`: display HIR after name resolution and type checking
+- \`--print-mir\`: display MIR after optimization passes
+- \`--print-passes-changes\`: show MIR state after each optimization pass
+- \`--opt=none|basic\`: optimization level (default: \`basic\`)
+- \`--emit=asm|obj\`: output format (default: \`asm\`)
+- \`-o <path>\`: output file path
+
+The build script (\`build.zig\`) exposes standard target/optimization options and installs the \`rust-compiler\` executable by default.
 
 ## Testing
 
-Unit tests are wired through Zig’s test runner:
+Unit tests are wired through Zig's test runner:
 
-```bash
+\`\`\`bash
 zig build test
-```
+\`\`\`
 
-This target compiles and runs tests for the main binary and module-level test blocks (including lexer and parser documentation tests). Extend the `tests/` directories with golden files and runtime checks as outlined in the architecture document.【F:build.zig†L55-L67】【F:Architecture.md†L190-L257】
+This target compiles and runs tests for the main binary and module-level test blocks. Tests are implemented as inline Zig \`test\` blocks within source modules (e.g., lexer tests, parser tests, HIR lowering tests, driver integration tests).
+
+Sample programs in the \`codes/\` directory can be used for manual testing and validation.
 
 ## Documentation index
 
-- `Features.md`: detailed language subset description and examples.
-- `grammar.ebnf`: formal grammar specification.
-- `Architecture.md`: compiler architecture, modules, and implementation roadmap.
+- \`Features.md\`: detailed language subset description and examples.
+- \`grammar.ebnf\`: formal grammar specification.
+- \`Architecture.md\`: compiler architecture, modules, and implementation roadmap.
+- \`AGENTS.md\`: agent-specific instructions for automated tools.
 
 Refer to these documents when modifying the grammar, extending language features, or implementing pipeline stages to ensure consistency across the compiler.
 
@@ -113,4 +128,3 @@ Refer to these documents when modifying the grammar, extending language features
 </table>
 
 ## Bibliography
-
