@@ -354,10 +354,16 @@ fn resolveExpr(
                 if (struct_def_id != null) {
                     // Look for the mangled method name in module symbols
                     // Methods are mangled as StructName_methodName
-                    var mangled_buf: [256]u8 = undefined;
-                    const mangled_name = std.fmt.bufPrint(&mangled_buf, "{s}_{s}", .{ type_name, method_name }) catch {
-                        diagnostics.reportError(expr.span, "method name too long");
-                        return;
+                    const mangled_len = type_name.len + 1 + method_name.len;
+                    const mangled_buf = crate.allocator().alloc(u8, mangled_len) catch {
+                        diagnostics.reportError(expr.span, "failed to allocate mangled method name");
+                        return error.OutOfMemory;
+                    };
+                    defer crate.allocator().free(mangled_buf);
+
+                    const mangled_name = std.fmt.bufPrint(mangled_buf, "{s}_{s}", .{ type_name, method_name }) catch {
+                        diagnostics.reportError(expr.span, "failed to format mangled method name");
+                        return error.OutOfMemory;
                     };
 
                     if (module_symbols.get(mangled_name)) |def_id| {
