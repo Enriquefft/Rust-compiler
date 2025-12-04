@@ -725,7 +725,7 @@ fn rewriteOperandsWithLiveness(
                 try rewritten.append(allocator, .{ .Mov = .{ .dst = .{ .Phys = scratch.gpr }, .src = dst } });
                 dst = .{ .Phys = scratch.gpr };
             }
-            if (isMem(dst) and isMem(src)) {
+            if (isMem(src)) {
                 const scratch = try acquireScratchWithFreeRegs(.gpr, map, rewritten, allocator, stack_slots, free_gprs, free_xmms);
                 try rewritten.append(allocator, .{ .Mov = .{ .dst = .{ .Phys = scratch.gpr }, .src = src } });
                 src = .{ .Phys = scratch.gpr };
