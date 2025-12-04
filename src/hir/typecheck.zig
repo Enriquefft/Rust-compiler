@@ -1519,6 +1519,7 @@ test "typechecker handles composite expressions" {
     struct_fields[0] = struct_field;
 
     try crate.items.append(crate.allocator(), .{ .id = 0, .kind = .{ .Struct = .{ .def_id = 0, .name = "Wrapper", .type_params = &[_][]const u8{}, .fields = struct_fields, .span = span } }, .span = span });
+    try crate.buildNameIndexes();
     const struct_ty = try ensureType(&crate, .{ .Struct = .{ .def_id = 0, .type_args = &[_]hir.TypeId{} } });
 
     const struct_fields_init = try crate.allocator().alloc(hir.StructInitField, 1);
@@ -1566,6 +1567,7 @@ test "typechecker infers generic struct field types from init values" {
     struct_fields[0] = .{ .name = "value", .ty = generic_ty, .span = span };
 
     try crate.items.append(crate.allocator(), .{ .id = 0, .kind = .{ .Struct = .{ .def_id = 0, .name = "Boxed", .type_params = type_params, .fields = struct_fields, .span = span } }, .span = span });
+    try crate.buildNameIndexes();
 
     const bool_expr_id: hir.ExprId = @intCast(crate.exprs.items.len);
     try crate.exprs.append(crate.allocator(), .{ .id = bool_expr_id, .kind = .{ .ConstBool = true }, .ty = 0, .span = span });
@@ -1621,6 +1623,7 @@ test "typechecker reports conflicts when generic fields infer different types" {
     struct_fields[1] = .{ .name = "second", .ty = generic_ty, .span = span };
 
     try crate.items.append(crate.allocator(), .{ .id = 0, .kind = .{ .Struct = .{ .def_id = 0, .name = "Pair", .type_params = type_params, .fields = struct_fields, .span = span } }, .span = span });
+    try crate.buildNameIndexes();
 
     const int_expr_id: hir.ExprId = @intCast(crate.exprs.items.len);
     try crate.exprs.append(crate.allocator(), .{ .id = int_expr_id, .kind = .{ .ConstInt = 1 }, .ty = 0, .span = span });
