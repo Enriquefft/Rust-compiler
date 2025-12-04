@@ -143,14 +143,35 @@ pub fn allocateRegisters(
         // Track which physical registers are currently free (not assigned to any live VReg)
         var free_gprs = std.AutoHashMap(machine.PhysReg, void).init(allocator);
         defer free_gprs.deinit();
-        for (available_gprs) |reg| {
-            try free_gprs.put(reg, {});
-        }
 
         var free_xmms = std.AutoHashMap(machine.XmmReg, void).init(allocator);
         defer free_xmms.deinit();
+
+        // Collect registers that are currently in use by mapped VRegs
+        var used_gprs = std.AutoHashMap(machine.PhysReg, void).init(allocator);
+        defer used_gprs.deinit();
+        var used_xmms = std.AutoHashMap(machine.XmmReg, void).init(allocator);
+        defer used_xmms.deinit();
+
+        var map_it = map.iterator();
+        while (map_it.next()) |entry| {
+            switch (entry.value_ptr.*) {
+                .gpr => |reg| try used_gprs.put(reg, {}),
+                .xmm => |reg| try used_xmms.put(reg, {}),
+                .spill => {},
+            }
+        }
+
+        // Add only unused registers to free sets
+        for (available_gprs) |reg| {
+            if (!used_gprs.contains(reg)) {
+                try free_gprs.put(reg, {});
+            }
+        }
         for (available_xmms) |reg| {
-            try free_xmms.put(reg, {});
+            if (!used_xmms.contains(reg)) {
+                try free_xmms.put(reg, {});
+            }
         }
 
         var rewritten = std.ArrayListUnmanaged(machine.InstKind){};
@@ -330,6 +351,386 @@ fn rewriteOperandsWithLiveness(
             } else {
                 try rewritten.append(allocator, .{ .Bin = .{ .op = payload.op, .dst = dst, .lhs = dst, .rhs = rhs } });
             }
+        },
+        .Call => |*payload| {
+            // Spill all caller-saved registers before call
+            try spillMappedRegistersWithFreeRegs(map, rewritten, allocator, stack_slots, free_gprs, free_xmms, .gpr);
+            try spillMappedRegistersWithFreeRegs(map, rewritten, allocator, stack_slots, free_gprs, free_xmms, .xmm);
+            switch (payload.*) {
+                .Direct => try rewritten.append(allocator, inst.*),
+                .Indirect => |op| {
+                    const lowered = try materializeReadWithFreeRegs(
+                        func,
+                        op,
+                        map,
+                        classes,
+                        .gpr,
+                        free_gprs,
+                        free_xmms,
+                        allocator,
+                        stack_slots,
+                        diagnostics,
+                    );
+                    try rewritten.append(allocator, .{ .Call = .{ .Indirect = lowered } });
+                },
+            }
+        },
+        .Cmp => |*payload| {
+            const lhs = try materializeReadWithFreeRegs(
+                func,
+                payload.lhs,
+                map,
+                classes,
+                .gpr,
+                free_gprs,
+                free_xmms,
+                allocator,
+                stack_slots,
+                diagnostics,
+            );
+            var rhs = try materializeReadWithFreeRegs(
+                func,
+                payload.rhs,
+                map,
+                classes,
+                .gpr,
+                free_gprs,
+                free_xmms,
+                allocator,
+                stack_slots,
+                diagnostics,
+            );
+
+            if (isMem(lhs) and isMem(rhs)) {
+                const scratch = try acquireScratchWithFreeRegs(.gpr, map, rewritten, allocator, stack_slots, free_gprs, free_xmms);
+                try rewritten.append(allocator, .{ .Mov = .{ .dst = .{ .Phys = scratch.gpr }, .src = rhs } });
+                rhs = .{ .Phys = scratch.gpr };
+            }
+
+            try rewritten.append(allocator, .{ .Cmp = .{ .lhs = lhs, .rhs = rhs } });
+        },
+        .Setcc => |*payload| {
+            const dst = try materializeWriteWithFreeRegs(
+                func,
+                payload.dst,
+                map,
+                classes,
+                .gpr,
+                free_gprs,
+                free_xmms,
+                allocator,
+                stack_slots,
+                diagnostics,
+            );
+            try rewritten.append(allocator, .{ .Setcc = .{ .cond = payload.cond, .dst = dst } });
+        },
+        .Test => |*payload| {
+            var op = try materializeReadWithFreeRegs(
+                func,
+                payload.operand,
+                map,
+                classes,
+                .gpr,
+                free_gprs,
+                free_xmms,
+                allocator,
+                stack_slots,
+                diagnostics,
+            );
+            if (isMem(op)) {
+                const scratch = try acquireScratchWithFreeRegs(.gpr, map, rewritten, allocator, stack_slots, free_gprs, free_xmms);
+                try rewritten.append(allocator, .{ .Mov = .{ .dst = .{ .Phys = scratch.gpr }, .src = op } });
+                op = .{ .Phys = scratch.gpr };
+            }
+            try rewritten.append(allocator, .{ .Test = .{ .operand = op } });
+        },
+        .Lea => |*payload| {
+            const dst = try materializeWriteWithFreeRegs(
+                func,
+                payload.dst,
+                map,
+                classes,
+                .gpr,
+                free_gprs,
+                free_xmms,
+                allocator,
+                stack_slots,
+                diagnostics,
+            );
+            if (isMem(dst)) {
+                const scratch = try acquireScratchWithFreeRegs(.gpr, map, rewritten, allocator, stack_slots, free_gprs, free_xmms);
+                try rewritten.append(allocator, .{ .Lea = .{ .dst = .{ .Phys = scratch.gpr }, .mem = payload.mem } });
+                try rewritten.append(allocator, .{ .Mov = .{ .dst = dst, .src = .{ .Phys = scratch.gpr } } });
+            } else {
+                try rewritten.append(allocator, .{ .Lea = .{ .dst = dst, .mem = payload.mem } });
+            }
+        },
+        .Cvttsd2si => |*payload| {
+            const dst = try materializeWriteWithFreeRegs(
+                func,
+                payload.dst,
+                map,
+                classes,
+                .gpr,
+                free_gprs,
+                free_xmms,
+                allocator,
+                stack_slots,
+                diagnostics,
+            );
+            const src = try materializeReadWithFreeRegs(
+                func,
+                payload.src,
+                map,
+                classes,
+                .xmm,
+                free_gprs,
+                free_xmms,
+                allocator,
+                stack_slots,
+                diagnostics,
+            );
+            if (isMem(dst)) {
+                const scratch = try acquireScratchWithFreeRegs(.gpr, map, rewritten, allocator, stack_slots, free_gprs, free_xmms);
+                try rewritten.append(allocator, .{ .Cvttsd2si = .{ .dst = .{ .Phys = scratch.gpr }, .src = src } });
+                try rewritten.append(allocator, .{ .Mov = .{ .dst = dst, .src = .{ .Phys = scratch.gpr } } });
+            } else {
+                try rewritten.append(allocator, .{ .Cvttsd2si = .{ .dst = dst, .src = src } });
+            }
+        },
+        .Cvtsi2sd => |*payload| {
+            const dst = try materializeWriteWithFreeRegs(
+                func,
+                payload.dst,
+                map,
+                classes,
+                .xmm,
+                free_gprs,
+                free_xmms,
+                allocator,
+                stack_slots,
+                diagnostics,
+            );
+            var src = try materializeReadWithFreeRegs(
+                func,
+                payload.src,
+                map,
+                classes,
+                .gpr,
+                free_gprs,
+                free_xmms,
+                allocator,
+                stack_slots,
+                diagnostics,
+            );
+            if (isMem(src)) {
+                const scratch = try acquireScratchWithFreeRegs(.gpr, map, rewritten, allocator, stack_slots, free_gprs, free_xmms);
+                try rewritten.append(allocator, .{ .Mov = .{ .dst = .{ .Phys = scratch.gpr }, .src = src } });
+                src = .{ .Phys = scratch.gpr };
+            }
+            try rewritten.append(allocator, .{ .Cvtsi2sd = .{ .dst = dst, .src = src } });
+        },
+        .Movsd => |*payload| {
+            const dst = try materializeWriteWithFreeRegs(
+                func,
+                payload.dst,
+                map,
+                classes,
+                .xmm,
+                free_gprs,
+                free_xmms,
+                allocator,
+                stack_slots,
+                diagnostics,
+            );
+            var src = try materializeReadWithFreeRegs(
+                func,
+                payload.src,
+                map,
+                classes,
+                .xmm,
+                free_gprs,
+                free_xmms,
+                allocator,
+                stack_slots,
+                diagnostics,
+            );
+            if (isMem(dst) and isMem(src)) {
+                const scratch = try acquireScratchWithFreeRegs(.xmm, map, rewritten, allocator, stack_slots, free_gprs, free_xmms);
+                try rewritten.append(allocator, .{ .Movsd = .{ .dst = .{ .Xmm = scratch.xmm }, .src = src } });
+                src = .{ .Xmm = scratch.xmm };
+            }
+            try rewritten.append(allocator, .{ .Movsd = .{ .dst = dst, .src = src } });
+        },
+        .Unary => |*payload| {
+            const dst = try materializeWriteWithFreeRegs(
+                func,
+                payload.dst,
+                map,
+                classes,
+                .gpr,
+                free_gprs,
+                free_xmms,
+                allocator,
+                stack_slots,
+                diagnostics,
+            );
+            var src = try materializeReadWithFreeRegs(
+                func,
+                payload.src,
+                map,
+                classes,
+                .gpr,
+                free_gprs,
+                free_xmms,
+                allocator,
+                stack_slots,
+                diagnostics,
+            );
+            if (isMem(dst) and isMem(src)) {
+                const scratch = try acquireScratchWithFreeRegs(.gpr, map, rewritten, allocator, stack_slots, free_gprs, free_xmms);
+                try rewritten.append(allocator, .{ .Mov = .{ .dst = .{ .Phys = scratch.gpr }, .src = src } });
+                src = .{ .Phys = scratch.gpr };
+            }
+            try rewritten.append(allocator, .{ .Unary = .{ .op = payload.op, .dst = dst, .src = src } });
+        },
+        .Deref => |*payload| {
+            const dst = try materializeWriteWithFreeRegs(
+                func,
+                payload.dst,
+                map,
+                classes,
+                .gpr,
+                free_gprs,
+                free_xmms,
+                allocator,
+                stack_slots,
+                diagnostics,
+            );
+            var addr = try materializeReadWithFreeRegs(
+                func,
+                payload.addr,
+                map,
+                classes,
+                .gpr,
+                free_gprs,
+                free_xmms,
+                allocator,
+                stack_slots,
+                diagnostics,
+            );
+            if (isMem(addr) or addr == .Imm) {
+                const scratch = try acquireScratchWithFreeRegs(.gpr, map, rewritten, allocator, stack_slots, free_gprs, free_xmms);
+                try rewritten.append(allocator, .{ .Mov = .{ .dst = .{ .Phys = scratch.gpr }, .src = addr } });
+                addr = .{ .Phys = scratch.gpr };
+            }
+            if (isMem(dst)) {
+                try rewritten.append(allocator, .{ .Deref = .{ .dst = .{ .Phys = .rax }, .addr = addr } });
+                try rewritten.append(allocator, .{ .Mov = .{ .dst = dst, .src = .{ .Phys = .rax } } });
+            } else {
+                try rewritten.append(allocator, .{ .Deref = .{ .dst = dst, .addr = addr } });
+            }
+        },
+        .StoreDeref => |*payload| {
+            var addr = try materializeReadWithFreeRegs(
+                func,
+                payload.addr,
+                map,
+                classes,
+                .gpr,
+                free_gprs,
+                free_xmms,
+                allocator,
+                stack_slots,
+                diagnostics,
+            );
+            var src = try materializeReadWithFreeRegs(
+                func,
+                payload.src,
+                map,
+                classes,
+                .gpr,
+                free_gprs,
+                free_xmms,
+                allocator,
+                stack_slots,
+                diagnostics,
+            );
+            if (isMem(addr) or addr == .Imm) {
+                const scratch = try acquireScratchWithFreeRegs(.gpr, map, rewritten, allocator, stack_slots, free_gprs, free_xmms);
+                try rewritten.append(allocator, .{ .Mov = .{ .dst = .{ .Phys = scratch.gpr }, .src = addr } });
+                addr = .{ .Phys = scratch.gpr };
+            }
+            if (isMem(src)) {
+                // Check if addr is in rax before loading src to rax
+                if (addr == .Phys and addr.Phys == .rax) {
+                    // addr is in rax, use rcx for src instead
+                    try spillIfMappedWithFreeRegs(.rcx, map, rewritten, allocator, stack_slots, free_gprs);
+                    try rewritten.append(allocator, .{ .Mov = .{ .dst = .{ .Phys = .rcx }, .src = src } });
+                    src = .{ .Phys = .rcx };
+                } else {
+                    try rewritten.append(allocator, .{ .Mov = .{ .dst = .{ .Phys = .rax }, .src = src } });
+                    src = .{ .Phys = .rax };
+                }
+            }
+            try rewritten.append(allocator, .{ .StoreDeref = .{ .addr = addr, .src = src } });
+        },
+        .Push => |*payload| {
+            var op = try materializeReadWithFreeRegs(
+                func,
+                payload.*,
+                map,
+                classes,
+                .gpr,
+                free_gprs,
+                free_xmms,
+                allocator,
+                stack_slots,
+                diagnostics,
+            );
+            if (isMem(op)) {
+                const scratch = try acquireScratchWithFreeRegs(.gpr, map, rewritten, allocator, stack_slots, free_gprs, free_xmms);
+                try rewritten.append(allocator, .{ .Mov = .{ .dst = .{ .Phys = scratch.gpr }, .src = op } });
+                op = .{ .Phys = scratch.gpr };
+            }
+            try rewritten.append(allocator, .{ .Push = op });
+        },
+        .Add => |*payload| {
+            var dst = try materializeWriteWithFreeRegs(
+                func,
+                payload.dst,
+                map,
+                classes,
+                .gpr,
+                free_gprs,
+                free_xmms,
+                allocator,
+                stack_slots,
+                diagnostics,
+            );
+            var src = try materializeReadWithFreeRegs(
+                func,
+                payload.src,
+                map,
+                classes,
+                .gpr,
+                free_gprs,
+                free_xmms,
+                allocator,
+                stack_slots,
+                diagnostics,
+            );
+            if (isMem(dst)) {
+                const scratch = try acquireScratchWithFreeRegs(.gpr, map, rewritten, allocator, stack_slots, free_gprs, free_xmms);
+                try rewritten.append(allocator, .{ .Mov = .{ .dst = .{ .Phys = scratch.gpr }, .src = dst } });
+                dst = .{ .Phys = scratch.gpr };
+            }
+            if (isMem(dst) and isMem(src)) {
+                const scratch = try acquireScratchWithFreeRegs(.gpr, map, rewritten, allocator, stack_slots, free_gprs, free_xmms);
+                try rewritten.append(allocator, .{ .Mov = .{ .dst = .{ .Phys = scratch.gpr }, .src = src } });
+                src = .{ .Phys = scratch.gpr };
+            }
+            try rewritten.append(allocator, .{ .Add = .{ .dst = dst, .src = src } });
         },
         // For other instruction types, fall through to simple handling
         else => {
@@ -957,31 +1358,45 @@ fn assignWithFreeRegs(
 
     switch (class) {
         .gpr => {
-            // Try to get a free GPR from the free set
-            var it = free_gprs.keyIterator();
-            if (it.next()) |reg_ptr| {
-                const reg = reg_ptr.*;
-                _ = free_gprs.remove(reg);
-                if (isCalleeSavedGpr(reg)) {
+            // Try to get a free GPR from the free set, preferring caller-saved first
+            // First, try caller-saved registers
+            for (caller_saved_gprs) |reg| {
+                if (free_gprs.contains(reg)) {
+                    _ = free_gprs.remove(reg);
+                    try map.put(vreg, .{ .gpr = reg });
+                    return .{ .gpr = reg };
+                }
+            }
+            // Then, try callee-saved registers
+            for (callee_saved_gprs) |reg| {
+                if (free_gprs.contains(reg)) {
+                    _ = free_gprs.remove(reg);
                     const offset = try reserveCalleeSavedGpr(func, reg, allocator, stack_slots);
                     _ = offset;
+                    try map.put(vreg, .{ .gpr = reg });
+                    return .{ .gpr = reg };
                 }
-                try map.put(vreg, .{ .gpr = reg });
-                return .{ .gpr = reg };
             }
         },
         .xmm => {
-            // Try to get a free XMM from the free set
-            var it = free_xmms.keyIterator();
-            if (it.next()) |reg_ptr| {
-                const reg = reg_ptr.*;
-                _ = free_xmms.remove(reg);
-                if (isCalleeSavedXmm(reg)) {
+            // Try to get a free XMM from the free set, preferring caller-saved first
+            // First, try caller-saved registers
+            for (caller_saved_xmms) |reg| {
+                if (free_xmms.contains(reg)) {
+                    _ = free_xmms.remove(reg);
+                    try map.put(vreg, .{ .xmm = reg });
+                    return .{ .xmm = reg };
+                }
+            }
+            // Then, try callee-saved registers
+            for (callee_saved_xmms) |reg| {
+                if (free_xmms.contains(reg)) {
+                    _ = free_xmms.remove(reg);
                     const offset = try reserveCalleeSavedXmm(func, reg, allocator, stack_slots);
                     _ = offset;
+                    try map.put(vreg, .{ .xmm = reg });
+                    return .{ .xmm = reg };
                 }
-                try map.put(vreg, .{ .xmm = reg });
-                return .{ .xmm = reg };
             }
         },
     }
@@ -1031,6 +1446,41 @@ fn spillMappedRegisters(
                     const offset = allocateStackSlots(stack_slots, 2);
                     entry.value_ptr.* = .{ .spill = offset };
                     try rewritten.append(allocator, .{ .Movsd = .{ .dst = .{ .Mem = .{ .base = .rbp, .offset = offset } }, .src = .{ .Xmm = reg } } });
+                }
+            },
+            .spill => {},
+        }
+    }
+}
+
+fn spillMappedRegistersWithFreeRegs(
+    map: *std.AutoHashMap(machine.VReg, Location),
+    rewritten: *std.ArrayListUnmanaged(machine.InstKind),
+    allocator: std.mem.Allocator,
+    stack_slots: *usize,
+    free_gprs: *std.AutoHashMap(machine.PhysReg, void),
+    free_xmms: *std.AutoHashMap(machine.XmmReg, void),
+    class: RegisterClass,
+) AllocError!void {
+    var it = map.iterator();
+    while (it.next()) |entry| {
+        switch (entry.value_ptr.*) {
+            .gpr => |reg| {
+                if (class == .gpr and isCallerSavedGpr(reg)) {
+                    const offset = allocateStackSlots(stack_slots, 1);
+                    entry.value_ptr.* = .{ .spill = offset };
+                    try rewritten.append(allocator, .{ .Mov = .{ .dst = .{ .Mem = .{ .base = .rbp, .offset = offset } }, .src = .{ .Phys = reg } } });
+                    // Register is now spilled, mark it as free
+                    try free_gprs.put(reg, {});
+                }
+            },
+            .xmm => |reg| {
+                if (class == .xmm and isCallerSavedXmm(reg)) {
+                    const offset = allocateStackSlots(stack_slots, 2);
+                    entry.value_ptr.* = .{ .spill = offset };
+                    try rewritten.append(allocator, .{ .Movsd = .{ .dst = .{ .Mem = .{ .base = .rbp, .offset = offset } }, .src = .{ .Xmm = reg } } });
+                    // Register is now spilled, mark it as free
+                    try free_xmms.put(reg, {});
                 }
             },
             .spill => {},
