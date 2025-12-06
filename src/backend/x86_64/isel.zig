@@ -163,6 +163,7 @@ pub fn lowerCrate(allocator: std.mem.Allocator, mir_crate: *const mir.MirCrate, 
 
     const rodata = try data.items.toOwnedSlice(allocator);
     data.items.deinit(allocator);
+    data.intern_map.deinit(allocator);
 
     return .{
         .allocator = allocator,
